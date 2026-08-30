@@ -1,0 +1,41 @@
+[project]
+name = "evomesh"
+version = "0.1.0"
+description = "Local-first, self-evolving multi-agent environment"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = [
+  "aiosqlite>=0.21",
+  "httpx>=0.28",
+  "pydantic>=2.11",
+  "pydantic-settings>=2.10",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+evomesh = "evomesh.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8.4", "pytest-asyncio>=1.1", "pyright>=1.1.404", "ruff>=0.12"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+include = ["src", "tests"]
+

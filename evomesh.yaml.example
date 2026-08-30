@@ -1,0 +1,18 @@
+environment_name: local
+data_path: data/evomesh.db
+generation_path: generations
+log_level: INFO
+models:
+  default_provider: ollama
+  providers:
+    ollama:
+      base_url: http://127.0.0.1:11434
+      model: qwen3
+    inferhub:
+      base_url: http://127.0.0.1:5080/v1
+      model: qwen3
+    openai_compatible:
+      base_url: http://127.0.0.1:8000/v1
+      model: local-model
+      api_key: ""
+
