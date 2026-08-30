@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 
 if not exist "evomesh.yaml" copy /y "evomesh.yaml.example" "evomesh.yaml" >nul
-"%UV_EXE%" sync
+"%UV_EXE%" sync --locked --no-dev
 if errorlevel 1 exit /b 1
 "%UV_EXE%" run evomesh --config "%CD%\evomesh.yaml"
 

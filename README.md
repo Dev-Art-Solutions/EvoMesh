@@ -11,7 +11,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.1 is an early runnable foundation. Implemented: the console, SQLite persistence, asynchronous messaging, system-agent bootstrap, a deterministic Agent Architect interview, BDI-shaped state, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, supervisor metadata, and automated tests. Experimental: model-driven runtime behavior and manual generation promotion. Planned: richer mutation authoring, stronger OS sandboxing, web/Telegram channels, and autonomous promotion policies.
+Version 0.1.0-alpha.1 is an early runnable foundation. Implemented: the console, SQLite persistence, asynchronous messaging, system-agent bootstrap, a deterministic Agent Architect interview, BDI-shaped state, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, supervisor metadata, and automated tests. Experimental: model-driven runtime behavior and manual generation promotion. Planned: richer mutation authoring, stronger OS sandboxing, web/Telegram channels, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -30,6 +30,10 @@ Supervisor metadata (outside candidate) -> ACTIVE / LAST-KNOWN-GOOD / CANDIDATE
 The environment is explicit application state, not a global singleton. SQLite access sits behind a repository. Model and channel contracts are replaceable. Generation supervisor metadata lives outside candidate workspaces.
 
 ## Quick start
+
+For Windows, the easiest installation is the self-contained desktop archive from [GitHub Releases](https://github.com/Dev-Art-Solutions/EvoMesh/releases). Extract it to a writable directory, install `uv`, and run `start-evomesh.bat`. The archive includes the .NET desktop runtime; Ollama remains optional.
+
+To run from source, use the following steps.
 
 Prerequisites: Python 3.13+, [uv](https://docs.astral.sh/uv/), Git, and optionally Ollama.
 

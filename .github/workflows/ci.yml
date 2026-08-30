@@ -6,12 +6,12 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: uv sync --locked
@@ -19,3 +19,22 @@ jobs:
       - run: uv run pyright
       - run: uv run pytest
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - run: uv sync --locked
+      - run: uv run python -m evomesh --help
+      - run: dotnet build desktop/EvoMesh.Desktop/EvoMesh.Desktop.csproj --configuration Release
+      - run: dotnet run --project desktop/EvoMesh.Desktop/EvoMesh.Desktop.csproj --configuration Release -- --self-test "$PWD"
+      - shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version "v0.1.0-alpha.1"
+      - shell: pwsh
+        run: ./dist/EvoMesh-v0.1.0-alpha.1-win-x64/app/EvoMesh.Desktop.exe --self-test "$PWD/dist/EvoMesh-v0.1.0-alpha.1-win-x64"
