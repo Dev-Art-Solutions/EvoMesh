@@ -71,9 +71,9 @@ class Environment:
             self.provider_health = await provider.health()
         else:
             self.provider_health = (False, f"Provider '{default_name}' is not configured")
-        if start_agent_loops and provider:
+        if start_agent_loops:
             for definition in self.registry.all():
-                if definition.type != "system" or definition.id == "architect":
+                if definition.id != "architect" and definition.provider in self.providers:
                     await self.start_agent(definition.id)
         self.health_state = HealthState.READY
 
@@ -87,6 +87,28 @@ class Environment:
         self.registry.register(definition)
         self.bus.register(definition.id)
         await self.repository.save_agent(definition)
+
+    async def configure_agent_model(
+        self, agent_id_or_name: str, provider_name: str, model_name: str
+    ) -> AgentDefinition:
+        if provider_name not in self.providers:
+            raise ValueError(f"Provider '{provider_name}' is not configured")
+        definition = self.registry.get(agent_id_or_name)
+        was_running = definition.id in self.runtimes
+        if was_running:
+            await self.stop_agent(definition.id)
+        definition.provider = provider_name
+        definition.model_name = model_name
+        await self.repository.save_agent(definition)
+        if was_running:
+            await self.start_agent(definition.id)
+        return definition
+
+    async def available_models(self, provider_name: str) -> list[str]:
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            raise ValueError(f"Provider '{provider_name}' is not configured")
+        return await provider.list_models()
 
     async def start_agent(self, agent_id: str) -> None:
         if agent_id in self.runtimes:
@@ -117,13 +139,18 @@ class Environment:
         await self.permissions.revoke(agent_id, path)
 
     async def request_model_inference(
-        self, prompt: str, *, provider_name: str | None = None, system: str = ""
+        self,
+        prompt: str,
+        *,
+        provider_name: str | None = None,
+        model_name: str | None = None,
+        system: str = "",
     ) -> str:
         name = provider_name or self.settings.models.default_provider
         provider = self.providers.get(name)
         if provider is None:
             raise RuntimeError(f"Provider '{name}' is unavailable")
-        return await provider.generate(prompt, system=system)
+        return await provider.generate(prompt, system=system, model=model_name)
 
     def status(self) -> dict[str, object]:
         return {

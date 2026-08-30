@@ -11,7 +11,14 @@ async def test_create_grant_message_and_restart(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "state.db", generation_path=tmp_path / "generations")
     interview = ArchitectInterview()
     interview.begin("Create a research agent")
-    for answer in ["Researcher", "Summarize papers", "Read only", "papers", "Markdown.Read"]:
+    for answer in [
+        "Researcher",
+        "Summarize papers",
+        "Read only",
+        "papers",
+        "Markdown.Read",
+        "ollama:qwen3:8b",
+    ]:
         interview.answer(answer)
     agent = interview.confirm()
 
@@ -27,6 +34,7 @@ async def test_create_grant_message_and_restart(tmp_path: Path) -> None:
     )
     response = await environment.bus.receive("human", wait_seconds=1)
     assert response.content == "summary complete"
+    assert environment.providers["ollama"].calls[-1]["model"] == "qwen3:8b"  # type: ignore[attr-defined]
     await environment.stop()
 
     restarted = Environment(settings, {"ollama": MockProvider()})

@@ -17,7 +17,7 @@ async def application(config: Path | None = None) -> None:
         format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s"}',
     )
     environment = Environment(settings)
-    await environment.start()
+    await environment.start(start_agent_loops=True)
     try:
         await ConsoleChannel(environment).run()
     finally:
@@ -33,4 +33,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

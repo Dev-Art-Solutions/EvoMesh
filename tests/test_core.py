@@ -64,11 +64,14 @@ def test_architect_multiturn_candidate() -> None:
     answers = ["Researcher", "Research local papers", "Never modify papers", "none"]
     for answer in answers:
         interview.answer(answer)
-    final = interview.answer("Markdown.Read")
+    interview.answer("Markdown.Read")
+    final = interview.answer("ollama:qwen3:8b")
     assert "ready" in final
     candidate = interview.confirm()
     assert candidate.name == "Researcher"
     assert candidate.skills == ["Markdown.Read"]
+    assert candidate.provider == "ollama"
+    assert candidate.model_name == "qwen3:8b"
     assert candidate.status == "active"
 
 
@@ -89,6 +92,30 @@ async def test_environment_boot_and_restart(tmp_path: Path) -> None:
     assert second.registry.get("Persistent").id == created.id
     assert len(second.registry.all()) == 5
     await second.stop()
+
+
+async def test_each_agent_uses_its_configured_model(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    provider = MockProvider(["specialist response"])
+    environment = Environment(settings, {"ollama": provider})
+    await environment.start()
+    specialist = AgentDefinition(
+        name="Specialist", purpose="Use its own model", model_name="qwen3:14b"
+    )
+    await environment.register_agent(specialist)
+    await environment.start_agent(specialist.id)
+    await environment.send_message(
+        Message(sender_id="human", recipient_id=specialist.id, content="hello")
+    )
+    response = await environment.bus.receive("human", wait_seconds=1)
+    assert response.content == "specialist response"
+    assert provider.calls[-1]["model"] == "qwen3:14b"
+    updated = await environment.configure_agent_model(
+        specialist.id, "ollama", "qwen3:32b"
+    )
+    assert updated.model_name == "qwen3:32b"
+    assert specialist.id in environment.runtimes
+    await environment.stop()
 
 
 async def test_builtin_file_skill_enforces_grant(tmp_path: Path) -> None:
