@@ -19,16 +19,8 @@ if errorlevel 1 (
 
 if not exist "evomesh.yaml" copy /y "evomesh.yaml.example" "evomesh.yaml" >nul
 
-where dotnet >nul 2>nul
-if errorlevel 1 (
-    echo [EvoMesh] .NET 8 Desktop Runtime/SDK was not found.
-    echo Install it from https://dotnet.microsoft.com/download/dotnet/8.0 and run again.
-    pause
-    exit /b 1
-)
-
 echo [EvoMesh] Synchronizing Python environment...
-"%UV_EXE%" sync
+"%UV_EXE%" sync --locked --no-dev
 if errorlevel 1 (
     echo [EvoMesh] Python environment setup failed.
     pause
@@ -36,7 +28,18 @@ if errorlevel 1 (
 )
 
 echo [EvoMesh] Starting Windows Control Center...
-dotnet run --project "desktop\EvoMesh.Desktop\EvoMesh.Desktop.csproj" -- "%CD%" "%UV_EXE%"
+if exist "%CD%\app\EvoMesh.Desktop.exe" (
+    "%CD%\app\EvoMesh.Desktop.exe" "%CD%" "%UV_EXE%"
+) else (
+    where dotnet >nul 2>nul
+    if errorlevel 1 (
+        echo [EvoMesh] .NET 8 SDK was not found.
+        echo Install it from https://dotnet.microsoft.com/download/dotnet/8.0 and run again.
+        pause
+        exit /b 1
+    )
+    dotnet run --project "desktop\EvoMesh.Desktop\EvoMesh.Desktop.csproj" -- "%CD%" "%UV_EXE%"
+)
 if errorlevel 1 (
     echo [EvoMesh] The Control Center stopped with an error.
     pause
