@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from evomesh.contracts import AgentDefinition, AgentStatus, Message
 from evomesh.messaging import MessageBus
-from evomesh.models import ModelProvider
+from evomesh.models import ModelProvider, ModelUnavailableError
 from evomesh.storage import SQLiteRepository
 
 
@@ -61,19 +61,29 @@ class AgentRuntime:
     async def _run(self) -> None:
         while True:
             incoming = await self.bus.receive(self.definition.id)
-            response = await self.provider.generate(
-                incoming.content,
-                system=(
-                    f"You are {self.definition.name}. Identity: {self.definition.identity}. "
-                    f"Purpose: {self.definition.purpose}."
-                ),
-            )
+            error = False
+            try:
+                response = await self.provider.generate(
+                    incoming.content,
+                    system=(
+                        f"You are {self.definition.name}. Identity: {self.definition.identity}. "
+                        f"Purpose: {self.definition.purpose}."
+                    ),
+                    model=self.definition.model_name,
+                )
+            except (ModelUnavailableError, RuntimeError) as exc:
+                error = True
+                response = (
+                    f"Model error for {self.definition.provider}:"
+                    f"{self.definition.model_name}: {exc}"
+                )
             outgoing = Message(
                 sender_id=self.definition.id,
                 recipient_id=incoming.sender_id,
                 conversation_id=incoming.conversation_id,
                 correlation_id=incoming.id,
                 content=response,
+                metadata={"error": error},
             )
             await self.bus.send(outgoing)
             if self.on_response:
@@ -103,4 +113,3 @@ def system_agent_definitions(provider: str, model: str) -> list[AgentDefinition]
         )
         for agent_id, name, purpose in SYSTEM_AGENTS
     ]
-

@@ -11,4 +11,6 @@ generations/*
 !generations/.gitkeep
 evomesh.yaml
 .env
-
+desktop/**/bin/
+desktop/**/obj/
+.runtime/

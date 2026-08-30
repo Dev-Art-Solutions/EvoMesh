@@ -43,13 +43,34 @@ uv run evomesh
 
 On PowerShell use `Copy-Item evomesh.yaml.example evomesh.yaml`. EvoMesh still boots when a configured local model is absent and reports an actionable provider warning; agent inference requires the provider to become available.
 
+### Windows Control Center
+
+On Windows, double-click `start-evomesh.bat`. It synchronizes the Python environment and opens the WinForms Control Center. From there you can:
+
+- start and stop the mesh;
+- chat with the selected agent and send slash commands;
+- ask Agent Architect to create a new agent;
+- start or stop individual agents;
+- list Ollama models and assign a different provider/model to each agent;
+- edit `evomesh.yaml` while the mesh is stopped.
+
+Settings that require a restart are visible but disabled while EvoMesh is running. Per-agent model changes remain available at runtime and safely restart only the affected agent. For direct terminal use, run `start-evomesh-console.bat`.
+
 ## Local model configuration
 
 `evomesh.yaml` configures Ollama (default), InferHub, or another local OpenAI-compatible endpoint. No cloud AI account is required. For Ollama, install the configured model, for example `ollama pull qwen3`. InferHub is optional and uses its OpenAI-compatible local endpoint.
 
+Each agent persists its own `provider` and `model_name`. The runtime passes that model on every inference request, so agents can use different Ollama models concurrently. Use the Agents tab in the Control Center or:
+
+```text
+/models ollama
+/model "Research Agent" qwen3:14b ollama
+/model "Fast Router" qwen3:4b ollama
+```
+
 ## Agent Architect and agents
 
-Run `/chat architect` and describe the agent you need. Architect gathers a name, purpose, constraints, filesystem needs, and skills, then builds a candidate. `/confirm` persists and activates it; `/cancel` discards it. Agent definitions include identity, provider/model, generation, parentage, skills, permissions, memory behavior, status, and timestamps.
+Run `/chat architect` and describe the agent you need. Architect gathers a name, purpose, constraints, filesystem needs, skills, and the provider/model it should use, then builds a candidate. `/confirm` persists, starts, and selects it; `/cancel` discards it. Agent definitions include identity, provider/model, generation, parentage, skills, permissions, memory behavior, status, and timestamps.
 
 ## BDI-inspired cognition
 
@@ -79,10 +100,12 @@ Git is the intended evolutionary lineage. The initial substrate records mutation
 
 ```text
 src/evomesh/   runtime, contracts, storage, agents, skills, permissions, evolution
+desktop/       Windows Forms Control Center
 tests/         unit, integration, and restart scenario coverage
 data/          local SQLite state (ignored)
 generations/   supervisor metadata and candidate workspaces (ignored)
 scripts/       development launchers
+*.bat          one-click Windows launchers
 ```
 
 ## Development and candidate validation
@@ -111,4 +134,3 @@ Open an issue before large architectural changes. Keep features local-first, pre
 ## License
 
 MIT. See [LICENSE](LICENSE).
-

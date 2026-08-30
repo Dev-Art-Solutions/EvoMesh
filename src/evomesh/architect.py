@@ -18,6 +18,10 @@ class ArchitectInterview:
         ("constraints", "What must it never do, and how will success be evaluated?"),
         ("access", "Which folders may it read or write? Use 'none' if it needs no files."),
         ("skills", "Which capabilities or skills does it need?"),
+        (
+            "model",
+            "Which provider and model should it use? Example: ollama:qwen3 or 'default'.",
+        ),
     )
 
     def begin(self, initial_need: str) -> str:
@@ -34,13 +38,20 @@ class ArchitectInterview:
         if remaining:
             return remaining[0][1]
         skills = [item.strip() for item in self.answers["skills"].split(",") if item.strip()]
+        selected_provider, selected_model = provider, model
+        model_answer = self.answers["model"].strip()
+        if model_answer.lower() != "default":
+            if ":" in model_answer:
+                selected_provider, selected_model = model_answer.split(":", 1)
+            else:
+                selected_model = model_answer
         self.candidate = AgentDefinition(
             name=self.answers["name"],
             created_by="architect",
             identity=f"A purpose-built agent requested as: {self.answers['initial_need']}",
             purpose=self.answers["purpose"],
-            provider=provider,
-            model_name=model,
+            provider=selected_provider.strip(),
+            model_name=selected_model.strip(),
             mind=MindState(
                 beliefs=[{"statement": self.answers["constraints"], "source": "human"}],
                 goals=[{"description": self.answers["purpose"], "status": "active"}],

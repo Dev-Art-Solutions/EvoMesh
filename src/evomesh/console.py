@@ -14,7 +14,10 @@ HELP = """Commands:
   /status                       Environment and provider health
   /agents                       List registered agents
   /skills                       List available skills
+  /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
+  /model <agent> <model> [prov] Change one agent's provider/model
+  /agent start|stop <agent>     Control an individual agent loop
   /grant <agent> <path> <mode>  Grant read or write access
   /revoke <agent> <path>        Revoke access
   /confirm                      Activate Architect candidate
@@ -39,7 +42,10 @@ class ConsoleChannel:
                 text = await asyncio.to_thread(input, "evomesh> ")
             except (EOFError, KeyboardInterrupt):
                 text = "/exit"
-            response = await self.route(text)
+            try:
+                response = await self.route(text)
+            except (KeyError, ValueError, RuntimeError) as exc:
+                response = f"Error: {exc}"
             if response:
                 self.output.write(response)
 
@@ -57,7 +63,11 @@ class ConsoleChannel:
             await self.environment.send_message(
                 Message(sender_id="human", recipient_id=agent.id, content=text)
             )
-            return f"Message sent to {agent.name}."
+            try:
+                response = await self.environment.bus.receive("human", wait_seconds=300)
+            except TimeoutError:
+                return f"Timed out waiting for {agent.name}."
+            return f"{agent.name}> {response.content}"
         parts = shlex.split(text)
         command = parts[0].lower()
         if command == "/help":
@@ -70,11 +80,16 @@ class ConsoleChannel:
             return "\n".join(f"{key}: {value}" for key, value in status.items())
         if command == "/agents":
             return "\n".join(
-                f"{agent.name} [{agent.type}] - {agent.status}"
+                f"{agent.name} [{agent.type}] - {agent.status} - "
+                f"{agent.provider}:{agent.model_name}"
                 for agent in self.environment.registry.all()
             )
         if command == "/skills":
             return "\n".join(skill.name for skill in self.environment.skills.discover())
+        if command == "/models":
+            provider = parts[1] if len(parts) > 1 else self._default_model()[0]
+            models = await self.environment.available_models(provider)
+            return f"Models on {provider}:\n" + "\n".join(models)
         if command == "/chat" and len(parts) == 2:
             agent = self.environment.registry.get(parts[1])
             self.selected_agent = agent.id
@@ -82,10 +97,37 @@ class ConsoleChannel:
         if command == "/confirm":
             definition = self.architect.confirm()
             await self.environment.register_agent(definition)
-            return f"Agent '{definition.name}' activated and persisted."
+            if definition.provider in self.environment.providers:
+                await self.environment.start_agent(definition.id)
+            self.selected_agent = definition.id
+            return (
+                f"Agent '{definition.name}' activated with "
+                f"{definition.provider}:{definition.model_name}, persisted, and selected."
+            )
         if command == "/cancel":
             self.architect = ArchitectInterview()
             return "Candidate discarded."
+        if command == "/model" and len(parts) in {3, 4}:
+            agent_name, model = parts[1], parts[2]
+            current = self.environment.registry.get(agent_name)
+            provider = parts[3] if len(parts) == 4 else current.provider
+            definition = await self.environment.configure_agent_model(
+                agent_name, provider, model
+            )
+            return (
+                f"Agent '{definition.name}' now uses "
+                f"{definition.provider}:{definition.model_name}."
+            )
+        if command == "/agent" and len(parts) == 3:
+            action, agent_name = parts[1].lower(), parts[2]
+            definition = self.environment.registry.get(agent_name)
+            if action == "start":
+                await self.environment.start_agent(definition.id)
+            elif action == "stop":
+                await self.environment.stop_agent(definition.id)
+            else:
+                return "Agent action must be start or stop."
+            return f"Agent '{definition.name}' {action}ed."
         if command == "/grant" and len(parts) >= 4:
             agent = self.environment.registry.get(parts[1])
             mode = parts[-1].lower()
