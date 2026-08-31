@@ -56,7 +56,7 @@ On Windows, double-click `start-evomesh.bat`. It synchronizes the Python environ
 - chat with the selected agent and send slash commands;
 - ask Agent Architect to create a new agent;
 - start or stop individual agents;
-- load installed Ollama models into a dropdown and assign a different provider/model to each agent;
+- dynamically load installed Ollama models into dropdowns in both Agents and Settings, and assign a different provider/model to each agent;
 - edit `evomesh.yaml` while the mesh is stopped.
 
 Settings that require a restart are visible but disabled while EvoMesh is running. Per-agent model changes remain available at runtime and safely restart only the affected agent. For direct terminal use, run `start-evomesh-console.bat`.

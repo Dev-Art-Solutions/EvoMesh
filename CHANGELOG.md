@@ -8,7 +8,7 @@ All notable changes to EvoMesh are documented in this file.
 
 - Localhost control channel so the Windows Control Center can attach to an already running mesh.
 - Persistent Control Center and mesh logs under `.runtime/logs`.
-- Ollama model dropdown populated directly from the configured Ollama instance.
+- Dynamic Ollama model dropdowns in both Agents and Settings, populated directly from the configured Ollama instance.
 
 ### Fixed
 

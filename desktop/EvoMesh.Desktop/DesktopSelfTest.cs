@@ -35,6 +35,8 @@ internal static class DesktopSelfTest
         {
             if (File.Exists(temporary)) File.Delete(temporary);
         }
+        using var form = new MainForm(rootPath, "uv");
+        form.ValidateUiForTest();
     }
 
     public static async Task RunControlAsync(string rootPath, string uvExecutable)
