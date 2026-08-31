@@ -36,4 +36,26 @@ internal static class DesktopSelfTest
             if (File.Exists(temporary)) File.Delete(temporary);
         }
     }
+
+    public static async Task RunControlAsync(string rootPath, string uvExecutable)
+    {
+        using var runtime = new EvoMeshRuntimeProcess(rootPath, uvExecutable, controlPort: 18765);
+        var output = new List<string>();
+        runtime.OutputReceived += output.Add;
+        await runtime.StartAsync();
+        if (!runtime.IsRunning)
+        {
+            throw new InvalidOperationException("Control Center did not connect to the mesh.");
+        }
+        await runtime.SendAsync("/status");
+        if (!output.Any(line => line.Contains("status: READY", StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Control Center did not receive mesh status.");
+        }
+        await runtime.StopAsync();
+        if (runtime.IsRunning)
+        {
+            throw new InvalidOperationException("Control Center did not stop the mesh.");
+        }
+    }
 }

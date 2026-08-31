@@ -2,6 +2,19 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Localhost control channel so the Windows Control Center can attach to an already running mesh.
+- Persistent Control Center and mesh logs under `.runtime/logs`.
+- Ollama model dropdown populated directly from the configured Ollama instance.
+
+### Fixed
+
+- Robust Windows `uv.exe` discovery and actionable startup diagnostics.
+- Explicit button foreground/background colors for readable labels across Windows themes.
+
 ## [0.1.0-alpha.1] - 2026-08-30
 
 ### Added

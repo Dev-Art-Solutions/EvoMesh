@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Text.Json;
 
 namespace EvoMesh.Desktop;
 
@@ -21,6 +22,8 @@ internal sealed class MainForm : Form
     private Button _saveSettings = null!;
     private Button _reloadSettings = null!;
     private Label _settingsNotice = null!;
+    private ComboBox _agentProvider = null!;
+    private ComboBox _agentModel = null!;
 
     public MainForm(string rootPath, string uvExecutable)
     {
@@ -40,15 +43,18 @@ internal sealed class MainForm : Form
         EnsureConfiguration();
         LoadSettings();
         UpdateRuntimeState(false);
+        Shown += async (_, _) =>
+        {
+            if (await _runtime.TryAttachAsync())
+            {
+                AppendOutput("[Control Center connected automatically]");
+            }
+            await RefreshProviderModelsAsync(showErrors: false);
+        };
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (_runtime.IsRunning)
-        {
-            try { _runtime.StopAsync().GetAwaiter().GetResult(); }
-            catch { _runtime.Dispose(); }
-        }
         _runtime.Dispose();
         base.OnFormClosing(e);
     }
@@ -63,11 +69,13 @@ internal sealed class MainForm : Form
         _status.Location = new Point(720, 29);
         _start.Text = "Start Mesh";
         _start.Size = new Size(125, 38);
+        StyleButton(_start);
         _start.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _start.Location = new Point(900, 21);
         _start.Click += async (_, _) => await RunSafeAsync(_runtime.StartAsync);
         _stop.Text = "Stop Mesh";
         _stop.Size = new Size(125, 38);
+        StyleButton(_stop);
         _stop.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _stop.Location = new Point(1035, 21);
         _stop.Click += async (_, _) => await RunSafeAsync(_runtime.StopAsync);
@@ -178,17 +186,34 @@ internal sealed class MainForm : Form
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
         var agentName = AddField(grid, "Agent name", 0, 0);
-        var provider = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        provider.Items.AddRange(["ollama", "inferhub", "openai_compatible"]);
-        provider.SelectedIndex = 0;
+        _agentProvider = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        _agentProvider.Items.AddRange(["ollama", "inferhub", "openai_compatible"]);
+        _agentProvider.SelectedIndex = 0;
+        _agentProvider.SelectedIndexChanged += async (_, _) =>
+            await RefreshProviderModelsAsync(showErrors: false);
         grid.Controls.Add(new Label { Text = "Provider", AutoSize = true, Anchor = AnchorStyles.Left }, 2, 0);
-        grid.Controls.Add(provider, 3, 0);
-        var model = AddField(grid, "Model", 0, 1);
-        model.PlaceholderText = "Example: qwen3:14b";
+        grid.Controls.Add(_agentProvider, 3, 0);
+        grid.Controls.Add(new Label { Text = "Model", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 0, 1);
+        _agentModel = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            Margin = new Padding(3, 5, 12, 5),
+        };
+        grid.Controls.Add(_agentModel, 1, 1);
+        grid.SetColumnSpan(_agentModel, 3);
         var apply = MakeButton("Apply model", 130);
-        apply.Click += async (_, _) => await SendCommandAsync($"/model {Quote(agentName.Text)} {Quote(model.Text)} {provider.Text}");
-        var list = MakeButton("List provider models", 170);
-        list.Click += async (_, _) => await SendCommandAsync($"/models {provider.Text}");
+        apply.Click += async (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(agentName.Text) || string.IsNullOrWhiteSpace(_agentModel.Text))
+            {
+                MessageBox.Show(this, "Select an agent and model first.", "EvoMesh", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            await SendCommandAsync($"/model {Quote(agentName.Text)} {Quote(_agentModel.Text)} {_agentProvider.Text}");
+        };
+        var list = MakeButton("Refresh models", 150);
+        list.Click += async (_, _) => await RefreshProviderModelsAsync(showErrors: true);
         var startAgent = MakeButton("Start agent", 130);
         startAgent.Click += async (_, _) => await SendCommandAsync($"/agent start {Quote(agentName.Text)}");
         var stopAgent = MakeButton("Stop agent", 130);
@@ -266,6 +291,65 @@ internal sealed class MainForm : Form
         if (text.Length == 0) return;
         _command.Clear();
         await SendCommandAsync(text);
+    }
+
+    private async Task RefreshProviderModelsAsync(bool showErrors)
+    {
+        if (_agentProvider is null || _agentModel is null || _agentProvider.Text != "ollama")
+        {
+            return;
+        }
+        try
+        {
+            var settings = EvoMeshYamlSettings.Load(_configPath);
+            if (!settings.Providers.TryGetValue("ollama", out var ollama))
+            {
+                throw new InvalidOperationException("Ollama is not configured in evomesh.yaml.");
+            }
+            var baseUrl = ollama.BaseUrl.TrimEnd('/');
+            var tagsUrl = baseUrl.EndsWith("/api", StringComparison.OrdinalIgnoreCase)
+                ? $"{baseUrl}/tags"
+                : $"{baseUrl}/api/tags";
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var response = await client.GetAsync(tagsUrl);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync());
+            var names = document.RootElement.GetProperty("models")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("name").GetString())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Cast<string>()
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var current = _agentModel.Text;
+            _agentModel.BeginUpdate();
+            _agentModel.Items.Clear();
+            _agentModel.Items.AddRange(names);
+            _agentModel.EndUpdate();
+            if (names.Contains(current, StringComparer.OrdinalIgnoreCase))
+            {
+                _agentModel.SelectedItem = names.First(name =>
+                    string.Equals(name, current, StringComparison.OrdinalIgnoreCase));
+            }
+            else if (names.Contains(ollama.Model, StringComparer.OrdinalIgnoreCase))
+            {
+                _agentModel.SelectedItem = names.First(name =>
+                    string.Equals(name, ollama.Model, StringComparison.OrdinalIgnoreCase));
+            }
+            else if (names.Length > 0)
+            {
+                _agentModel.SelectedIndex = 0;
+            }
+            AppendOutput($"[loaded {names.Length} Ollama models into the dropdown]");
+        }
+        catch (Exception exc)
+        {
+            AppendOutput($"[Ollama models unavailable] {exc.Message}");
+            if (showErrors)
+            {
+                MessageBox.Show(this, exc.Message, "Unable to load Ollama models", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
     }
 
     private async Task SendCommandAsync(string command)
@@ -371,14 +455,39 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static Button MakeButton(string text, int width) => new()
+    private static Button MakeButton(string text, int width)
     {
-        Text = text,
-        Width = width,
-        Height = 36,
-        FlatStyle = FlatStyle.System,
-        Margin = new Padding(4),
-    };
+        var button = new Button
+        {
+            Text = text,
+            Width = width,
+            Height = 36,
+            Margin = new Padding(4),
+        };
+        StyleButton(button);
+        return button;
+    }
+
+    private static void StyleButton(Button button)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.UseVisualStyleBackColor = false;
+        button.FlatAppearance.BorderColor = Color.FromArgb(30, 112, 168);
+        button.FlatAppearance.BorderSize = 1;
+
+        void ApplyColors()
+        {
+            button.BackColor = button.Enabled
+                ? Color.FromArgb(14, 82, 132)
+                : Color.FromArgb(215, 222, 229);
+            button.ForeColor = button.Enabled
+                ? Color.White
+                : Color.FromArgb(80, 88, 96);
+        }
+
+        button.EnabledChanged += (_, _) => ApplyColors();
+        ApplyColors();
+    }
 
     private static TextBox AddField(TableLayoutPanel grid, string label, int column, int row)
     {

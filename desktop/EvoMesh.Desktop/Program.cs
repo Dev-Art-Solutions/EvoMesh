@@ -3,11 +3,18 @@ namespace EvoMesh.Desktop;
 internal static class Program
 {
     [STAThread]
-    private static int Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--self-test")
         {
             DesktopSelfTest.Run(args.Length > 1 ? args[1] : FindRepositoryRoot());
+            return 0;
+        }
+        if (args.Length > 0 && args[0] == "--control-self-test")
+        {
+            var testRoot = args.Length > 1 ? Path.GetFullPath(args[1]) : FindRepositoryRoot();
+            var testUv = args.Length > 2 ? args[2] : "uv";
+            await DesktopSelfTest.RunControlAsync(testRoot, testUv);
             return 0;
         }
         ApplicationConfiguration.Initialize();

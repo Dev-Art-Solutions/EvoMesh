@@ -52,13 +52,16 @@ On PowerShell use `Copy-Item evomesh.yaml.example evomesh.yaml`. EvoMesh still b
 On Windows, double-click `start-evomesh.bat`. It synchronizes the Python environment and opens the WinForms Control Center. From there you can:
 
 - start and stop the mesh;
+- automatically attach to an already running local mesh through the localhost control channel;
 - chat with the selected agent and send slash commands;
 - ask Agent Architect to create a new agent;
 - start or stop individual agents;
-- list Ollama models and assign a different provider/model to each agent;
+- load installed Ollama models into a dropdown and assign a different provider/model to each agent;
 - edit `evomesh.yaml` while the mesh is stopped.
 
 Settings that require a restart are visible but disabled while EvoMesh is running. Per-agent model changes remain available at runtime and safely restart only the affected agent. For direct terminal use, run `start-evomesh-console.bat`.
+
+The local control channel listens only on `127.0.0.1:8765`. Closing the Control Center detaches without stopping the mesh; use **Stop Mesh** for a graceful shutdown. Startup diagnostics are persisted in `.runtime/logs/control-center.log`, and mesh logs in `.runtime/logs/mesh.log`.
 
 ## Local model configuration
 

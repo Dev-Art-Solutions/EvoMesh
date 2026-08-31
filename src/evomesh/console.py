@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import threading
 
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
@@ -37,11 +38,25 @@ class ConsoleChannel:
 
     async def run(self) -> None:
         self._banner()
+        inputs: asyncio.Queue[str] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def read_input() -> None:
+            while self.running:
+                try:
+                    text = input("evomesh> ")
+                except (EOFError, KeyboardInterrupt):
+                    text = "/exit"
+                try:
+                    loop.call_soon_threadsafe(inputs.put_nowait, text)
+                except RuntimeError:
+                    return
+                if text.strip().lower() == "/exit":
+                    return
+
+        threading.Thread(target=read_input, name="evomesh-console-input", daemon=True).start()
         while self.running:
-            try:
-                text = await asyncio.to_thread(input, "evomesh> ")
-            except (EOFError, KeyboardInterrupt):
-                text = "/exit"
+            text = await inputs.get()
             try:
                 response = await self.route(text)
             except (KeyError, ValueError, RuntimeError) as exc:

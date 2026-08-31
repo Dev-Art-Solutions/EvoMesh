@@ -13,5 +13,6 @@ evomesh.yaml
 .env
 desktop/**/bin/
 desktop/**/obj/
+desktop/**/.vs/
 .runtime/
 dist/
