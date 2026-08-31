@@ -13,7 +13,7 @@ internal sealed class MainForm : Form
     private readonly Button _start = new();
     private readonly Button _stop = new();
     private readonly List<Control> _restartRequiredControls = [];
-    private readonly Dictionary<string, (TextBox Url, TextBox Model, TextBox Key)> _providers = [];
+    private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key)> _providers = [];
     private TextBox _environmentName = null!;
     private TextBox _dataPath = null!;
     private TextBox _generationPath = null!;
@@ -49,43 +49,85 @@ internal sealed class MainForm : Form
             {
                 AppendOutput("[Control Center connected automatically]");
             }
-            await RefreshProviderModelsAsync(showErrors: false);
+            await RefreshOllamaModelsAsync(showErrors: false);
         };
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        _runtime.Dispose();
         base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _runtime.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    internal void ValidateUiForTest()
+    {
+        CreateControl();
+        PerformLayout();
+        var header = Controls.OfType<Panel>().Single(control => control.Dock == DockStyle.Top);
+        var layout = header.Controls.OfType<TableLayoutPanel>().Single();
+        header.PerformLayout();
+        layout.PerformLayout();
+        if (_status.Bounds.IntersectsWith(_start.Bounds))
+        {
+            throw new InvalidOperationException("Status label overlaps the Start button.");
+        }
+        if (!_providers.TryGetValue("ollama", out var ollama) ||
+            ollama.Model.DropDownStyle != ComboBoxStyle.DropDown)
+        {
+            throw new InvalidOperationException("Settings Ollama model must be an editable dropdown.");
+        }
     }
 
     private Control BuildHeader()
     {
-        var panel = new Panel { Dock = DockStyle.Top, Height = 82, Padding = new Padding(18, 14, 18, 10), BackColor = Color.FromArgb(8, 42, 82) };
-        var title = new Label { Text = "EvoMesh", ForeColor = Color.White, Font = new Font("Segoe UI", 21F, FontStyle.Bold), AutoSize = true, Location = new Point(18, 12) };
-        var subtitle = new Label { Text = "Local multi-agent control center", ForeColor = Color.FromArgb(170, 220, 235), AutoSize = true, Location = new Point(21, 50) };
-        _status.AutoSize = true;
+        var headerColor = Color.FromArgb(8, 42, 82);
+        var panel = new Panel { Dock = DockStyle.Top, Height = 82, BackColor = headerColor };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            Padding = new Padding(18, 10, 18, 10),
+            BackColor = headerColor,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
+
+        var brand = new Panel { Dock = DockStyle.Fill, BackColor = headerColor };
+        var title = new Label { Text = "EvoMesh", ForeColor = Color.White, Font = new Font("Segoe UI", 21F, FontStyle.Bold), AutoSize = true, Location = new Point(0, 0) };
+        var subtitle = new Label { Text = "Local multi-agent control center", ForeColor = Color.FromArgb(170, 220, 235), AutoSize = true, Location = new Point(3, 38) };
+        brand.Controls.AddRange([title, subtitle]);
+
+        _status.AutoSize = false;
         _status.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-        _status.Location = new Point(720, 29);
+        _status.Dock = DockStyle.Fill;
+        _status.TextAlign = ContentAlignment.MiddleRight;
+        _status.Margin = new Padding(4, 0, 12, 0);
         _start.Text = "Start Mesh";
-        _start.Size = new Size(125, 38);
+        _start.Dock = DockStyle.Fill;
+        _start.Margin = new Padding(5, 11, 5, 11);
         StyleButton(_start);
-        _start.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _start.Location = new Point(900, 21);
         _start.Click += async (_, _) => await RunSafeAsync(_runtime.StartAsync);
         _stop.Text = "Stop Mesh";
-        _stop.Size = new Size(125, 38);
+        _stop.Dock = DockStyle.Fill;
+        _stop.Margin = new Padding(5, 11, 0, 11);
         StyleButton(_stop);
-        _stop.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _stop.Location = new Point(1035, 21);
         _stop.Click += async (_, _) => await RunSafeAsync(_runtime.StopAsync);
-        panel.Resize += (_, _) =>
-        {
-            _stop.Left = panel.ClientSize.Width - _stop.Width - 18;
-            _start.Left = _stop.Left - _start.Width - 10;
-            _status.Left = _start.Left - _status.Width - 24;
-        };
-        panel.Controls.AddRange([title, subtitle, _status, _start, _stop]);
+        layout.Controls.Add(brand, 0, 0);
+        layout.Controls.Add(_status, 1, 0);
+        layout.Controls.Add(_start, 2, 0);
+        layout.Controls.Add(_stop, 3, 0);
+        panel.Controls.Add(layout);
         return panel;
     }
 
@@ -190,7 +232,12 @@ internal sealed class MainForm : Form
         _agentProvider.Items.AddRange(["ollama", "inferhub", "openai_compatible"]);
         _agentProvider.SelectedIndex = 0;
         _agentProvider.SelectedIndexChanged += async (_, _) =>
-            await RefreshProviderModelsAsync(showErrors: false);
+        {
+            if (_agentProvider.Text == "ollama")
+            {
+                await RefreshOllamaModelsAsync(showErrors: false);
+            }
+        };
         grid.Controls.Add(new Label { Text = "Provider", AutoSize = true, Anchor = AnchorStyles.Left }, 2, 0);
         grid.Controls.Add(_agentProvider, 3, 0);
         grid.Controls.Add(new Label { Text = "Model", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 0, 1);
@@ -213,7 +260,17 @@ internal sealed class MainForm : Form
             await SendCommandAsync($"/model {Quote(agentName.Text)} {Quote(_agentModel.Text)} {_agentProvider.Text}");
         };
         var list = MakeButton("Refresh models", 150);
-        list.Click += async (_, _) => await RefreshProviderModelsAsync(showErrors: true);
+        list.Click += async (_, _) =>
+        {
+            if (_agentProvider.Text == "ollama")
+            {
+                await RefreshOllamaModelsAsync(showErrors: true);
+            }
+            else
+            {
+                await SendCommandAsync($"/models {_agentProvider.Text}");
+            }
+        };
         var startAgent = MakeButton("Start agent", 130);
         startAgent.Click += async (_, _) => await SendCommandAsync($"/agent start {Quote(agentName.Text)}");
         var stopAgent = MakeButton("Stop agent", 130);
@@ -258,7 +315,11 @@ internal sealed class MainForm : Form
             grid.SetColumnSpan(heading, 4);
             row++;
             var url = AddField(grid, "Base URL", 0, row);
-            var model = AddField(grid, "Default model", 2, row);
+            var model = AddEditableCombo(grid, "Default model", 2, row);
+            if (name == "ollama")
+            {
+                model.DropDown += async (_, _) => await RefreshOllamaModelsAsync(showErrors: false);
+            }
             row++;
             var key = AddField(grid, "API key (optional)", 0, row);
             key.UseSystemPasswordChar = true;
@@ -293,9 +354,9 @@ internal sealed class MainForm : Form
         await SendCommandAsync(text);
     }
 
-    private async Task RefreshProviderModelsAsync(bool showErrors)
+    private async Task RefreshOllamaModelsAsync(bool showErrors)
     {
-        if (_agentProvider is null || _agentModel is null || _agentProvider.Text != "ollama")
+        if (_agentProvider is null || _agentModel is null)
         {
             return;
         }
@@ -321,26 +382,15 @@ internal sealed class MainForm : Form
                 .Cast<string>()
                 .Order(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            var current = _agentModel.Text;
-            _agentModel.BeginUpdate();
-            _agentModel.Items.Clear();
-            _agentModel.Items.AddRange(names);
-            _agentModel.EndUpdate();
-            if (names.Contains(current, StringComparer.OrdinalIgnoreCase))
+            if (_agentProvider.Text == "ollama")
             {
-                _agentModel.SelectedItem = names.First(name =>
-                    string.Equals(name, current, StringComparison.OrdinalIgnoreCase));
+                PopulateModelCombo(_agentModel, names, ollama.Model);
             }
-            else if (names.Contains(ollama.Model, StringComparer.OrdinalIgnoreCase))
+            if (_providers.TryGetValue("ollama", out var settingsControls))
             {
-                _agentModel.SelectedItem = names.First(name =>
-                    string.Equals(name, ollama.Model, StringComparison.OrdinalIgnoreCase));
+                PopulateModelCombo(settingsControls.Model, names, ollama.Model);
             }
-            else if (names.Length > 0)
-            {
-                _agentModel.SelectedIndex = 0;
-            }
-            AppendOutput($"[loaded {names.Length} Ollama models into the dropdown]");
+            AppendOutput($"[loaded {names.Length} Ollama models into the dropdowns]");
         }
         catch (Exception exc)
         {
@@ -349,6 +399,31 @@ internal sealed class MainForm : Form
             {
                 MessageBox.Show(this, exc.Message, "Unable to load Ollama models", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+    }
+
+    private static void PopulateModelCombo(ComboBox combo, string[] models, string configuredModel)
+    {
+        var current = combo.Text;
+        combo.BeginUpdate();
+        combo.Items.Clear();
+        combo.Items.AddRange(models);
+        combo.EndUpdate();
+
+        var preferred = string.IsNullOrWhiteSpace(current) ? configuredModel : current;
+        var match = models.FirstOrDefault(name =>
+            string.Equals(name, preferred, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            combo.SelectedItem = match;
+        }
+        else if (!string.IsNullOrWhiteSpace(preferred))
+        {
+            combo.Text = preferred;
+        }
+        else if (models.Length > 0)
+        {
+            combo.SelectedIndex = 0;
         }
     }
 
@@ -503,6 +578,22 @@ internal sealed class MainForm : Form
         var caption = new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) };
         var field = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(3, 5, 12, 5) };
         field.Items.AddRange(items);
+        grid.Controls.Add(caption, column, row);
+        grid.Controls.Add(field, column + 1, row);
+        return field;
+    }
+
+    private static ComboBox AddEditableCombo(TableLayoutPanel grid, string label, int column, int row)
+    {
+        var caption = new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) };
+        var field = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.ListItems,
+            Margin = new Padding(3, 5, 12, 5),
+        };
         grid.Controls.Add(caption, column, row);
         grid.Controls.Add(field, column + 1, row);
         return field;
