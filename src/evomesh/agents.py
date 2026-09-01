@@ -291,7 +291,29 @@ class AgentRuntime:
             world=self.world_context(),
             inbox=list(self._inbox),
             services=self.services(),
+            work=self._work_summary(),
         )
+
+    def _work_summary(self) -> str:
+        """What this agent is doing right now, in the runtime's own words.
+
+        A human who asks "what are you working on?" is asking about the live
+        loop, not about what the model remembers, so the answer is assembled
+        from state the runtime owns and only phrased by the model.
+        """
+        lines = [f"phase: {self.state.phase}", f"cycles completed: {self.state.cycles}"]
+        if goal := self.definition.mind.next_goal():
+            lines.append(f"goal in hand: {goal.description}")
+        intention = self.definition.mind.current_intention()
+        if intention is not None and (step := intention.current) is not None:
+            lines.append(f"step in hand: {step.description}")
+        if self.state.last_outcome:
+            lines.append(f"last finished step: {self.state.last_outcome}")
+        if self.state.last_error:
+            lines.append(f"last error: {self.state.last_error}")
+        if self.definition.autonomy is Autonomy.CYCLIC:
+            lines.append(f"next cycle in about {max(0, round(self._due_in()))}s")
+        return "\n".join(lines)
 
     def _refresh_goal(self) -> None:
         goal = self.definition.mind.next_goal()

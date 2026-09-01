@@ -381,11 +381,25 @@ class BDIBehavior:
     async def cycle(self, context: CycleContext) -> CycleOutcome:
         return await self.reasoner.cycle(self, context)
 
+    async def status(self, context: CycleContext) -> str:
+        """Work in flight that only this behavior can describe.
+
+        The runtime already reports phase, goal and step. A behavior that drives
+        a pipeline of its own adds the stage that pipeline is on, read now
+        rather than remembered from the last cycle.
+        """
+        return ""
+
     async def respond(self, context: CycleContext, message: Message) -> str:
         instruction = (
             "Answer the last INBOX message directly, in at most four sentences. "
-            "Use BELIEFS, MEMORY and YOUR WORKING NOTES as established fact."
+            "Use BELIEFS, MEMORY and YOUR WORKING NOTES as established fact. "
+            "If you are asked what you are working on, answer from CURRENT WORK: "
+            "name the goal, the step you are on and the stage you have reached, "
+            "and never invent progress that CURRENT WORK does not show."
         )
+        if detail := await self.status(context):
+            context.work = f"{context.work}\n{detail}".strip()
         return await context.think(instruction)
 
 

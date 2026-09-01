@@ -24,6 +24,8 @@ from evomesh.memory import AgentMemory, MemoryBudget, clip
 from evomesh.models import ModelProvider
 
 REASONING_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+REASONING_START = re.compile(r"<(think|thinking|reasoning)>", re.IGNORECASE)
+REASONING_END = re.compile(r"</(think|thinking|reasoning)>", re.IGNORECASE)
 FIELD_PATTERN = re.compile(
     r"^[*_#>\s-]*(STEP|RESULT|FACT|DONE|STATUS)[*_\s]*[:\-]\s*(.*)$", re.IGNORECASE
 )
@@ -48,8 +50,18 @@ def strip_reasoning(text: str) -> str:
 
     Left in place these dominate the prompt on the next cycle and get written
     into memory as if they were conclusions.
+
+    Only the tidiest models return a matched pair. Most chat templates already
+    contain the opening tag, so Ollama returns the reasoning itself and closes
+    it with a bare ``</think>``; a truncated answer does the opposite and opens
+    a block it never closes. Both halves are reasoning, not an answer.
     """
-    return REASONING_BLOCK.sub("", text).strip()
+    text = REASONING_BLOCK.sub("", text)
+    if closes := list(REASONING_END.finditer(text)):
+        text = text[closes[-1].end() :]
+    if (opened := REASONING_START.search(text)) is not None:
+        text = text[: opened.start()]
+    return text.strip()
 
 
 @dataclass
@@ -129,6 +141,9 @@ class CycleContext:
     world: str = ""
     inbox: list[Message] = field(default_factory=list)
     services: dict[str, object] = field(default_factory=dict)
+    # What the runtime knows the agent is doing right now. Beliefs and notes are
+    # a cycle old at best, so a human asking mid-cycle gets this instead.
+    work: str = ""
 
     @property
     def goal(self) -> Goal | None:
@@ -169,6 +184,11 @@ class CycleContext:
         plan = self.render_plan()
         if plan:
             sections.append("YOUR COMMITTED PLAN:\n" + plan)
+        if self.work.strip():
+            sections.append(
+                "CURRENT WORK (live from the runtime, more current than MEMORY):\n"
+                + clip(self.work.strip(), 700, keep="head")
+            )
         if self.world:
             sections.append("WORLD:\n" + clip(self.world, 600, keep="head"))
         if memory.strip():

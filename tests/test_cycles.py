@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 
 from evomesh.behaviors import EvolverBehavior, GuardianBehavior
-from evomesh.cognition import CycleContext, parse_cycle_reply
+from evomesh.cognition import CycleContext, parse_cycle_reply, strip_reasoning
 from evomesh.config import EvolutionSettings, RuntimeSettings, Settings
 from evomesh.console import ConsoleChannel
-from evomesh.contracts import AgentDefinition, AgentPhase, AgentStatus, GoalStatus
+from evomesh.contracts import AgentDefinition, AgentPhase, AgentStatus, GoalStatus, Message
 from evomesh.environment import Environment
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver, ValidationResult
 from evomesh.memory import AgentMemory, MemoryBudget
@@ -301,6 +301,36 @@ def test_cycle_reply_parsing_survives_reasoning_and_markdown() -> None:
     assert reply.done is True
 
 
+def test_reasoning_is_stripped_when_only_the_closing_tag_comes_back() -> None:
+    # Ollama chat templates already hold the opening tag, so a reasoning model
+    # answers with the thinking itself and ends it with a bare </think>.
+    text = strip_reasoning(
+        "The user asks if I am running. I should keep it short.\n"
+        "</think>\n\n"
+        "Yes, I am operational."
+    )
+    assert text == "Yes, I am operational."
+
+
+def test_reasoning_is_stripped_when_the_block_is_never_closed() -> None:
+    text = strip_reasoning("Yes, I am operational.\n<think>Now let me second-guess that")
+    assert text == "Yes, I am operational."
+
+
+def test_cycle_reply_survives_an_unopened_reasoning_block() -> None:
+    reply = parse_cycle_reply(
+        "The goal says to check the port, so I will open the config.\n"
+        "</think>\n"
+        "STEP: open the config\n"
+        "RESULT: The port is wrong.\n"
+        "FACT: the port is 8765\n"
+        "DONE: no"
+    )
+    assert reply.step == "open the config"
+    assert reply.fact == "the port is 8765"
+    assert "goal says" not in reply.result
+
+
 def test_unformatted_model_output_is_still_treated_as_work() -> None:
     reply = parse_cycle_reply("I looked at the folder and it is empty.")
     assert "folder" in reply.result
@@ -526,3 +556,117 @@ async def test_the_console_reports_a_discard_in_plain_english(tmp_path: Path) ->
 
     assert "discarded" in await console.route("/evolution discard")
     await environment.stop()
+
+
+async def test_asking_the_evolver_what_it_does_reaches_the_live_pipeline(
+    tmp_path: Path, project: Path
+) -> None:
+    """The stage in the answer is read when asked, not remembered from a cycle."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository
+    )
+    await evolver.set_pipeline_state(
+        {
+            "stage": "validate",
+            "generation": 4,
+            "objective": "make the console faster",
+            "file": "src/evomesh/console.py",
+        }
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    provider = MockProvider(["Validating generation 4 right now."])
+    context = CycleContext(
+        definition=definition,
+        provider=provider,
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+        work="phase: thinking\ncycles completed: 7",
+    )
+
+    answer = await EvolverBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id="evolver", content="what are you working on?"),
+    )
+
+    prompt = str(provider.calls[-1]["prompt"])
+    assert "CURRENT WORK" in prompt
+    assert "evolution stage: validate" in prompt
+    assert "candidate generation: 4" in prompt
+    assert "make the console faster" in prompt
+    assert "cycles completed: 7" in prompt  # the runtime's own half is kept
+    assert answer == "Validating generation 4 right now."
+
+
+async def test_an_agent_answers_about_its_work_from_runtime_state(tmp_path: Path) -> None:
+    provider = MockProvider(["I am indexing the papers."])
+    environment = Environment(settings_for(tmp_path), {"ollama": provider})
+    await environment.start()
+    agent = AgentDefinition(name="Worker", purpose="Keep working", status=AgentStatus.ACTIVE)
+    agent.mind.add_goal("Index the papers", recurring=True)
+    await environment.register_agent(agent)
+    # A cycle far in the future: the answer must come from state, not from work
+    # the agent happens to do while the question is in flight.
+    await environment.start_agent(agent.id, start_delay=3600)
+    await environment.send_message(
+        Message(sender_id="human", recipient_id=agent.id, content="what are you working on?")
+    )
+    reply = await environment.bus.receive("human", wait_seconds=2)
+
+    prompt = str(provider.calls[-1]["prompt"])
+    assert "CURRENT WORK" in prompt
+    assert "goal in hand: Index the papers" in prompt
+    assert "next cycle in about" in prompt
+    assert reply.content == "I am indexing the papers."
+    await environment.stop()
+
+
+async def test_a_mutation_survives_reasoning_and_a_first_bad_answer(tmp_path: Path) -> None:
+    """Local models bury the object in reasoning, then get it right when told why."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    good = (
+        '{"relative_path": "src/app.py", "content": "ACTIVE = False\\n", '
+        '"rationale": "flip the flag"}'
+    )
+    provider = MockProvider(
+        [
+            "I should change the flag, but I will not answer in JSON.\n</think>\nSure thing!",
+            f"Reasoning about the file first.\n</think>\n{good}",
+        ]
+    )
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"),
+        repository,
+        provider,
+    )
+
+    mutation = await evolver.propose_mutation("flip the flag", model="qwen3:14b")
+
+    assert mutation.relative_path == Path("src/app.py")
+    assert len(provider.calls) == 2
+    assert provider.calls[-1]["model"] == "qwen3:14b"
+    assert "could not be used" in str(provider.calls[-1]["prompt"])
+
+
+async def test_an_unusable_mutation_names_what_was_wrong(tmp_path: Path) -> None:
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"),
+        repository,
+        MockProvider(["no object here at all"]),
+    )
+
+    with pytest.raises(ValueError, match="no JSON object was found"):
+        await evolver.propose_mutation("flip the flag")

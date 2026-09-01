@@ -208,6 +208,11 @@ class EvaluatorBehavior(BDIBehavior):
             Belief(key=VERDICT_KEY, statement=verdict, source="evolution"),
         ]
 
+    async def status(self, context: CycleContext) -> str:
+        # Reuse perception rather than re-deriving it: this is the same reading,
+        # taken now instead of at the last cycle.
+        return "\n".join(f"{item.key}: {item.statement}" for item in await self.perceive(context))
+
     def library(self) -> PlanLibrary:
         return PlanLibrary(
             (
@@ -263,6 +268,41 @@ class EvolverBehavior(BDIBehavior):
                 source="evolution",
             ),
         ]
+
+    async def status(self, context: CycleContext) -> str:
+        evolver = cast("EnvironmentEvolver | None", context.service("evolver"))
+        if evolver is None:
+            return "evolution: no candidate workspace is attached, so nothing can be built"
+        state = await evolver.pipeline_state()
+        if not state:
+            return (
+                "evolution: no candidate generation is open yet; the next cycle "
+                "opens one and starts proposing a change"
+            )
+        stage = str(state.get("stage", STAGE_PLAN))
+        lines = [
+            f"evolution stage: {stage} ({self._stage_meaning(stage)})",
+            f"candidate generation: {state.get('generation', 'none')}",
+            f"objective: {state.get('objective') or 'none'}",
+        ]
+        if changed := state.get("file"):
+            lines.append(f"file changed in this candidate: {changed}")
+        if path := state.get("path"):
+            lines.append(f"candidate workspace: {path}")
+        lines.append(f"validation: {self._verdict(state)}")
+        if error := state.get("error"):
+            lines.append(f"last pipeline error: {error}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _stage_meaning(stage: str) -> str:
+        return {
+            STAGE_PLAN: "about to copy the mesh into a fresh candidate generation",
+            STAGE_PROPOSE: "asking the model for one small, safe file change",
+            STAGE_VALIDATE: "running sync, ruff, pyright, pytest and the smoke test",
+            STAGE_REPORT: "writing up the verdict for a human",
+            STAGE_AWAIT_HUMAN: "waiting for a human to promote or discard it",
+        }.get(stage, "unknown stage")
 
     def library(self) -> PlanLibrary:
         return PlanLibrary(
@@ -335,7 +375,11 @@ class EvolverBehavior(BDIBehavior):
         generation = evolver.candidate(int(state["generation"]))
         objective = str(state["objective"])
         mutation = await evolver.propose_mutation(
-            objective, context=await context.build_prompt("")
+            objective,
+            context=await context.build_prompt(""),
+            # The Evolver's own model, not the mesh default: a human who assigns
+            # it a stronger model expects the mutation to come from that one.
+            model=context.definition.model_name,
         )
         await evolver.apply_mutation(generation, mutation, objective)
         next_stage = STAGE_VALIDATE if self.auto_validate else STAGE_REPORT
