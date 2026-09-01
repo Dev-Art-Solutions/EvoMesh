@@ -1,7 +1,33 @@
 environment_name: local
 data_path: data/evomesh.db
 generation_path: generations
+# Per-agent memory.md and context.md live here, plus the shared world context.md.
+workspace_path: workspace
 log_level: INFO
+
+runtime:
+  # How often every agent runs one perceive -> deliberate -> act -> reflect cycle.
+  cycle_seconds: 60
+  # Delay between each agent's first cycle, so a boot does not stampede one model.
+  stagger_seconds: 1.5
+  # Prompt budgets in characters, sized for small local models. Raise these if
+  # your models have a large context window; lowering them keeps a 4k-token
+  # model from silently truncating an agent's memory.
+  prompt_chars: 6000
+  memory_chars: 3000
+  context_chars: 1500
+  inbox_chars: 1000
+
+evolution:
+  # The Environment Evolver opens a candidate generation on its first cycle.
+  autonomous: true
+  cycle_seconds: 300
+  # Run uv sync / ruff / pyright / pytest on each candidate. Turn off if you do
+  # not want the mesh spending minutes of CPU on validation.
+  auto_validate: true
+  # Optional starting objective. Otherwise use: /evolution start <objective>
+  objective: null
+
 system_agents:
   architect:
     provider: ollama
@@ -15,6 +41,7 @@ system_agents:
   evolver:
     provider: ollama
     model: qwen3
+
 models:
   default_provider: ollama
   providers:

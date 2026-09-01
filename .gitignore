@@ -9,6 +9,8 @@ data/*
 !data/.gitkeep
 generations/*
 !generations/.gitkeep
+workspace/*
+!workspace/.gitkeep
 evomesh.yaml
 .env
 desktop/**/bin/

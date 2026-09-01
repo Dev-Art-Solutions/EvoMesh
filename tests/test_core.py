@@ -58,21 +58,34 @@ async def test_permission_matching_and_traversal(
         await policy.require("a", root / "child.txt", "write")
 
 
-def test_architect_multiturn_candidate() -> None:
+def test_architect_drafts_a_candidate_without_asking_questions() -> None:
     interview = ArchitectInterview()
-    assert "called" in interview.begin("Create a research agent")
-    answers = ["Researcher", "Research local papers", "Never modify papers", "none"]
-    for answer in answers:
-        interview.answer(answer)
-    interview.answer("Markdown.Read")
-    final = interview.answer("ollama:qwen3:8b")
-    assert "ready" in final
+    draft = interview.begin("Create an agent called Researcher that reads markdown papers")
+    assert "?" not in draft
+    assert interview.candidate is not None
+    assert interview.candidate.name == "Researcher"
+    assert "Markdown.Read" in interview.candidate.skills
+    # The draft already carries the goal its cycle loop will pick up.
+    assert interview.candidate.mind.goals[0].description
+
+
+def test_architect_refines_by_instruction_not_by_questionnaire() -> None:
+    interview = ArchitectInterview()
+    interview.begin("summarize local research papers")
+    interview.refine("name: Researcher")
+    interview.refine("ollama:qwen3:8b")
     candidate = interview.confirm()
     assert candidate.name == "Researcher"
-    assert candidate.skills == ["Markdown.Read"]
-    assert candidate.provider == "ollama"
-    assert candidate.model_name == "qwen3:8b"
+    assert (candidate.provider, candidate.model_name) == ("ollama", "qwen3:8b")
     assert candidate.status == "active"
+
+
+def test_architect_reads_an_explicit_model_from_the_first_sentence() -> None:
+    interview = ArchitectInterview()
+    interview.begin("watch the git repo, use ollama:qwen3:4b")
+    assert interview.candidate is not None
+    assert interview.candidate.model_name == "qwen3:4b"
+    assert "Git.Status" in interview.candidate.skills
 
 
 async def test_environment_boot_and_restart(tmp_path: Path) -> None:
@@ -175,3 +188,70 @@ def test_mutation_cannot_escape_candidate(tmp_path: Path) -> None:
     mutation = FileMutation(relative_path=Path("../active.py"), content="unsafe")
     with pytest.raises(ValueError):
         mutation.target(tmp_path / "candidate")
+
+
+async def test_architect_ignores_a_small_model_that_returns_junk() -> None:
+    """A 0.5B model answers {"name": "D:/notes", "purpose": "read"}. Reject it."""
+    interview = ArchitectInterview()
+
+    async def junk(prompt: str, system: str) -> str:
+        return '{"name": "D:/notes", "purpose": "read", "constraints": "no"}'
+
+    await interview.draft(
+        "read my markdown notes in D:/notes and write a weekly summary", infer=junk
+    )
+
+    assert interview.candidate is not None
+    assert interview.candidate.name == "Read Markdown Agent"
+    assert "weekly summary" in interview.candidate.purpose
+    assert len(interview.candidate.mind.beliefs[0].statement.split()) > 4
+
+
+async def test_architect_accepts_a_model_answer_that_is_actually_better() -> None:
+    interview = ArchitectInterview()
+
+    async def good(prompt: str, system: str) -> str:
+        return (
+            '{"name": "Notes Summarizer", "purpose": "read the markdown notes in '
+            'D:/notes each week and write a summary", "constraints": "never edit the '
+            'source notes, only append summaries"}'
+        )
+
+    await interview.draft("read my notes in D:/notes and summarize", infer=good)
+
+    assert interview.candidate is not None
+    assert interview.candidate.name == "Notes Summarizer"
+    assert "each week" in interview.candidate.purpose
+
+
+async def test_architect_survives_a_model_that_is_down() -> None:
+    interview = ArchitectInterview()
+
+    async def broken(prompt: str, system: str) -> str:
+        raise RuntimeError("provider not ready")
+
+    summary = await interview.draft("watch the git repository for changes", infer=broken)
+
+    assert "Draft ready" in summary
+    assert interview.candidate is not None
+    assert "Git.Status" in interview.candidate.skills
+
+
+async def test_architect_rejects_a_generic_name_from_the_model() -> None:
+    """qwen2.5:0.5b answers {"name": "agent"}. The derived name is always better."""
+    interview = ArchitectInterview()
+
+    async def lazy(prompt: str, system: str) -> str:
+        return (
+            '{"name": "agent", "purpose": "read markdown notes and write a weekly '
+            'summary", "constraints": "do not modify the source notes at all"}'
+        )
+
+    await interview.draft(
+        "read my markdown notes in D:/notes and write a weekly summary", infer=lazy
+    )
+
+    assert interview.candidate is not None
+    assert interview.candidate.name == "Read Markdown Agent"
+    # The purpose was a genuine improvement, so that half is kept.
+    assert "weekly summary" in interview.candidate.purpose

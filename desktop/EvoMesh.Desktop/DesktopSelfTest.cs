@@ -26,6 +26,10 @@ internal static class DesktopSelfTest
             settings.SystemAgents["guardian"] = new AgentModelEditorSettings(
                 "ollama",
                 "qwen3:14b");
+            settings.Runtime.CycleSeconds = 45;
+            settings.Runtime.MemoryChars = 2222;
+            settings.Evolution.Autonomous = false;
+            settings.Evolution.Objective = "tighten the console";
             settings.Save(temporary);
             var saved = EvoMeshYamlSettings.Load(temporary);
             if (saved.EnvironmentName != "desktop-self-test" ||
@@ -33,6 +37,17 @@ internal static class DesktopSelfTest
                 saved.SystemAgents["guardian"].Model != "qwen3:14b")
             {
                 throw new InvalidOperationException("Settings round-trip failed.");
+            }
+            // Saving settings must not silently drop the runtime cadence, the
+            // prompt budgets, the workspace path, or the evolution policy.
+            if (saved.WorkspacePath != "workspace" ||
+                saved.Runtime.CycleSeconds != 45 ||
+                saved.Runtime.MemoryChars != 2222 ||
+                saved.Runtime.PromptChars != 6000 ||
+                saved.Evolution.Autonomous ||
+                saved.Evolution.Objective != "tighten the console")
+            {
+                throw new InvalidOperationException("Runtime or evolution settings were lost on save.");
             }
         }
         finally
