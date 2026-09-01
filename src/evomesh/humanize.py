@@ -1,44 +1,58 @@
-"""Human-friendly formatting helpers for EvoMesh.
-
-This module provides small, dependency-free helpers that turn raw
-machine values into short strings suitable for logs and human reports.
-"""
+"""Human-friendly formatting helpers for EvoMesh."""
 
 from __future__ import annotations
 
+from datetime import datetime
 
-def format_duration(seconds: float) -> str:
-    """Render a duration in seconds as a compact human label.
+_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+_MINUTES = 60
+_HOURS = 60
+_DAYS = 24
+_WEEKS = 7
 
-    Non-negative whole-second units are shown from largest to smallest,
-    dropping leading zero-width units.
 
-    Examples
-    --------
-    >>> format_duration(0)
-    '0s'
-    >>> format_duration(65)
-    '1m 5s'
-    >>> format_duration(3661)
-    '1h 1m 1s'
+def humanize_size(num_bytes: int) -> str:
+    """Format a byte count using binary (IEC) units."""
+    if num_bytes < 0:
+        raise ValueError("num_bytes must be non-negative")
+    value = float(num_bytes)
+    unit = _UNITS[0]
+    while value >= 1024 and unit != _UNITS[-1]:
+        value /= 1024
+        unit = _UNITS[_UNITS.index(unit) + 1]
+    if unit == _UNITS[0]:
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
 
-    Raises
-    ------
-    ValueError
-        If ``seconds`` is negative.
-    """
-    if seconds < 0:
-        raise ValueError("duration must be non-negative")
 
-    total = int(round(seconds))
-    hours, remainder = divmod(total, 3600)
-    minutes, secs = divmod(remainder, 60)
-
-    parts: list[str] = []
+def humanize_duration(seconds: float) -> str:
+    """Render a duration in seconds as a compact human string."""
+    seconds = max(0, float(seconds))
+    if seconds < 1:
+        return f"{seconds * 1000:.0f} ms"
+    parts = []
+    remaining = int(seconds)
+    weeks, remaining = divmod(remaining, _DAYS * _HOURS * _MINUTES)
+    days, remaining = divmod(remaining, _DAYS * _HOURS)
+    hours, remaining = divmod(remaining, _HOURS)
+    minutes, secs = divmod(remaining, _MINUTES)
+    if weeks:
+        parts.append(f"{weeks}w")
+    if days:
+        parts.append(f"{days}d")
     if hours:
         parts.append(f"{hours}h")
     if minutes:
         parts.append(f"{minutes}m")
     if secs or not parts:
         parts.append(f"{secs}s")
-    return " ".join(parts)
+    return " ".join(parts[:3])
+
+
+def humanize_timestamp(ts: float) -> str:
+    """Format an epoch timestamp as a friendly relative description."""
+    now = datetime.now().timestamp()
+    delta = now - ts
+    if delta < 0:
+        return "in the future"
+    return humanize_duration(delta) + " ago"
