@@ -608,6 +608,21 @@ class EnvironmentEvolver:
         )
         return generation
 
+    async def decide_candidate(self, number: int, *, promote: bool) -> None:
+        """Promote or discard without a human, and leave a record that it happened."""
+        supervisor = self.workspace.supervisor
+        if promote:
+            supervisor.promote(number)
+        else:
+            supervisor.discard(number)
+        await self.repository.record_mutation(
+            {
+                "generation": number,
+                "status": "promoted" if promote else "discarded",
+                "decided_by": "policy",
+            }
+        )
+
     async def commit_candidate(self, generation: Generation, objective: str) -> str:
         git = GitRepository(generation.path)
         commit = await git.commit_mutation(generation.number, objective)

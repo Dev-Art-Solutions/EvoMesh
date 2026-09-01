@@ -54,6 +54,7 @@ class Environment:
         self.behaviors: dict[str, AgentBehavior] = default_behaviors(
             settings.evolution.auto_validate,
             settings.evolution.max_repairs,
+            settings.evolution.auto_promote,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

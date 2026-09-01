@@ -16,6 +16,12 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- `evolution.auto_promote` closes the loop. A candidate that validated is promoted, one
+  that failed is discarded, and the next pass starts without asking anyone.
+  - The policy acts only on a verdict validation produced. With validation off, or when
+    the host blocked the run, the candidate still waits for a human.
+  - Promotion moves supervisor metadata; it does not yet swap the code the running mesh
+    executes.
 - The evolution pipeline repairs its own candidates. A failed validation now enters a
   `repair` stage instead of going straight to a verdict, and re-validates afterwards.
   - Ruff's own `--fix` runs first and costs no model call, so a generation is no longer

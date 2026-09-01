@@ -973,3 +973,103 @@ async def test_a_host_failure_is_not_blamed_on_the_candidate(
     report = await behavior.cycle(context)
     assert "this machine blocked the run (PermissionError)" in report.summary
     assert evolver.candidate(2).status is GenerationStatus.CANDIDATE
+
+
+# -- deciding without a human --------------------------------------------
+
+
+async def test_a_validated_candidate_is_promoted_without_asking(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    decided = await behavior.cycle(context)
+
+    assert "promoted generation 2 on its own verdict" in decided.summary
+    assert decided.phase is not AgentPhase.WAITING_HUMAN
+    supervisor = evolver.workspace.supervisor
+    assert supervisor.metadata()["active"] == 2
+    assert supervisor.metadata()["last_known_good"] == 1
+    # Free for the next pass, with the repair counters cleared.
+    state = await evolver.pipeline_state()
+    assert state == {"stage": "plan"}
+
+
+async def test_a_failed_candidate_is_discarded_without_asking(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT)])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION, "not a mutation"], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=0, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    decided = await behavior.cycle(context)
+
+    assert "discarded generation 2 on its own verdict" in decided.summary
+    supervisor = evolver.workspace.supervisor
+    assert supervisor.candidates() == []
+    # Discarding must never move the active generation.
+    assert supervisor.metadata()["active"] == 1
+    assert (await evolver.pipeline_state()) == {"stage": "plan"}
+
+
+async def test_a_host_failure_still_stops_for_a_human_under_the_policy(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run pytest", PERMISSION_OUTPUT)])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    parked = await behavior.cycle(context)
+
+    assert parked.phase is AgentPhase.WAITING_HUMAN
+    assert (await evolver.pipeline_state())["stage"] == "await-human"
+    # Neither promoted nor thrown away: nothing was learned about it.
+    assert evolver.workspace.supervisor.metadata()["active"] == 1
+    assert [item.number for item in evolver.workspace.supervisor.candidates()] == [2]
+
+
+async def test_an_unvalidated_candidate_is_never_promoted_by_policy(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    # Validation is off, so there is no verdict to act on.
+    behavior = EvolverBehavior(auto_validate=False, max_repairs=2, auto_promote=True)
+
+    for _ in range(2):  # plan, propose
+        await behavior.cycle(context)
+    parked = await behavior.cycle(context)
+
+    assert validator.calls == 0
+    assert parked.phase is AgentPhase.WAITING_HUMAN
+    assert evolver.workspace.supervisor.metadata()["active"] == 1
+
+
+async def test_the_checklist_says_it_decides_rather_than_hands_over(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([passing()])
+    _, context, _ = await evolving(tmp_path, project, [MUTATION], validator, StubRepairer())
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    await behavior.cycle(context)
+
+    steps = [step.description for step in context.definition.mind.intentions[0].steps]
+    assert steps[-1] == "promote or discard the candidate on its verdict"
+    assert "hand the candidate to the human" not in steps

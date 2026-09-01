@@ -65,6 +65,8 @@ EVOLUTION_STEPS = (
 # nor the repair that only exists to answer it belongs in the checklist.
 SKIP_VALIDATION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_REPORT)
 SKIP_VALIDATION_STEPS = (EVOLUTION_STEPS[0], EVOLUTION_STEPS[1], EVOLUTION_STEPS[-1])
+# Under a promotion policy the last step is a decision, not a handover.
+AUTO_PROMOTE_STEP = "promote or discard the candidate on its verdict"
 
 AWAITING_KEY = "evolution.awaiting_human"
 
@@ -247,12 +249,20 @@ class EvolverBehavior(BDIBehavior):
 
     name = "evolver"
 
-    def __init__(self, auto_validate: bool = True, max_repairs: int = 2) -> None:
+    def __init__(
+        self,
+        auto_validate: bool = True,
+        max_repairs: int = 2,
+        auto_promote: bool = False,
+    ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
         # Zero turns self-repair off and restores the old behaviour: one shot at
         # validation, then a verdict.
         self.max_repairs = max(0, max_repairs)
+        # Decide the candidate's fate from the verdict instead of parking on a
+        # human. Only ever acts on a verdict validation actually produced.
+        self.auto_promote = auto_promote
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -263,10 +273,14 @@ class EvolverBehavior(BDIBehavior):
 
     def _steps(self) -> tuple[str, ...]:
         if not self.auto_validate:
-            return SKIP_VALIDATION_STEPS
-        if not self.max_repairs:
-            return tuple(step for step in EVOLUTION_STEPS if not step.startswith("repair"))
-        return EVOLUTION_STEPS
+            steps = SKIP_VALIDATION_STEPS
+        elif not self.max_repairs:
+            steps = tuple(step for step in EVOLUTION_STEPS if not step.startswith("repair"))
+        else:
+            steps = EVOLUTION_STEPS
+        if self.auto_promote:
+            return (*steps[:-1], AUTO_PROMOTE_STEP)
+        return steps
 
     async def perceive(self, context: CycleContext) -> list[Belief]:
         evolver = cast("EnvironmentEvolver | None", context.service("evolver"))
@@ -311,14 +325,18 @@ class EvolverBehavior(BDIBehavior):
             lines.append(f"last pipeline error: {error}")
         return "\n".join(lines)
 
-    @staticmethod
-    def _stage_meaning(stage: str) -> str:
+    def _stage_meaning(self, stage: str) -> str:
+        report = (
+            "promoting or discarding the candidate on its verdict"
+            if self.auto_promote
+            else "writing up the verdict for a human"
+        )
         return {
             STAGE_PLAN: "about to copy the mesh into a fresh candidate generation",
             STAGE_PROPOSE: "asking the model for one small, safe file change",
             STAGE_VALIDATE: "running sync, ruff, pyright, pytest and the smoke test",
             STAGE_REPAIR: "fixing what validation reported, with the linter or the model",
-            STAGE_REPORT: "writing up the verdict for a human",
+            STAGE_REPORT: report,
             STAGE_AWAIT_HUMAN: "waiting for a human to promote or discard it",
         }.get(stage, "unknown stage")
 
@@ -542,6 +560,12 @@ class EvolverBehavior(BDIBehavior):
         # None means validation never ran, which is not the same as failing it.
         passed = state.get("passed")
         await evolver.finish_candidate(number, passed=passed is not False)
+        # A policy may only act on a verdict validation actually produced. With
+        # no verdict -- validation switched off, or this machine blocking the
+        # run -- promoting would ship unchecked code and discarding would throw
+        # away work for the host's fault, so it still stops for a human.
+        if self.auto_promote and passed is not None:
+            return await self._decide(evolver, number, passed=bool(passed), state=state)
         await evolver.set_pipeline_state({**state, "stage": STAGE_AWAIT_HUMAN})
         return StepResult(
             summary=(
@@ -550,6 +574,24 @@ class EvolverBehavior(BDIBehavior):
             ),
             fact=f"generation {number} is awaiting a human decision",
             phase=AgentPhase.WAITING_HUMAN,
+            achieved=True,
+        )
+
+    async def _decide(
+        self, evolver: EnvironmentEvolver, number: int, *, passed: bool, state: dict[str, Any]
+    ) -> StepResult:
+        await evolver.decide_candidate(number, promote=passed)
+        # Not set_pipeline_state: the reset clears the repair counters and the
+        # failure digest, so the next candidate starts from a clean slate.
+        await evolver.reset_pipeline()
+        action = "promoted" if passed else "discarded"
+        return StepResult(
+            summary=(
+                f"{action} generation {number} on its own verdict ({self._verdict(state)}); "
+                "the pipeline is free for the next objective"
+            ),
+            fact=f"generation {number} was {action} by policy, with no human asked",
+            phase=AgentPhase.ACTING,
             achieved=True,
         )
 
@@ -568,12 +610,18 @@ class EvolverBehavior(BDIBehavior):
         return f"{verdict} after {attempts}"
 
 
-def default_behaviors(auto_validate: bool = True, max_repairs: int = 2) -> dict[str, Any]:
+def default_behaviors(
+    auto_validate: bool = True, max_repairs: int = 2, auto_promote: bool = False
+) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
         "guardian": GuardianBehavior(),
         "evaluator": EvaluatorBehavior(),
-        "evolver": EvolverBehavior(auto_validate=auto_validate, max_repairs=max_repairs),
+        "evolver": EvolverBehavior(
+            auto_validate=auto_validate,
+            max_repairs=max_repairs,
+            auto_promote=auto_promote,
+        ),
     }
 
 

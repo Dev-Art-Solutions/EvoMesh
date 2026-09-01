@@ -262,7 +262,15 @@ Every outcome still ends in a verdict for you. A model that cannot author a usab
 /evolution promote [n]   /evolution discard [n]   /evolution rollback
 ```
 
-Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, or `evolution.max_repairs` to bound how often it may fix its own candidate.
+### Deciding without a human
+
+`evolution.auto_promote: true` lets the verdict decide: a candidate that validated is promoted, one that failed is discarded, and the pipeline starts the next pass instead of parking. The Evolver then runs a closed loop — open, mutate, validate, repair, decide — for as long as its goal stays open, paced by `evolution.cycle_seconds`.
+
+The policy only ever acts on a verdict validation actually produced. With `auto_validate` off, or when the run was blocked by this machine, there is no verdict: promoting would ship unchecked code and discarding would throw away work for the host's fault, so it still stops and waits for you.
+
+Be clear about what promotion is today: it moves `active` and `last_known_good` in the supervisor metadata, which is what numbers and parents the next candidate. **It does not swap the code the running mesh executes.** Making a promoted generation the live runtime is still the unbuilt half of this.
+
+Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, `evolution.max_repairs` to bound how often it may fix its own candidate, or `evolution.auto_promote` to take yourself out of the loop.
 
 ## Git history
 

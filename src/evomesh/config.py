@@ -61,6 +61,9 @@ class EvolutionSettings(BaseModel):
     # How many times the Evolver may fix its own candidate before a failure
     # becomes the human's problem. Zero reports the first failure as final.
     max_repairs: int = 2
+    # Let the verdict decide: promote what validated, discard what did not, and
+    # move on without asking. A run with no verdict still stops for a human.
+    auto_promote: bool = False
     objective: str | None = None
 
 

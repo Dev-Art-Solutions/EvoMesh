@@ -29,6 +29,12 @@ evolution:
   # before handing the failure to you. It tries ruff's own autofix first and only
   # spends a model call on what survives it. 0 reports the first failure as final.
   max_repairs: 2
+  # Decide each candidate from its verdict instead of parking on you: promote
+  # what validated, discard what did not, then start the next pass. A run with
+  # no verdict -- auto_validate off, or this machine blocking the suite -- still
+  # stops and waits for a human. Promotion moves supervisor metadata; it does
+  # not swap the code the running mesh executes.
+  auto_promote: false
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 
