@@ -315,11 +315,14 @@ internal sealed class MainForm : Form
             grid.SetColumnSpan(heading, 4);
             row++;
             var url = AddField(grid, "Base URL", 0, row);
-            var model = AddEditableCombo(grid, "Default model", 2, row);
-            if (name == "ollama")
-            {
-                model.DropDown += async (_, _) => await RefreshOllamaModelsAsync(showErrors: false);
-            }
+            var model = name == "ollama"
+                ? AddEditableCombo(
+                    grid,
+                    "Default model",
+                    2,
+                    row,
+                    () => RefreshOllamaModelsAsync(showErrors: true))
+                : AddEditableCombo(grid, "Default model", 2, row);
             row++;
             var key = AddField(grid, "API key (optional)", 0, row);
             key.UseSystemPasswordChar = true;
@@ -583,7 +586,12 @@ internal sealed class MainForm : Form
         return field;
     }
 
-    private static ComboBox AddEditableCombo(TableLayoutPanel grid, string label, int column, int row)
+    private ComboBox AddEditableCombo(
+        TableLayoutPanel grid,
+        string label,
+        int column,
+        int row,
+        Func<Task>? refresh = null)
     {
         var caption = new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) };
         var field = new ComboBox
@@ -592,10 +600,32 @@ internal sealed class MainForm : Form
             DropDownStyle = ComboBoxStyle.DropDown,
             AutoCompleteMode = AutoCompleteMode.SuggestAppend,
             AutoCompleteSource = AutoCompleteSource.ListItems,
-            Margin = new Padding(3, 5, 12, 5),
+            Margin = refresh is null ? new Padding(3, 5, 12, 5) : Padding.Empty,
         };
         grid.Controls.Add(caption, column, row);
-        grid.Controls.Add(field, column + 1, row);
+        if (refresh is null)
+        {
+            grid.Controls.Add(field, column + 1, row);
+        }
+        else
+        {
+            var container = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(3, 5, 12, 5),
+            };
+            container.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            container.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+            var refreshButton = MakeButton("Refresh", 80);
+            refreshButton.Dock = DockStyle.Fill;
+            refreshButton.Margin = new Padding(6, 0, 0, 0);
+            refreshButton.Click += async (_, _) => await refresh();
+            container.Controls.Add(field, 0, 0);
+            container.Controls.Add(refreshButton, 1, 0);
+            grid.Controls.Add(container, column + 1, row);
+        }
         return field;
     }
 
