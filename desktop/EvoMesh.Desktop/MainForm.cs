@@ -166,7 +166,8 @@ internal sealed class MainForm : Form
         foreach (var (text, command) in new[]
         {
             ("Status", "/status"), ("Agents", "/agents"), ("Ollama models", "/models ollama"),
-            ("Skills", "/skills"), ("Help", "/help")
+            ("Skills", "/skills"), ("Evolution", "/evolution status"),
+            ("World", "/context world"), ("Help", "/help")
         })
         {
             var button = MakeButton(text, 120);
