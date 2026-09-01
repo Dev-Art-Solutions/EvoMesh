@@ -14,6 +14,7 @@ All notable changes to EvoMesh are documented in this file.
 
 - Robust Windows `uv.exe` discovery and actionable startup diagnostics.
 - Explicit button foreground/background colors for readable labels across Windows themes.
+- Settings model dropdown no longer closes while Ollama models are refreshed.
 
 ## [0.1.0-alpha.1] - 2026-08-30
 
