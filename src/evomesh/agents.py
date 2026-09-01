@@ -98,7 +98,12 @@ SYSTEM_AGENTS = (
 )
 
 
-def system_agent_definitions(provider: str, model: str) -> list[AgentDefinition]:
+def system_agent_definitions(
+    provider: str,
+    model: str,
+    overrides: dict[str, tuple[str, str]] | None = None,
+) -> list[AgentDefinition]:
+    overrides = overrides or {}
     return [
         AgentDefinition(
             id=agent_id,
@@ -107,8 +112,8 @@ def system_agent_definitions(provider: str, model: str) -> list[AgentDefinition]
             created_by="bootstrap",
             identity=name,
             purpose=purpose,
-            provider=provider,
-            model_name=model,
+            provider=overrides.get(agent_id, (provider, model))[0],
+            model_name=overrides.get(agent_id, (provider, model))[1],
             status=AgentStatus.ACTIVE,
         )
         for agent_id, name, purpose in SYSTEM_AGENTS

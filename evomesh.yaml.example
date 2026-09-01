@@ -2,6 +2,19 @@ environment_name: local
 data_path: data/evomesh.db
 generation_path: generations
 log_level: INFO
+system_agents:
+  architect:
+    provider: ollama
+    model: qwen3
+  guardian:
+    provider: ollama
+    model: qwen3
+  evaluator:
+    provider: ollama
+    model: qwen3
+  evolver:
+    provider: ollama
+    model: qwen3
 models:
   default_provider: ollama
   providers:
@@ -15,4 +28,3 @@ models:
       base_url: http://127.0.0.1:8000/v1
       model: local-model
       api_key: ""
-

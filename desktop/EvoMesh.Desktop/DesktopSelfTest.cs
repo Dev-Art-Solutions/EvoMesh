@@ -23,10 +23,14 @@ internal static class DesktopSelfTest
             {
                 Model = "qwen3:14b"
             };
+            settings.SystemAgents["guardian"] = new AgentModelEditorSettings(
+                "ollama",
+                "qwen3:14b");
             settings.Save(temporary);
             var saved = EvoMeshYamlSettings.Load(temporary);
             if (saved.EnvironmentName != "desktop-self-test" ||
-                saved.Providers["ollama"].Model != "qwen3:14b")
+                saved.Providers["ollama"].Model != "qwen3:14b" ||
+                saved.SystemAgents["guardian"].Model != "qwen3:14b")
             {
                 throw new InvalidOperationException("Settings round-trip failed.");
             }

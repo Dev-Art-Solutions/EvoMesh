@@ -1,6 +1,7 @@
 namespace EvoMesh.Desktop;
 
 internal sealed record ProviderEditorSettings(string BaseUrl, string Model, string ApiKey = "");
+internal sealed record AgentModelEditorSettings(string Provider, string Model);
 
 internal sealed class EvoMeshYamlSettings
 {
@@ -10,6 +11,7 @@ internal sealed class EvoMeshYamlSettings
     public string LogLevel { get; set; } = "INFO";
     public string DefaultProvider { get; set; } = "ollama";
     public Dictionary<string, ProviderEditorSettings> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, AgentModelEditorSettings> SystemAgents { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public static EvoMeshYamlSettings Load(string path)
     {
@@ -19,7 +21,10 @@ internal sealed class EvoMeshYamlSettings
             return result;
         }
 
+        string? section = null;
+        string? modelSection = null;
         string? provider = null;
+        string? systemAgent = null;
         foreach (var rawLine in File.ReadAllLines(path))
         {
             var indent = rawLine.TakeWhile(char.IsWhiteSpace).Count();
@@ -34,7 +39,10 @@ internal sealed class EvoMeshYamlSettings
 
             if (indent == 0)
             {
+                section = key;
+                modelSection = null;
                 provider = null;
+                systemAgent = null;
                 switch (key)
                 {
                     case "environment_name": result.EnvironmentName = value; break;
@@ -43,16 +51,22 @@ internal sealed class EvoMeshYamlSettings
                     case "log_level": result.LogLevel = value; break;
                 }
             }
-            else if (indent == 2 && key == "default_provider")
+            else if (section == "models" && indent == 2 && key == "default_provider")
             {
                 result.DefaultProvider = value;
             }
-            else if (indent == 4 && value.Length == 0)
+            else if (section == "models" && indent == 2 && key == "providers")
+            {
+                modelSection = "providers";
+            }
+            else if (section == "models" && modelSection == "providers" &&
+                     indent == 4 && value.Length == 0)
             {
                 provider = key;
                 result.Providers.TryAdd(provider, new ProviderEditorSettings("", ""));
             }
-            else if (indent >= 6 && provider is not null)
+            else if (section == "models" && modelSection == "providers" &&
+                     indent >= 6 && provider is not null)
             {
                 var current = result.Providers[provider];
                 result.Providers[provider] = key switch
@@ -60,6 +74,21 @@ internal sealed class EvoMeshYamlSettings
                     "base_url" => current with { BaseUrl = value },
                     "model" => current with { Model = value },
                     "api_key" => current with { ApiKey = value },
+                    _ => current,
+                };
+            }
+            else if (section == "system_agents" && indent == 2 && value.Length == 0)
+            {
+                systemAgent = key;
+                result.SystemAgents.TryAdd(systemAgent, new AgentModelEditorSettings("", ""));
+            }
+            else if (section == "system_agents" && indent >= 4 && systemAgent is not null)
+            {
+                var current = result.SystemAgents[systemAgent];
+                result.SystemAgents[systemAgent] = key switch
+                {
+                    "provider" => current with { Provider = value },
+                    "model" => current with { Model = value },
                     _ => current,
                 };
             }
@@ -75,6 +104,13 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"data_path: {Quote(DataPath)}");
         writer.WriteLine($"generation_path: {Quote(GenerationPath)}");
         writer.WriteLine($"log_level: {Quote(LogLevel)}");
+        writer.WriteLine("system_agents:");
+        foreach (var (agentId, agent) in SystemAgents)
+        {
+            writer.WriteLine($"  {agentId}:");
+            writer.WriteLine($"    provider: {Quote(agent.Provider)}");
+            writer.WriteLine($"    model: {Quote(agent.Model)}");
+        }
         writer.WriteLine("models:");
         writer.WriteLine($"  default_provider: {Quote(DefaultProvider)}");
         writer.WriteLine("  providers:");

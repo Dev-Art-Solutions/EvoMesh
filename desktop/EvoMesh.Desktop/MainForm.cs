@@ -5,6 +5,13 @@ namespace EvoMesh.Desktop;
 
 internal sealed class MainForm : Form
 {
+    private static readonly (string Id, string Name)[] CoreAgents =
+    [
+        ("architect", "Agent Architect"),
+        ("guardian", "Guardian"),
+        ("evaluator", "Evaluator"),
+        ("evolver", "Environment Evolver"),
+    ];
     private readonly EvoMeshRuntimeProcess _runtime;
     private readonly string _configPath;
     private readonly RichTextBox _output = new();
@@ -14,6 +21,8 @@ internal sealed class MainForm : Form
     private readonly Button _stop = new();
     private readonly List<Control> _restartRequiredControls = [];
     private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key)> _providers = [];
+    private readonly Dictionary<string, (ComboBox Provider, ComboBox Model)> _systemAgents = [];
+    private bool _loadingSettings;
     private TextBox _environmentName = null!;
     private TextBox _dataPath = null!;
     private TextBox _generationPath = null!;
@@ -83,6 +92,11 @@ internal sealed class MainForm : Form
             ollama.Model.DropDownStyle != ComboBoxStyle.DropDown)
         {
             throw new InvalidOperationException("Settings Ollama model must be an editable dropdown.");
+        }
+        if (_systemAgents.Count != CoreAgents.Length ||
+            _systemAgents.Values.Any(item => item.Model.DropDownStyle != ComboBoxStyle.DropDown))
+        {
+            throw new InvalidOperationException("All core agents must have editable model dropdowns.");
         }
     }
 
@@ -331,6 +345,46 @@ internal sealed class MainForm : Form
             row++;
         }
 
+        var systemHeading = new Label
+        {
+            Text = "CORE AGENT MODELS",
+            AutoSize = true,
+            Font = new Font(Font, FontStyle.Bold),
+            Margin = new Padding(3, 18, 3, 6),
+        };
+        grid.Controls.Add(systemHeading, 0, row);
+        grid.SetColumnSpan(systemHeading, 4);
+        row++;
+        var systemHelp = new Label
+        {
+            Text = "These provider/model assignments are applied to the built-in agents on the next mesh start.",
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(3, 0, 3, 8),
+        };
+        grid.Controls.Add(systemHelp, 0, row);
+        grid.SetColumnSpan(systemHelp, 4);
+        row++;
+        foreach (var (agentId, agentName) in CoreAgents)
+        {
+            var provider = AddCombo(
+                grid,
+                agentName,
+                0,
+                row,
+                ["ollama", "inferhub", "openai_compatible"]);
+            var model = AddEditableCombo(grid, "Model", 2, row);
+            provider.SelectedIndexChanged += async (_, _) =>
+            {
+                if (!_loadingSettings && provider.Text == "ollama")
+                {
+                    await RefreshOllamaModelsAsync(showErrors: false);
+                }
+            };
+            _systemAgents[agentId] = (provider, model);
+            row++;
+        }
+
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(3, 18, 3, 3) };
         _saveSettings = MakeButton("Save settings", 145);
         _saveSettings.Click += (_, _) => SaveSettings();
@@ -343,6 +397,7 @@ internal sealed class MainForm : Form
         _restartRequiredControls.AddRange([
             _environmentName, _dataPath, _generationPath, _logLevel, _defaultProvider,
             .. _providers.Values.SelectMany(item => new Control[] { item.Url, item.Model, item.Key }),
+            .. _systemAgents.Values.SelectMany(item => new Control[] { item.Provider, item.Model }),
             _saveSettings, _reloadSettings
         ]);
         page.Controls.Add(grid);
@@ -392,6 +447,17 @@ internal sealed class MainForm : Form
             if (_providers.TryGetValue("ollama", out var settingsControls))
             {
                 PopulateModelCombo(settingsControls.Model, names, ollama.Model);
+            }
+            foreach (var (agentId, controls) in _systemAgents)
+            {
+                if (controls.Provider.Text != "ollama")
+                {
+                    continue;
+                }
+                var configuredModel = settings.SystemAgents.TryGetValue(agentId, out var agent)
+                    ? agent.Model
+                    : ollama.Model;
+                PopulateModelCombo(controls.Model, names, configuredModel);
             }
             AppendOutput($"[loaded {names.Length} Ollama models into the dropdowns]");
         }
@@ -446,19 +512,40 @@ internal sealed class MainForm : Form
     {
         EnsureConfiguration();
         var settings = EvoMeshYamlSettings.Load(_configPath);
-        _environmentName.Text = settings.EnvironmentName;
-        _dataPath.Text = settings.DataPath;
-        _generationPath.Text = settings.GenerationPath;
-        _logLevel.SelectedItem = settings.LogLevel.ToUpperInvariant();
-        _defaultProvider.SelectedItem = settings.DefaultProvider;
-        foreach (var (name, controls) in _providers)
+        _loadingSettings = true;
+        try
         {
-            if (settings.Providers.TryGetValue(name, out var provider))
+            _environmentName.Text = settings.EnvironmentName;
+            _dataPath.Text = settings.DataPath;
+            _generationPath.Text = settings.GenerationPath;
+            _logLevel.SelectedItem = settings.LogLevel.ToUpperInvariant();
+            _defaultProvider.SelectedItem = settings.DefaultProvider;
+            foreach (var (name, controls) in _providers)
             {
-                controls.Url.Text = provider.BaseUrl;
-                controls.Model.Text = provider.Model;
-                controls.Key.Text = provider.ApiKey;
+                if (settings.Providers.TryGetValue(name, out var provider))
+                {
+                    controls.Url.Text = provider.BaseUrl;
+                    controls.Model.Text = provider.Model;
+                    controls.Key.Text = provider.ApiKey;
+                }
             }
+            foreach (var (agentId, controls) in _systemAgents)
+            {
+                var configured = settings.SystemAgents.GetValueOrDefault(agentId);
+                var providerName = configured?.Provider ?? settings.DefaultProvider;
+                var modelName = configured?.Model;
+                if (string.IsNullOrWhiteSpace(modelName) &&
+                    settings.Providers.TryGetValue(providerName, out var provider))
+                {
+                    modelName = provider.Model;
+                }
+                controls.Provider.SelectedItem = providerName;
+                controls.Model.Text = modelName ?? "local-model";
+            }
+        }
+        finally
+        {
+            _loadingSettings = false;
         }
     }
 
@@ -481,6 +568,12 @@ internal sealed class MainForm : Form
         {
             settings.Providers[name] = new ProviderEditorSettings(
                 controls.Url.Text.Trim(), controls.Model.Text.Trim(), controls.Key.Text);
+        }
+        foreach (var (agentId, controls) in _systemAgents)
+        {
+            settings.SystemAgents[agentId] = new AgentModelEditorSettings(
+                controls.Provider.Text,
+                controls.Model.Text.Trim());
         }
         settings.Save(_configPath);
         AppendOutput($"[settings saved to {_configPath}]");
