@@ -246,6 +246,8 @@ A failed candidate is not automatically a dead one. When validation fails, the E
 1. **The linter's own fixer.** If Ruff reported findings it marked fixable, `ruff check --fix` runs and costs nothing. Losing a whole generation to `UP017` is not evolution, it is bookkeeping.
 2. **The model.** Anything the fixer cannot touch — a Pyright error, a failing test — goes back to the model with the exact command, its real output, and the file the last change wrote, asking for one corrected file.
 
+Some failures are not the candidate's to fix. A candidate is a copy of a tree that already validated, so when the output names a host problem — a permission error, a full disk, an unreachable network — no rewrite of one file would help. Those runs skip repair entirely and are reported as **not validated** rather than failed, and the candidate keeps its candidate status, because nothing was learned about it either way. Validation also gives pytest its own `--basetemp` inside the generation: on a host whose shared temp root this user cannot write, every `tmp_path` test would otherwise error at fixture setup and every candidate would be condemned for it.
+
 Each repair is followed by a full re-validation, and the pipeline stops repairing on whichever of these comes first:
 
 - validation passes, and the candidate is handed over as passed after *n* repairs;

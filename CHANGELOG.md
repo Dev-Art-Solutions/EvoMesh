@@ -4,6 +4,16 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Validation gives pytest its own `--basetemp` inside the candidate. On a host where
+  the shared temp root is not writable by the running user, every `tmp_path` test
+  errored at fixture setup, so no candidate could pass validation and each one was
+  reported as failed for something it did not do.
+- A validation failure that names a host problem -- a permission error, a full disk,
+  an unreachable network -- no longer enters the repair stage or condemns the
+  candidate. It is reported as not validated, and the candidate keeps its status.
+
 ### Added
 
 - The evolution pipeline repairs its own candidates. A failed validation now enters a
