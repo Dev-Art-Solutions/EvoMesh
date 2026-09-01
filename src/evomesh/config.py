@@ -13,6 +13,9 @@ class ProviderSettings(BaseModel):
     base_url: str
     model: str
     api_key: str | None = None
+    # A 30B model on a busy GPU answers a full prompt in minutes, not seconds.
+    # Too low a ceiling here reads to a human as "the agent is broken".
+    timeout_seconds: float = 600
 
 
 class ModelSettings(BaseModel):

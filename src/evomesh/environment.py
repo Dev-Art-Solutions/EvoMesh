@@ -75,10 +75,12 @@ class Environment:
         result: dict[str, ModelProvider] = {}
         for name, config in self.settings.models.providers.items():
             if name == "ollama":
-                result[name] = OllamaProvider(config.base_url, config.model)
+                result[name] = OllamaProvider(
+                    config.base_url, config.model, config.timeout_seconds
+                )
             else:
                 result[name] = OpenAICompatibleProvider(
-                    config.base_url, config.model, config.api_key
+                    config.base_url, config.model, config.api_key, config.timeout_seconds
                 )
         return result
 

@@ -10,8 +10,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from evomesh.cognition import strip_reasoning
 from evomesh.git import GitRepository
 from evomesh.models import ModelProvider
 from evomesh.storage import SQLiteRepository
@@ -23,7 +24,13 @@ MUTATION_INSTRUCTION = (
     "Return only a JSON object, no prose and no code fences, with exactly these keys:\n"
     '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete new file>", '
     '"rationale": "<one sentence>"}\n'
-    "The path must be relative and must stay inside the project."
+    "The path must be relative and must stay inside the project.\n"
+    "Escape every newline in content as \\n and every quote as \\\", so the object "
+    "stays on one line and parses as JSON."
+)
+MUTATION_SYSTEM = (
+    "You are Environment Evolver. Never target absolute paths "
+    "or parent directories. Output JSON only."
 )
 
 
@@ -62,6 +69,27 @@ class FileMutation(BaseModel):
         if target != root and root not in target.parents:
             raise ValueError("Mutation path escapes the candidate workspace")
         return target
+
+
+def parse_mutation(raw: str) -> FileMutation:
+    """Pull the mutation object out of whatever the model actually said."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError(f"no JSON object was found in the answer: {excerpt(raw)}")
+    try:
+        return FileMutation.model_validate_json(raw[start : end + 1])
+    except ValidationError as exc:
+        problem = exc.errors()[0] if exc.errors() else {}
+        location = ".".join(str(part) for part in problem.get("loc", ())) or "the object"
+        raise ValueError(
+            f"the JSON object was unusable at {location}: "
+            f"{problem.get('msg', 'invalid JSON')}"
+        ) from exc
+
+
+def excerpt(text: str, limit: int = 200) -> str:
+    flattened = " ".join(text.split())
+    return flattened[:limit] + ("..." if len(flattened) > limit else "")
 
 
 @dataclass
@@ -200,6 +228,26 @@ class CandidateWorkspace:
         return generation
 
 
+def uv_executable(start: Path) -> str:
+    """Find uv the way the Windows launcher does: PATH first, then `.tools`.
+
+    The launcher runs EvoMesh through a uv that is often not on PATH at all, so
+    a validator that only knows the bare name fails every candidate with a
+    FileNotFoundError that reads like a broken mutation. A candidate lives a few
+    directories below the checkout, so walk up instead of guessing the depth.
+    """
+    if found := shutil.which("uv"):
+        return found
+    for directory in (start, *start.parents):
+        candidate = directory / ".tools" / "uv" / "bin" / "uv.exe"
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(
+        "uv is not on PATH and no .tools/uv/bin/uv.exe was found above "
+        f"{start}; a candidate generation cannot be validated without it"
+    )
+
+
 class CandidateValidator:
     COMMANDS = (
         ("uv", "sync"),
@@ -211,9 +259,20 @@ class CandidateValidator:
 
     async def validate(self, generation: Generation) -> ValidationResult:
         outcomes: list[dict[str, object]] = []
+        try:
+            uv = uv_executable(generation.path)
+        except FileNotFoundError as exc:
+            return self._write(
+                generation,
+                ValidationResult(
+                    passed=False,
+                    commands=[{"command": "uv", "exit_code": -1, "output": str(exc)}],
+                ),
+            )
         for command in self.COMMANDS:
             process = await asyncio.create_subprocess_exec(
-                *command,
+                uv,
+                *command[1:],
                 cwd=generation.path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -228,11 +287,17 @@ class CandidateValidator:
             )
             if process.returncode != 0:
                 break
-        result = ValidationResult(
-            passed=len(outcomes) == len(self.COMMANDS)
-            and all(x["exit_code"] == 0 for x in outcomes),
-            commands=outcomes,
+        return self._write(
+            generation,
+            ValidationResult(
+                passed=len(outcomes) == len(self.COMMANDS)
+                and all(x["exit_code"] == 0 for x in outcomes),
+                commands=outcomes,
+            ),
         )
+
+    @staticmethod
+    def _write(generation: Generation, result: ValidationResult) -> ValidationResult:
         (generation.path / "validation-result.json").write_text(
             result.model_dump_json(indent=2), encoding="utf-8"
         )
@@ -288,21 +353,29 @@ class EnvironmentEvolver:
         )
         return generation
 
-    async def propose_mutation(self, objective: str, context: str = "") -> FileMutation:
+    async def propose_mutation(
+        self, objective: str, context: str = "", model: str | None = None
+    ) -> FileMutation:
         if self.provider is None:
             raise RuntimeError("A local model provider is required to propose a mutation")
         prompt = f"{context}\n\nOBJECTIVE: {objective}\n\n{MUTATION_INSTRUCTION}".strip()
-        raw = await self.provider.generate(
-            prompt,
-            system=(
-                "You are Environment Evolver. Never target absolute paths "
-                "or parent directories. Output JSON only."
-            ),
-        )
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("Model response did not contain a JSON mutation")
-        return FileMutation.model_validate_json(raw[start : end + 1])
+        failure = ""
+        for _ in range(2):
+            raw = strip_reasoning(
+                await self.provider.generate(prompt, system=MUTATION_SYSTEM, model=model)
+            )
+            try:
+                return parse_mutation(raw)
+            except ValueError as exc:
+                failure = str(exc)
+                # One repair pass. A local model that buried the object in prose
+                # or truncated a string usually returns it clean once it is told
+                # exactly what could not be read.
+                prompt = (
+                    f"{MUTATION_INSTRUCTION}\n\nYour previous answer could not be used: "
+                    f"{failure}\nReturn only the JSON object, nothing else."
+                )
+        raise ValueError(f"The model did not return a usable JSON mutation. {failure}")
 
     async def apply_mutation(
         self, generation: Generation, mutation: FileMutation, objective: str

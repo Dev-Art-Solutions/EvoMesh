@@ -1,15 +1,24 @@
 from pathlib import Path
 
+import httpx
 import pytest
 
 from evomesh.agents import AgentRegistry
 from evomesh.architect import ArchitectInterview
-from evomesh.config import AgentModelSettings, Settings
+from evomesh.config import AgentModelSettings, ModelSettings, ProviderSettings, Settings
 from evomesh.contracts import AgentDefinition, AgentStatus, FilesystemGrant, Message
 from evomesh.environment import Environment, HealthState
-from evomesh.evolution import CandidateWorkspace, FileMutation, GenerationSupervisor
+from evomesh.evolution import (
+    CandidateValidator,
+    CandidateWorkspace,
+    FileMutation,
+    Generation,
+    GenerationStatus,
+    GenerationSupervisor,
+    uv_executable,
+)
 from evomesh.messaging import MessageBus
-from evomesh.models import MockProvider
+from evomesh.models import MockProvider, OllamaProvider, describe
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.storage import SQLiteRepository
 
@@ -255,3 +264,65 @@ async def test_architect_rejects_a_generic_name_from_the_model() -> None:
     assert interview.candidate.name == "Read Markdown Agent"
     # The purpose was a genuine improvement, so that half is kept.
     assert "weekly summary" in interview.candidate.purpose
+
+
+def test_uv_is_found_in_a_tools_directory_above_the_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The launcher starts EvoMesh with a uv that never reaches PATH.
+    monkeypatch.setattr("evomesh.evolution.shutil.which", lambda name: None)
+    bundled = tmp_path / ".tools" / "uv" / "bin" / "uv.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+    candidate = tmp_path / "EvoMesh" / "generations" / "3"
+    candidate.mkdir(parents=True)
+
+    assert uv_executable(candidate) == str(bundled)
+
+
+def test_uv_on_path_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("evomesh.evolution.shutil.which", lambda name: "C:/uv/uv.exe")
+
+    assert uv_executable(tmp_path) == "C:/uv/uv.exe"
+
+
+async def test_validation_fails_with_a_readable_reason_when_uv_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing toolchain must read as a failed validation, not a broken mutation."""
+    monkeypatch.setattr("evomesh.evolution.shutil.which", lambda name: None)
+    candidate = tmp_path / "generations" / "1"
+    candidate.mkdir(parents=True)
+    generation = Generation(number=1, status=GenerationStatus.CANDIDATE, path=candidate)
+
+    result = await CandidateValidator().validate(generation)
+
+    assert result.passed is False
+    assert "uv is not on PATH" in str(result.commands[0]["output"])
+    assert (candidate / "validation-result.json").exists()
+
+
+def test_a_model_error_never_reaches_a_human_as_an_empty_message() -> None:
+    """httpx raises timeouts with an empty str(), which read as a broken agent."""
+    assert describe(httpx.ReadTimeout("")) == "ReadTimeout"
+    assert describe(httpx.ConnectError("connection refused")) == "ConnectError: connection refused"
+
+
+def test_provider_timeout_comes_from_configuration(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            default_provider="ollama",
+            providers={
+                "ollama": ProviderSettings(
+                    base_url="http://127.0.0.1:11434", model="qwen3", timeout_seconds=42
+                )
+            },
+        ),
+    )
+
+    provider = Environment(settings).providers["ollama"]
+
+    assert isinstance(provider, OllamaProvider)
+    assert provider.timeout_seconds == 42

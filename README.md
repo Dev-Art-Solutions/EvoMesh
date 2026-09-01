@@ -76,7 +76,9 @@ The local control channel listens only on `127.0.0.1:8765`. Closing the Control 
 
 `evomesh.yaml` configures Ollama (default), InferHub, or another local OpenAI-compatible endpoint. No cloud AI account is required. For Ollama, install the configured model, for example `ollama pull qwen3`. InferHub is optional and uses its OpenAI-compatible local endpoint.
 
-EvoMesh is built for small context windows. `runtime.prompt_chars`, `memory_chars`, `context_chars`, and `inbox_chars` cap every prompt, and the defaults suit a 4k-token model; raise them if your models are larger. Reasoning-model `<think>` blocks are stripped before anything is stored or re-prompted.
+EvoMesh is built for small context windows. `runtime.prompt_chars`, `memory_chars`, `context_chars`, and `inbox_chars` cap every prompt, and the defaults suit a 4k-token model; raise them if your models are larger. Reasoning-model `<think>` blocks are stripped before anything is stored or re-prompted, including the common case where the chat template already opened the block and the model returns only the closing tag.
+
+Each provider also takes `timeout_seconds` (default 600). A 30B model on a busy GPU can need minutes for one answer, and a timeout is reported by name rather than as an empty error.
 
 Each agent persists its own `provider` and `model_name`. The runtime passes that model on every inference request, so agents can use different Ollama models concurrently. Use the Agents tab in the Control Center or:
 
@@ -118,6 +120,20 @@ The model is asked for a four-line answer (`STEP`, `RESULT`, `FACT`, `DONE`), wh
 ```
 
 Cadence and concurrency are controlled by `runtime.cycle_seconds` and `runtime.stagger_seconds`. Each agent serialises its own model calls, so a chat reply and a cycle never race for the same small model.
+
+### Asking an agent what it is working on
+
+You can simply ask, in chat, and the answer is not the model guessing. Every reply is prompted with a `CURRENT WORK` block the runtime fills in as the message arrives: phase, cycles completed, the goal and plan step in hand, the last finished step, the last error, and how long until the next cycle. A behavior that drives a pipeline of its own adds to it — ask **Environment Evolver** and you get the live stage (`plan`, `propose`, `validate`, `report`, `await-human`), the candidate generation number, the objective, the file it changed, the workspace path, and the validation verdict, read at the moment you ask rather than remembered from the last cycle.
+
+```text
+evomesh> /chat evolver
+evomesh> what are you working on?
+Environment Evolver> Generation 3 is open for "Improve EvoMesh by one validated
+candidate generation at a time". I am on the propose step, asking the model for
+one small, safe file change; nothing is validated yet.
+```
+
+`/agents` gives the same picture for every agent at once, without spending a model call.
 
 ## Agent state
 

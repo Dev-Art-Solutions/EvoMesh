@@ -48,6 +48,8 @@ models:
     ollama:
       base_url: http://127.0.0.1:11434
       model: qwen3
+      # Seconds to wait for one answer. A 30B model on a busy GPU needs minutes.
+      timeout_seconds: 600
     inferhub:
       base_url: http://127.0.0.1:5080/v1
       model: qwen3
