@@ -1,0 +1,1 @@
+MUTATION BLOCKED: cannot fabricate a complete file without first reading the current file contents. To proceed safely, Environment Evolver must read the target file (e.g. the newest humanize.py or agent_label.py in the working tree, not the generation copy) and then submit a minimal, targeted diff rather than a full-file replacement.
