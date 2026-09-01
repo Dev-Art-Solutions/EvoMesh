@@ -1,47 +1,50 @@
-"""Core mesh utilities for EvoMesh.
-
-This module provides small helpers for representing and evolving triangle
-meshes. The functions intentionally avoid mutating caller data in place so
-that evolutionary populations remain predictable.
-"""
-
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 
 @dataclass
-class Vertex:
-    """A single 3D vertex."""
+class MeshNode:
+    """A single node in the agent mesh."""
 
-    x: float
-    y: float
-    z: float
+    id: str
+    kind: str = "agent"
+    payload: dict = field(default_factory=dict)
 
-    def copy(self) -> Vertex:
-        """Return an independent copy of this vertex."""
-        return Vertex(self.x, self.y, self.z)
+    def __post_init__(self) -> None:
+        self.payload.setdefault("kind", self.kind)
 
 
 @dataclass
-class TriangleMesh:
-    """A minimal triangle mesh built from vertices and indices."""
+class Mesh:
+    """A directed, labelled graph of agents and their connections."""
 
-    vertices: list[Vertex] = field(default_factory=list)
-    indices: list[int] = field(default_factory=list)
+    nodes: dict[str, MeshNode] = field(default_factory=dict)
+    edges: dict[str, dict[str, str]] = field(default_factory=dict)
 
-    def vertex_count(self) -> int:
-        """Return the number of vertices in the mesh."""
-        return len(self.vertices)
+    def add_node(self, node: MeshNode) -> None:
+        self.nodes[node.id] = node
+        self.edges.setdefault(node.id, {})
 
-    def validate_indices(self) -> bool:
-        """Return True when every index references a valid vertex."""
-        count = self.vertex_count()
-        return all(0 <= idx < count for idx in self.indices)
+    def add_edge(self, source: str, target: str, label: str = "") -> None:
+        if source not in self.nodes or target not in self.nodes:
+            raise KeyError(f"edge references unknown node: {source!r} or {target!r}")
+        self.edges.setdefault(source, {})[target] = label
 
-    def clone(self) -> TriangleMesh:
-        """Return an independent deep copy of this mesh."""
-        return TriangleMesh(
-            vertices=[v.copy() for v in self.vertices],
-            indices=list(self.indices),
-        )
+    def neighbours(self, node_id: str) -> list[str]:
+        return sorted(self.edges.get(node_id, {}))
+
+    def out_degree(self, node_id: str) -> int:
+        return len(self.edges.get(node_id, {}))
+
+    def in_degree(self, node_id: str) -> int:
+        return sum(1 for outs in self.edges.values() if node_id in outs)
+
+    def iter_nodes(self) -> Iterable[MeshNode]:
+        return self.nodes.values()
+
+    def iter_edges(self) -> Iterable[tuple[str, str, str]]:
+        for source, targets in self.edges.items():
+            for target, label in targets.items():
+                yield source, target, label
