@@ -6,6 +6,20 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- The evolution pipeline repairs its own candidates. A failed validation now enters a
+  `repair` stage instead of going straight to a verdict, and re-validates afterwards.
+  - Ruff's own `--fix` runs first and costs no model call, so a generation is no longer
+    lost to an autofixable lint rule; only what survives it is sent to the model.
+  - A model repair is prompted with the failing command, its real output, and the file
+    the last change wrote, and must return one whole corrected file.
+  - Repairing stops on evidence, not just on a budget: an identical failure means the
+    repair changed nothing, and the candidate goes to the human as it stands.
+  - `evolution.max_repairs` (default 2) bounds the attempts; `0` restores the previous
+    single-shot behaviour.
+  - A model that cannot author a usable repair reports the failure rather than resetting
+    the pipeline, which previously stranded the candidate and opened another.
+  - `/evolution status` reports the repair count, and the verdict reads
+    `validation passed after 1 repair attempt`.
 - Real BDI cognition. Agents run the Rao and Georgeff practical-reasoning loop:
   perceive, revise beliefs, generate options, commit to an intention with a plan, and
   execute one step of it per cycle.

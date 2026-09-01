@@ -11,7 +11,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.1.0-alpha.2 is an early runnable foundation. Implemented: the console, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI-shaped state, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline, supervisor metadata, and automated tests. Experimental: model-authored mutations and manual generation promotion. Planned: richer mutation authoring, stronger OS sandboxing, web/Telegram channels, and autonomous promotion policies.
+Version 0.1.0-alpha.2 is an early runnable foundation. Implemented: the console, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI-shaped state, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, supervisor metadata, and automated tests. Experimental: model-authored mutations and manual generation promotion. Planned: richer mutation authoring, stronger OS sandboxing, web/Telegram channels, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -123,7 +123,7 @@ Cadence and concurrency are controlled by `runtime.cycle_seconds` and `runtime.s
 
 ### Asking an agent what it is working on
 
-You can simply ask, in chat, and the answer is not the model guessing. Every reply is prompted with a `CURRENT WORK` block the runtime fills in as the message arrives: phase, cycles completed, the goal and plan step in hand, the last finished step, the last error, and how long until the next cycle. A behavior that drives a pipeline of its own adds to it — ask **Environment Evolver** and you get the live stage (`plan`, `propose`, `validate`, `report`, `await-human`), the candidate generation number, the objective, the file it changed, the workspace path, and the validation verdict, read at the moment you ask rather than remembered from the last cycle.
+You can simply ask, in chat, and the answer is not the model guessing. Every reply is prompted with a `CURRENT WORK` block the runtime fills in as the message arrives: phase, cycles completed, the goal and plan step in hand, the last finished step, the last error, and how long until the next cycle. A behavior that drives a pipeline of its own adds to it — ask **Environment Evolver** and you get the live stage (`plan`, `propose`, `validate`, `repair`, `report`, `await-human`), the candidate generation number, the objective, the file it changed, the workspace path, and the validation verdict, read at the moment you ask rather than remembered from the last cycle.
 
 ```text
 evomesh> /chat evolver
@@ -191,6 +191,7 @@ evomesh> /intentions evolver
     [x] open an isolated candidate generation
     [x] propose and apply one mutation
     [ ] validate the candidate
+    [ ] repair the candidate while validation fails
     [ ] hand the candidate to the human
 ```
 
@@ -230,11 +231,28 @@ The Environment Evolver is a staged pipeline, and one cycle advances exactly one
 
 ```text
 plan -> propose -> validate -> report -> await-human
+                      ^           |
+                      `- repair <-'
 ```
 
 It opens a candidate generation on its first cycle after boot, so evolution actually starts rather than waiting to be asked. One stage per cycle means a tick never becomes a ten-minute validation run, and it never opens a second candidate while one is still waiting for you.
 
 Candidates are copied into isolated generation directories and never overwrite the active tree. The supervisor tracks active, candidate, and last-known-good generations in atomic metadata. Validation runs `uv sync`, Ruff, Pyright, pytest, and the smoke check, and writes a result record; a candidate that was never validated is reported as `not validated`, not as failed. Promotion stays human-controlled, and promoting or discarding releases the pipeline for the next objective.
+
+### Self-repair
+
+A failed candidate is not automatically a dead one. When validation fails, the Evolver goes back and fixes its own work before it asks you for anything, and it does that in the cheapest order available:
+
+1. **The linter's own fixer.** If Ruff reported findings it marked fixable, `ruff check --fix` runs and costs nothing. Losing a whole generation to `UP017` is not evolution, it is bookkeeping.
+2. **The model.** Anything the fixer cannot touch — a Pyright error, a failing test — goes back to the model with the exact command, its real output, and the file the last change wrote, asking for one corrected file.
+
+Each repair is followed by a full re-validation, and the pipeline stops repairing on whichever of these comes first:
+
+- validation passes, and the candidate is handed over as passed after *n* repairs;
+- the failure comes back byte-identical, which is proof the repair changed nothing;
+- `evolution.max_repairs` attempts are used up.
+
+Every outcome still ends in a verdict for you. A model that cannot author a usable repair reports the failure as it stands rather than resetting the pipeline and stranding the candidate. Set `evolution.max_repairs: 0` for the old single-shot behaviour, where the first failure is final.
 
 ```text
 /evolution status
@@ -242,7 +260,7 @@ Candidates are copied into isolated generation directories and never overwrite t
 /evolution promote [n]   /evolution discard [n]   /evolution rollback
 ```
 
-Set `evolution.autonomous: false` to park the Evolver, or `evolution.auto_validate: false` to skip the validation suite.
+Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, or `evolution.max_repairs` to bound how often it may fix its own candidate.
 
 ## Git history
 

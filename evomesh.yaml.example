@@ -25,6 +25,10 @@ evolution:
   # Run uv sync / ruff / pyright / pytest on each candidate. Turn off if you do
   # not want the mesh spending minutes of CPU on validation.
   auto_validate: true
+  # When validation fails, how many times the Evolver may fix its own candidate
+  # before handing the failure to you. It tries ruff's own autofix first and only
+  # spends a model call on what survives it. 0 reports the first failure as final.
+  max_repairs: 2
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 

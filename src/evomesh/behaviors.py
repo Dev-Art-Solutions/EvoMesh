@@ -14,6 +14,7 @@ agent reconsider on its own rather than being told to.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 from evomesh.bdi import (
@@ -31,6 +32,7 @@ from evomesh.evolution import (
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
+    excerpt,
 )
 
 PROVIDER_KEY = "provider.ready"
@@ -42,23 +44,27 @@ VERDICT_KEY = "evolution.verdict"
 STAGE_PLAN = "plan"
 STAGE_PROPOSE = "propose"
 STAGE_VALIDATE = "validate"
+STAGE_REPAIR = "repair"
 STAGE_REPORT = "report"
 STAGE_AWAIT_HUMAN = "await-human"
 
 # The Evolver's plan, in the order the pipeline runs. A stage's index here is
 # also the plan cursor, so the checklist and the persisted pipeline state cannot
-# drift apart.
-EVOLUTION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_VALIDATE, STAGE_REPORT)
+# drift apart. Repair is the one stage that can be skipped or entered several
+# times, which moves the cursor backwards -- that is the honest picture of an
+# agent that had to go back and fix its own work.
+EVOLUTION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_VALIDATE, STAGE_REPAIR, STAGE_REPORT)
 EVOLUTION_STEPS = (
     "open an isolated candidate generation",
     "propose and apply one mutation",
     "validate the candidate",
+    "repair the candidate while validation fails",
     "hand the candidate to the human",
 )
-# With auto_validate off the validation stage never runs, so it must not
-# appear in the checklist either.
+# With auto_validate off the validation stage never runs, so neither validation
+# nor the repair that only exists to answer it belongs in the checklist.
 SKIP_VALIDATION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_REPORT)
-SKIP_VALIDATION_STEPS = (EVOLUTION_STEPS[0], EVOLUTION_STEPS[1], EVOLUTION_STEPS[3])
+SKIP_VALIDATION_STEPS = (EVOLUTION_STEPS[0], EVOLUTION_STEPS[1], EVOLUTION_STEPS[-1])
 
 AWAITING_KEY = "evolution.awaiting_human"
 
@@ -241,15 +247,26 @@ class EvolverBehavior(BDIBehavior):
 
     name = "evolver"
 
-    def __init__(self, auto_validate: bool = True) -> None:
+    def __init__(self, auto_validate: bool = True, max_repairs: int = 2) -> None:
         super().__init__()
         self.auto_validate = auto_validate
+        # Zero turns self-repair off and restores the old behaviour: one shot at
+        # validation, then a verdict.
+        self.max_repairs = max(0, max_repairs)
 
     def _stages(self) -> tuple[str, ...]:
-        return EVOLUTION_STAGES if self.auto_validate else SKIP_VALIDATION_STAGES
+        if not self.auto_validate:
+            return SKIP_VALIDATION_STAGES
+        if not self.max_repairs:
+            return tuple(stage for stage in EVOLUTION_STAGES if stage != STAGE_REPAIR)
+        return EVOLUTION_STAGES
 
     def _steps(self) -> tuple[str, ...]:
-        return EVOLUTION_STEPS if self.auto_validate else SKIP_VALIDATION_STEPS
+        if not self.auto_validate:
+            return SKIP_VALIDATION_STEPS
+        if not self.max_repairs:
+            return tuple(step for step in EVOLUTION_STEPS if not step.startswith("repair"))
+        return EVOLUTION_STEPS
 
     async def perceive(self, context: CycleContext) -> list[Belief]:
         evolver = cast("EnvironmentEvolver | None", context.service("evolver"))
@@ -300,6 +317,7 @@ class EvolverBehavior(BDIBehavior):
             STAGE_PLAN: "about to copy the mesh into a fresh candidate generation",
             STAGE_PROPOSE: "asking the model for one small, safe file change",
             STAGE_VALIDATE: "running sync, ruff, pyright, pytest and the smoke test",
+            STAGE_REPAIR: "fixing what validation reported, with the linter or the model",
             STAGE_REPORT: "writing up the verdict for a human",
             STAGE_AWAIT_HUMAN: "waiting for a human to promote or discard it",
         }.get(stage, "unknown stage")
@@ -346,6 +364,8 @@ class EvolverBehavior(BDIBehavior):
                 return await self._propose(context, evolver, state)
             if stage == STAGE_VALIDATE:
                 return await self._validate(evolver, state)
+            if stage == STAGE_REPAIR:
+                return await self._repair(context, evolver, state)
             if stage == STAGE_REPORT:
                 return await self._report(evolver, state)
         except (RuntimeError, ValueError, OSError) as exc:
@@ -397,13 +417,105 @@ class EvolverBehavior(BDIBehavior):
     ) -> StepResult:
         generation = evolver.candidate(int(state["generation"]))
         result = await evolver.validate(generation)
+        repairs = int(state.get("repairs", 0))
+        digest = result.digest()
+        # A repair that leaves the failure byte-identical has not moved, and the
+        # attempts left would go the same way. Stop and let the human see it.
+        stalled = bool(digest) and digest == state.get("failure_digest")
+        exhausted = repairs >= self.max_repairs
+        repairing = not result.passed and not stalled and not exhausted
         await evolver.set_pipeline_state(
-            {**state, "stage": STAGE_REPORT, "passed": result.passed}
+            {
+                **state,
+                "stage": STAGE_REPAIR if repairing else STAGE_REPORT,
+                "passed": result.passed,
+                "failure_digest": digest,
+            }
         )
-        verdict = "passed" if result.passed else "failed"
         return StepResult(
-            summary=f"validation {verdict} for generation {generation.number}",
-            fact=f"generation {generation.number} validation {verdict}",
+            summary=(
+                f"validation {self._outcome(result.passed, repairs)} for generation "
+                f"{generation.number}{self._next_move(repairing, stalled, exhausted, repairs)}"
+            ),
+            fact=(
+                f"generation {generation.number} validation "
+                f"{'passed' if result.passed else 'failed'}"
+            ),
+            phase=AgentPhase.ACTING,
+        )
+
+    @staticmethod
+    def _outcome(passed: bool, repairs: int) -> str:
+        verdict = "passed" if passed else "failed"
+        if passed and repairs:
+            return f"{verdict} after {repairs} repair{'s' if repairs != 1 else ''}"
+        return verdict
+
+    def _next_move(self, repairing: bool, stalled: bool, exhausted: bool, repairs: int) -> str:
+        if repairing:
+            return f"; repairing it (attempt {repairs + 1} of {self.max_repairs})"
+        if stalled:
+            return "; the last repair changed nothing, so it stops here"
+        if exhausted and repairs:
+            return f"; {repairs} repair attempt{'s' if repairs != 1 else ''} did not fix it"
+        return ""
+
+    async def _repair(
+        self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
+    ) -> StepResult:
+        generation = evolver.candidate(int(state["generation"]))
+        recorded = evolver.read_validation(generation)
+        failure = recorded.failure() if recorded else None
+        if failure is None:
+            # Nothing on record to repair. The candidate still deserves a
+            # verdict, so fall through rather than looping on an empty stage.
+            await evolver.set_pipeline_state({**state, "stage": STAGE_REPORT})
+            return StepResult(
+                summary=f"generation {generation.number} has no recorded failure to repair",
+                phase=AgentPhase.ACTING,
+            )
+        attempt = int(state.get("repairs", 0)) + 1
+        moved = {**state, "stage": STAGE_VALIDATE, "repairs": attempt}
+        if evolver.repairer.can_repair(failure):
+            outcome = await evolver.autofix(generation)
+            how = f"ruff --fix: {excerpt(str(outcome.get('output', '')), 120)}"
+        else:
+            try:
+                mutation = await evolver.propose_repair(
+                    generation,
+                    failure,
+                    Path(str(state["file"])) if state.get("file") else None,
+                    model=context.definition.model_name,
+                )
+            except (RuntimeError, ValueError) as exc:
+                # The model could not author a fix. Reporting the failure as it
+                # stands beats the generic handler, which would send the whole
+                # pipeline back to plan and strand this candidate unreviewed.
+                await evolver.set_pipeline_state(
+                    {**state, "stage": STAGE_REPORT, "error": str(exc)}
+                )
+                return StepResult(
+                    summary=(
+                        f"no repair could be authored for generation "
+                        f"{generation.number} ({exc}); reporting the failure as it stands"
+                    ),
+                    phase=AgentPhase.ACTING,
+                )
+            await evolver.apply_mutation(
+                generation, mutation, str(state.get("objective", "")), status="repaired"
+            )
+            moved["file"] = str(mutation.relative_path)
+            how = f"{mutation.relative_path}: {mutation.rationale}"
+        await evolver.set_pipeline_state(moved)
+        return StepResult(
+            summary=(
+                f"repair {attempt} of {self.max_repairs} for generation "
+                f"{generation.number} after `{failure.get('command')}` failed -- {how}"
+            ),
+            fact=(
+                f"generation {generation.number} repaired itself after "
+                f"{failure.get('command')} failed"
+            ),
             phase=AgentPhase.ACTING,
         )
 
@@ -430,15 +542,20 @@ class EvolverBehavior(BDIBehavior):
         passed = state.get("passed")
         if passed is None:
             return "not validated"
-        return "validation passed" if passed else "validation failed"
+        verdict = "validation passed" if passed else "validation failed"
+        repairs = int(state.get("repairs", 0))
+        if not repairs:
+            return verdict
+        attempts = f"{repairs} repair attempt{'s' if repairs != 1 else ''}"
+        return f"{verdict} after {attempts}"
 
 
-def default_behaviors(auto_validate: bool = True) -> dict[str, Any]:
+def default_behaviors(auto_validate: bool = True, max_repairs: int = 2) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
         "guardian": GuardianBehavior(),
         "evaluator": EvaluatorBehavior(),
-        "evolver": EvolverBehavior(auto_validate=auto_validate),
+        "evolver": EvolverBehavior(auto_validate=auto_validate, max_repairs=max_repairs),
     }
 
 

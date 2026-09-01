@@ -52,7 +52,8 @@ class Environment:
         self.world = WorldContext(settings.workspace_path)
         self.budget = settings.runtime.budget()
         self.behaviors: dict[str, AgentBehavior] = default_behaviors(
-            settings.evolution.auto_validate
+            settings.evolution.auto_validate,
+            settings.evolution.max_repairs,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

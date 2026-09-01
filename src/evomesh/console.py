@@ -330,6 +330,7 @@ class ConsoleChannel:
                 f"active generation: {metadata['active']}\n"
                 f"last known good: {metadata['last_known_good']}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
+                f"self-repairs on this candidate: {state.get('repairs', 0)}\n"
                 f"candidates:\n{candidates or '  none'}"
             )
         if action == "start" and len(parts) > 2:

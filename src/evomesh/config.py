@@ -58,6 +58,9 @@ class EvolutionSettings(BaseModel):
     autonomous: bool = True
     cycle_seconds: int = 300
     auto_validate: bool = True
+    # How many times the Evolver may fix its own candidate before a failure
+    # becomes the human's problem. Zero reports the first failure as final.
+    max_repairs: int = 2
     objective: str | None = None
 
 

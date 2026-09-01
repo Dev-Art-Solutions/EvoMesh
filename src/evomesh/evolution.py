@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 from collections.abc import Iterable
@@ -33,6 +34,22 @@ MUTATION_SYSTEM = (
     "or parent directories. Output JSON only."
 )
 
+REPAIR_INSTRUCTION = (
+    "The candidate generation failed validation. Repair it with ONE file change.\n"
+    "Return only a JSON object, no prose and no code fences, with exactly these keys:\n"
+    '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete repaired file>", '
+    '"rationale": "<one sentence>"}\n'
+    "Return the whole file, not a patch, and change only what the failure demands.\n"
+    "The path must be relative and must stay inside the project.\n"
+    "Escape every newline in content as \\n and every quote as \\\", so the object "
+    "stays on one line and parses as JSON."
+)
+REPAIR_SYSTEM = (
+    "You are Environment Evolver repairing your own candidate. Fix the reported "
+    "failure and nothing else. Never target absolute paths or parent directories. "
+    "Output JSON only."
+)
+
 
 class GenerationStatus(StrEnum):
     ACTIVE = "active"
@@ -54,6 +71,26 @@ class ValidationResult(BaseModel):
     passed: bool
     commands: list[dict[str, object]]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def failure(self) -> dict[str, object] | None:
+        """The command that broke the candidate, or None when nothing did."""
+        for command in self.commands:
+            if command.get("exit_code") != 0:
+                return command
+        return None
+
+    def digest(self) -> str:
+        """Fingerprint the failure, so a repair that changed nothing is visible.
+
+        Without this the pipeline cannot tell "the model rewrote the file and it
+        still fails the same way" from "the model made progress", and it would
+        spend every remaining attempt on a repair that provably does nothing.
+        """
+        failure = self.failure()
+        if failure is None:
+            return ""
+        raw = f"{failure.get('command')}\n{failure.get('output')}"
+        return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
 class FileMutation(BaseModel):
@@ -90,6 +127,18 @@ def parse_mutation(raw: str) -> FileMutation:
 def excerpt(text: str, limit: int = 200) -> str:
     flattened = " ".join(text.split())
     return flattened[:limit] + ("..." if len(flattened) > limit else "")
+
+
+def clip(text: str, limit: int, *, keep_end: bool = True) -> str:
+    """Truncate without flattening, unlike ``excerpt``.
+
+    A repair prompt carries tool output and source code, and both are unreadable
+    once their line structure is collapsed. Tool output fails at the bottom, a
+    file has to start at the top, so which end survives is the caller's choice.
+    """
+    if len(text) <= limit:
+        return text
+    return "...\n" + text[-limit:] if keep_end else text[:limit] + "\n..."
 
 
 @dataclass
@@ -304,6 +353,49 @@ class CandidateValidator:
         return result
 
 
+class CandidateRepairer:
+    """Mechanical repair: let the linter fix whatever the linter can fix.
+
+    Most of what a small local model gets wrong in a generated file is a style
+    rule that ships with a documented autofix. Burning a model call -- and a
+    whole generation -- on ``UP017`` is waste, so the deterministic fixer runs
+    first and the model is only asked about what survives it.
+
+    The fixer runs over the whole candidate tree rather than the mutated file
+    alone. That is safe because a candidate starts as a copy of a tree that
+    already passes ``ruff check``, so the only fixable findings in it are the
+    ones the mutation just introduced.
+    """
+
+    AUTOFIX = ("uv", "run", "ruff", "check", "--fix", ".")
+
+    def can_repair(self, failure: dict[str, object] | None) -> bool:
+        """Whether the mechanical fixer has any chance against this failure."""
+        if failure is None:
+            return False
+        if "ruff" not in str(failure.get("command", "")):
+            return False
+        # Ruff itself says which findings it can fix; anything else is the
+        # model's problem, and asking the fixer to try would waste a cycle.
+        return "[*]" in str(failure.get("output", ""))
+
+    async def autofix(self, generation: Generation) -> dict[str, object]:
+        uv = uv_executable(generation.path)
+        process = await asyncio.create_subprocess_exec(
+            uv,
+            *self.AUTOFIX[1:],
+            cwd=generation.path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await process.communicate()
+        return {
+            "command": " ".join(self.AUTOFIX),
+            "exit_code": process.returncode,
+            "output": output.decode(errors="replace"),
+        }
+
+
 class EnvironmentEvolver:
     """Owns the candidate lifecycle. Driven one stage per cycle by EvolverBehavior."""
 
@@ -313,11 +405,13 @@ class EnvironmentEvolver:
         repository: SQLiteRepository,
         provider: ModelProvider | None = None,
         validator: CandidateValidator | None = None,
+        repairer: CandidateRepairer | None = None,
     ) -> None:
         self.workspace = workspace
         self.repository = repository
         self.provider = provider
         self.validator = validator or CandidateValidator()
+        self.repairer = repairer or CandidateRepairer()
 
     # -- pipeline state -------------------------------------------------
 
@@ -353,17 +447,14 @@ class EnvironmentEvolver:
         )
         return generation
 
-    async def propose_mutation(
-        self, objective: str, context: str = "", model: str | None = None
+    async def _author(
+        self, prompt: str, instruction: str, system: str, model: str | None
     ) -> FileMutation:
         if self.provider is None:
             raise RuntimeError("A local model provider is required to propose a mutation")
-        prompt = f"{context}\n\nOBJECTIVE: {objective}\n\n{MUTATION_INSTRUCTION}".strip()
         failure = ""
         for _ in range(2):
-            raw = strip_reasoning(
-                await self.provider.generate(prompt, system=MUTATION_SYSTEM, model=model)
-            )
+            raw = strip_reasoning(await self.provider.generate(prompt, system=system, model=model))
             try:
                 return parse_mutation(raw)
             except ValueError as exc:
@@ -372,13 +463,67 @@ class EnvironmentEvolver:
                 # or truncated a string usually returns it clean once it is told
                 # exactly what could not be read.
                 prompt = (
-                    f"{MUTATION_INSTRUCTION}\n\nYour previous answer could not be used: "
+                    f"{instruction}\n\nYour previous answer could not be used: "
                     f"{failure}\nReturn only the JSON object, nothing else."
                 )
         raise ValueError(f"The model did not return a usable JSON mutation. {failure}")
 
+    async def propose_mutation(
+        self, objective: str, context: str = "", model: str | None = None
+    ) -> FileMutation:
+        prompt = f"{context}\n\nOBJECTIVE: {objective}\n\n{MUTATION_INSTRUCTION}".strip()
+        return await self._author(prompt, MUTATION_INSTRUCTION, MUTATION_SYSTEM, model)
+
+    async def propose_repair(
+        self,
+        generation: Generation,
+        failure: dict[str, object],
+        focus: Path | None = None,
+        model: str | None = None,
+    ) -> FileMutation:
+        """Ask the model to fix the command that failed, shown the real output."""
+        prompt = "\n".join(
+            part
+            for part in (
+                f"COMMAND: {failure.get('command')}",
+                f"EXIT CODE: {failure.get('exit_code')}",
+                f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
+                self._focus(generation, focus),
+                REPAIR_INSTRUCTION,
+            )
+            if part
+        )
+        return await self._author(prompt, REPAIR_INSTRUCTION, REPAIR_SYSTEM, model)
+
+    @staticmethod
+    def _focus(generation: Generation, focus: Path | None) -> str:
+        """Show the model the file it last wrote, so it can return a whole one."""
+        if focus is None:
+            return ""
+        path = generation.path / focus
+        if not path.is_file():
+            return ""
+        body = clip(path.read_text(encoding="utf-8", errors="replace"), 2000, keep_end=False)
+        return f"The last change touched {focus.as_posix()}, which currently reads:\n{body}"
+
+    async def autofix(self, generation: Generation) -> dict[str, object]:
+        outcome = await self.repairer.autofix(generation)
+        await self.repository.record_mutation(
+            {
+                "generation": generation.number,
+                "status": "repaired",
+                "how": "ruff --fix",
+                "exit_code": outcome.get("exit_code"),
+            }
+        )
+        return outcome
+
     async def apply_mutation(
-        self, generation: Generation, mutation: FileMutation, objective: str
+        self,
+        generation: Generation,
+        mutation: FileMutation,
+        objective: str,
+        status: str = "applied",
     ) -> Path:
         if generation.status != GenerationStatus.CANDIDATE:
             raise ValueError("Mutations may only be applied to candidates")
@@ -391,7 +536,7 @@ class EnvironmentEvolver:
                 "objective": objective,
                 "path": str(mutation.relative_path),
                 "rationale": mutation.rationale,
-                "status": "applied",
+                "status": status,
             }
         )
         return target

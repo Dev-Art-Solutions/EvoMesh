@@ -399,7 +399,15 @@ async def test_the_evolver_keeps_one_commitment_across_the_whole_pipeline(
     assert len(committed) == 1, "one plan carried the whole pipeline, not one per stage"
     intention = committed[0]
     assert intention.plan == "evolve-generation"
-    assert [step.status for step in intention.steps] == [StepStatus.DONE] * 4
+    # Repair is the fourth step and nothing broke, so it is the one box the
+    # checklist honestly leaves unticked.
+    assert [step.status for step in intention.steps] == [
+        StepStatus.DONE,
+        StepStatus.DONE,
+        StepStatus.DONE,
+        StepStatus.PENDING,
+        StepStatus.DONE,
+    ]
     assert (await evolver.pipeline_state())["stage"] == "await-human"
 
 

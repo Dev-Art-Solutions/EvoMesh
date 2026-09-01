@@ -2,13 +2,20 @@ from pathlib import Path
 
 import pytest
 
-from evomesh.behaviors import EvolverBehavior, GuardianBehavior
+from evomesh.behaviors import STAGE_REPAIR, EvolverBehavior, GuardianBehavior
 from evomesh.cognition import CycleContext, parse_cycle_reply, strip_reasoning
 from evomesh.config import EvolutionSettings, RuntimeSettings, Settings
 from evomesh.console import ConsoleChannel
 from evomesh.contracts import AgentDefinition, AgentPhase, AgentStatus, GoalStatus, Message
 from evomesh.environment import Environment
-from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver, ValidationResult
+from evomesh.evolution import (
+    CandidateRepairer,
+    CandidateWorkspace,
+    EnvironmentEvolver,
+    Generation,
+    GenerationStatus,
+    ValidationResult,
+)
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.models import MockProvider
 
@@ -670,3 +677,235 @@ async def test_an_unusable_mutation_names_what_was_wrong(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="no JSON object was found"):
         await evolver.propose_mutation("flip the flag")
+
+
+# -- self-repair ---------------------------------------------------------
+
+RUFF_FIXABLE = (
+    "UP017 [*] Use `datetime.UTC` alias\n"
+    "  --> src/app.py:1:1\n"
+    "Found 1 error.\n"
+    "[*] 1 fixable with the `--fix` option.\n"
+)
+PYTEST_OUTPUT = "E   assert ACTIVE is True\nE   AssertionError\n1 failed in 0.12s\n"
+
+MUTATION = '{"relative_path": "src/app.py", "content": "ACTIVE = False\\n", "rationale": "flip"}'
+REPAIR = (
+    '{"relative_path": "src/app.py", "content": "ACTIVE = True\\n", '
+    '"rationale": "restore the flag the suite expects"}'
+)
+
+
+def failing(command: str, output: str) -> ValidationResult:
+    return ValidationResult(
+        passed=False,
+        commands=[
+            {"command": "uv sync", "exit_code": 0, "output": ""},
+            {"command": command, "exit_code": 1, "output": output},
+        ],
+    )
+
+
+def passing() -> ValidationResult:
+    return ValidationResult(
+        passed=True, commands=[{"command": "uv run pytest", "exit_code": 0, "output": "ok"}]
+    )
+
+
+class ScriptedValidator:
+    """Writes a real validation-result.json: the repair stage reads it back."""
+
+    def __init__(self, results: list[ValidationResult]) -> None:
+        self.results = results
+        self.calls = 0
+
+    async def validate(self, generation: Generation) -> ValidationResult:
+        result = self.results[min(self.calls, len(self.results) - 1)]
+        self.calls += 1
+        path = generation.path / "validation-result.json"
+        path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        return result
+
+
+class StubRepairer(CandidateRepairer):
+    """The real predicate, a stubbed subprocess."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def autofix(self, generation: Generation) -> dict[str, object]:
+        self.calls += 1
+        return {
+            "command": " ".join(self.AUTOFIX),
+            "exit_code": 0,
+            "output": "Found 1 error (1 fixed, 0 remaining).\n",
+        }
+
+
+async def evolving(
+    tmp_path: Path,
+    project: Path,
+    replies: list[str],
+    validator: ScriptedValidator,
+    repairer: CandidateRepairer | None = None,
+) -> tuple[EnvironmentEvolver, CycleContext, MockProvider]:
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    provider = MockProvider(list(replies))
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        provider,
+        validator,  # type: ignore[arg-type]
+        repairer,
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=provider,
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    return evolver, context, provider
+
+
+async def test_a_fixable_lint_failure_is_repaired_without_the_model(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE), passing()])
+    repairer = StubRepairer()
+    evolver, context, provider = await evolving(
+        tmp_path, project, [MUTATION], validator, repairer
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    await behavior.cycle(context)
+    await behavior.cycle(context)
+    failed = await behavior.cycle(context)
+    assert "repairing it (attempt 1 of 2)" in failed.summary
+    assert (await evolver.pipeline_state())["stage"] == "repair"
+
+    repaired = await behavior.cycle(context)
+    assert repairer.calls == 1
+    # The linter fixed it, so the mutation is still the only model call.
+    assert len(provider.calls) == 1
+    assert "ruff --fix" in repaired.summary
+
+    passed = await behavior.cycle(context)
+    assert "passed after 1 repair" in passed.summary
+    assert (await evolver.pipeline_state())["stage"] == "report"
+
+    report = await behavior.cycle(context)
+    assert report.phase is AgentPhase.WAITING_HUMAN
+    assert "validation passed after 1 repair attempt" in report.summary
+    # A repaired candidate is promotable, not failed.
+    assert evolver.candidate(2).status is not GenerationStatus.FAILED
+
+
+async def test_a_failure_the_linter_cannot_fix_goes_to_the_model(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT), passing()])
+    repairer = StubRepairer()
+    evolver, context, provider = await evolving(
+        tmp_path, project, [MUTATION, REPAIR], validator, repairer
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    for _ in range(4):  # plan, propose, validate, repair
+        await behavior.cycle(context)
+
+    assert repairer.calls == 0
+    prompt = str(provider.calls[-1]["prompt"])
+    # The model is shown the command, the real output, and the file it wrote.
+    assert "uv run pytest" in prompt
+    assert "assert ACTIVE is True" in prompt
+    assert "ACTIVE = False" in prompt
+    generation = evolver.candidate(2)
+    assert (generation.path / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
+
+    passed = await behavior.cycle(context)
+    assert "passed after 1 repair" in passed.summary
+
+
+async def test_a_repair_that_changes_nothing_stops_the_loop(
+    tmp_path: Path, project: Path
+) -> None:
+    # The same failure every time: the repair provably did not move.
+    validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE)])
+    repairer = StubRepairer()
+    evolver, context, _ = await evolving(tmp_path, project, [MUTATION], validator, repairer)
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=5)
+
+    for _ in range(4):  # plan, propose, validate, repair
+        await behavior.cycle(context)
+
+    stalled = await behavior.cycle(context)
+    assert "the last repair changed nothing" in stalled.summary
+    assert (await evolver.pipeline_state())["stage"] == "report"
+    # It stops on evidence, not on the attempt budget.
+    assert repairer.calls == 1
+
+
+async def test_repairs_are_bounded_by_max_repairs(tmp_path: Path, project: Path) -> None:
+    # A different failure each time, so the stall guard never fires.
+    validator = ScriptedValidator(
+        [
+            failing("uv run ruff check .", RUFF_FIXABLE),
+            failing("uv run ruff check .", RUFF_FIXABLE + "one\n"),
+            failing("uv run ruff check .", RUFF_FIXABLE + "two\n"),
+        ]
+    )
+    repairer = StubRepairer()
+    evolver, context, _ = await evolving(tmp_path, project, [MUTATION], validator, repairer)
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    for _ in range(7):  # plan, propose, (validate, repair) x 2, validate
+        await behavior.cycle(context)
+
+    assert repairer.calls == 2
+    assert (await evolver.pipeline_state())["stage"] == "report"
+    report = await behavior.cycle(context)
+    assert "validation failed after 2 repair attempts" in report.summary
+    assert evolver.candidate(2).status is GenerationStatus.FAILED
+
+
+async def test_an_unusable_repair_answer_still_reaches_the_human(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT)])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION, "I would rather not."], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    broken = await behavior.cycle(context)
+
+    assert "no repair could be authored" in broken.summary
+    # Not back to plan: that would strand this candidate and open another.
+    assert (await evolver.pipeline_state())["stage"] == "report"
+    assert len(evolver.workspace.supervisor.candidates()) == 1
+
+
+async def test_max_repairs_zero_keeps_the_single_shot_pipeline(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE)])
+    repairer = StubRepairer()
+    evolver, context, _ = await evolving(tmp_path, project, [MUTATION], validator, repairer)
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=0)
+
+    assert STAGE_REPAIR not in behavior._stages()
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+
+    assert repairer.calls == 0
+    assert (await evolver.pipeline_state())["stage"] == "report"
