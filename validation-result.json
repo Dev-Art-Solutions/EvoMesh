@@ -1,0 +1,31 @@
+{
+  "passed": true,
+  "commands": [
+    {
+      "command": "uv sync",
+      "exit_code": 0,
+      "output": "warning: `VIRTUAL_ENV=D:\\Projects\\Dev-art solutions\\EvoMesh\\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\nResolved 26 packages in 0.58ms\nChecked 26 packages in 2ms\n"
+    },
+    {
+      "command": "uv run ruff check .",
+      "exit_code": 0,
+      "output": "warning: `VIRTUAL_ENV=D:\\Projects\\Dev-art solutions\\EvoMesh\\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\nAll checks passed!\n"
+    },
+    {
+      "command": "uv run pyright",
+      "exit_code": 0,
+      "output": "warning: `VIRTUAL_ENV=D:\\Projects\\Dev-art solutions\\EvoMesh\\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n0 errors, 0 warnings, 0 informations\n"
+    },
+    {
+      "command": "uv run pytest --basetemp .pytest-tmp",
+      "exit_code": 0,
+      "output": "warning: `VIRTUAL_ENV=D:\\Projects\\Dev-art solutions\\EvoMesh\\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n============================= test session starts =============================\r\nplatform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0\r\nrootdir: D:\\Projects\\Dev-art solutions\\EvoMesh\\generations\\000006-candidate\r\nconfigfile: pyproject.toml\r\ntestpaths: tests\r\nplugins: anyio-4.14.2, asyncio-1.4.0\r\nasyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\r\ncollected 86 items\r\n\r\ntests\\test_bdi.py ................                                       [ 18%]\r\ntests\\test_console.py ..                                                 [ 20%]\r\ntests\\test_core.py ......................                                [ 46%]\r\ntests\\test_cycles.py .............................................       [ 98%]\r\ntests\\test_scenario.py .                                                 [100%]\r\n\r\n============================== warnings summary ===============================\r\ntests/test_cycles.py::test_a_running_agent_comes_back_running_after_a_restart\r\n  D:\\Projects\\Dev-art solutions\\EvoMesh\\generations\\000006-candidate\\.venv\\Lib\\site-packages\\_pytest\\unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x000001F232D8C220>\r\n  \r\n  Traceback (most recent call last):\r\n    File \"D:\\Projects\\Dev-art solutions\\EvoMesh\\.runtime\\python\\cpython-3.13-windows-x86_64-none\\Lib\\asyncio\\proactor_events.py\", line 117, in __del__\r\n      _warn(f\"unclosed transport {self!r}\", ResourceWarning, source=self)\r\n                                 ^^^^^^^^\r\n    File \"D:\\Projects\\Dev-art solutions\\EvoMesh\\.runtime\\python\\cpython-3.13-windows-x86_64-none\\Lib\\asyncio\\proactor_events.py\", line 81, in __repr__\r\n      info.append(f'fd={self._sock.fileno()}')\r\n                        ~~~~~~~~~~~~~~~~~^^\r\n    File \"D:\\Projects\\Dev-art solutions\\EvoMesh\\.runtime\\python\\cpython-3.13-windows-x86_64-none\\Lib\\asyncio\\windows_utils.py\", line 109, in fileno\r\n      raise ValueError(\"I/O operation on closed pipe\")\r\n  ValueError: I/O operation on closed pipe\r\n  \r\n  Enable tracemalloc to get traceback where the object was allocated.\r\n  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.\r\n    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n======================== 86 passed, 1 warning in 8.71s ========================\r\n"
+    },
+    {
+      "command": "uv run python -m evomesh.smoke",
+      "exit_code": 0,
+      "output": "warning: `VIRTUAL_ENV=D:\\Projects\\Dev-art solutions\\EvoMesh\\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n"
+    }
+  ],
+  "created_at": "2026-09-01T16:34:46.820603Z"
+}
