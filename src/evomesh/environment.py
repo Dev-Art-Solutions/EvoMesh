@@ -53,15 +53,22 @@ class Environment:
         default_name = self.settings.models.default_provider
         provider_config = self.settings.models.providers.get(default_name)
         model = provider_config.model if provider_config else "local-model"
-        definitions = stored or system_agent_definitions(default_name, model)
+        system_models = {
+            agent_id: (configuration.provider, configuration.model)
+            for agent_id, configuration in self.settings.system_agents.items()
+        }
+        system_definitions = system_agent_definitions(default_name, model, system_models)
+        definitions = stored or system_definitions
         known_ids: set[str] = set()
         for definition in definitions:
+            if definition.id in system_models:
+                definition.provider, definition.model_name = system_models[definition.id]
             if definition.id not in known_ids:
                 self.registry.register(definition)
                 self.bus.register(definition.id)
                 await self.repository.save_agent(definition)
                 known_ids.add(definition.id)
-        for system_definition in system_agent_definitions(default_name, model):
+        for system_definition in system_definitions:
             if system_definition.id not in known_ids:
                 self.registry.register(system_definition)
                 self.bus.register(system_definition.id)

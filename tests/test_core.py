@@ -4,7 +4,7 @@ import pytest
 
 from evomesh.agents import AgentRegistry
 from evomesh.architect import ArchitectInterview
-from evomesh.config import Settings
+from evomesh.config import AgentModelSettings, Settings
 from evomesh.contracts import AgentDefinition, AgentStatus, FilesystemGrant, Message
 from evomesh.environment import Environment, HealthState
 from evomesh.evolution import CandidateWorkspace, FileMutation, GenerationSupervisor
@@ -116,6 +116,31 @@ async def test_each_agent_uses_its_configured_model(tmp_path: Path) -> None:
     assert updated.model_name == "qwen3:32b"
     assert specialist.id in environment.runtimes
     await environment.stop()
+
+
+async def test_system_agent_model_settings_override_persisted_values(tmp_path: Path) -> None:
+    data_path = tmp_path / "data.db"
+    first = Environment(
+        Settings(data_path=data_path, generation_path=tmp_path / "generations"),
+        {"ollama": MockProvider()},
+    )
+    await first.start()
+    await first.configure_agent_model("guardian", "ollama", "old-model")
+    await first.stop()
+
+    configured = Settings(
+        data_path=data_path,
+        generation_path=tmp_path / "generations",
+        system_agents={
+            "guardian": AgentModelSettings(provider="ollama", model="guardian-model")
+        },
+    )
+    restarted = Environment(configured, {"ollama": MockProvider()})
+    await restarted.start()
+    guardian = restarted.registry.get("guardian")
+    assert guardian.provider == "ollama"
+    assert guardian.model_name == "guardian-model"
+    await restarted.stop()
 
 
 async def test_builtin_file_skill_enforces_grant(tmp_path: Path) -> None:
