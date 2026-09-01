@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -28,12 +30,31 @@ MIGRATIONS = [
 
 
 class SQLiteRepository:
+    # Long enough to outlast a slow disk or a virus scanner holding the file,
+    # short enough that a genuine deadlock still surfaces as an error.
+    BUSY_TIMEOUT_SECONDS = 30.0
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        """One connection per operation, but never one that gives up in five seconds.
+
+        Every agent loop writes through its own connection, so the default
+        rollback journal has writers taking exclusive locks on each other. WAL
+        lets readers through and keeps writes to the log, and the busy timeout
+        makes a contended write wait rather than raising "database is locked" --
+        which used to reach a human as a failed test rather than a busy disk.
+        """
+        async with aiosqlite.connect(self.path, timeout=self.BUSY_TIMEOUT_SECONDS) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute(f"PRAGMA busy_timeout={int(self.BUSY_TIMEOUT_SECONDS * 1000)}")
+            yield db
+
     async def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             for migration in MIGRATIONS:
                 await db.executescript(migration)
             await db.commit()
@@ -59,7 +80,7 @@ class SQLiteRepository:
 
     async def delete_grants(self, agent_id: str, path: str) -> None:
         grants = await self.load_grants(agent_id)
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             for grant in grants:
                 if grant.path == path:
                     await db.execute("DELETE FROM filesystem_grants WHERE id = ?", (grant.id,))
@@ -78,7 +99,7 @@ class SQLiteRepository:
         return [SkillDefinition.model_validate_json(row[0]) for row in rows]
 
     async def attach_skill(self, agent_id: str, skill_name: str) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO agent_skills(agent_id, skill_name) VALUES (?, ?)",
                 (agent_id, skill_name),
@@ -93,7 +114,7 @@ class SQLiteRepository:
         return json.loads(rows[0][0]) if rows else None
 
     async def record_mutation(self, payload: dict[str, object]) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "INSERT INTO mutation_history(payload) VALUES (?)", (json.dumps(payload),)
             )
@@ -115,13 +136,13 @@ class SQLiteRepository:
             f"INSERT INTO {table}({key_column}, {value_column}) VALUES (?, ?) "
             f"ON CONFLICT({key_column}) DO UPDATE SET {value_column} = excluded.{value_column}"
         )
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(sql, (key, value))
             await db.commit()
 
     async def _all(
         self, sql: str, parameters: tuple[object, ...] = ()
     ) -> list[aiosqlite.Row]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(sql, parameters)
             return list(await cursor.fetchall())

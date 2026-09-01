@@ -6,6 +6,10 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- SQLite runs in WAL with a 30s busy timeout. Every agent loop writes through its own
+  connection, so the default rollback journal had writers taking exclusive locks on each
+  other and a contended write surfaced as `database is locked` after five seconds --
+  which reached a human as a failed test rather than a busy disk.
 - Validation gives pytest its own `--basetemp` inside the candidate. On a host where
   the shared temp root is not writable by the running user, every `tmp_path` test
   errored at fixture setup, so no candidate could pass validation and each one was
