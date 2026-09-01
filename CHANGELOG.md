@@ -6,13 +6,89 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- Real BDI cognition. Agents run the Rao and Georgeff practical-reasoning loop:
+  perceive, revise beliefs, generate options, commit to an intention with a plan, and
+  execute one step of it per cycle.
+  - Beliefs are keyed and revisable, so a percept replaces the belief it contradicts
+    instead of stacking a near-duplicate beside it.
+  - Behaviors can generate desires from what they now believe. Guardian wants to
+    investigate when it perceives an agent stopped, and discharges that goal when the
+    mesh recovers.
+  - Intentions are commitments: a plan is adopted once and executed across cycles.
+    Reconsideration is triggered only by the plan running out, the goal closing, a
+    higher-priority goal appearing, or a revision of a belief the plan declared it
+    depends on -- and never costs a model call.
+  - An intention can be held rather than consumed while it waits on an external
+    decision, so a parked agent keeps one commitment instead of one per cycle.
+  - Means-ends reasoning is a plan library first, the model only as a fallback.
+    Guardian, Evaluator and the Evolver now reason with no model reachable at all, and
+    a generic agent makes one planning call per goal rather than one per cycle.
+  - The Evolver's mutation pipeline is now a plan, visible as a checklist in
+    `/intentions`, and `/evolution promote|discard` makes it reconsider on its own.
+- Console commands `/beliefs` and `/intentions`.
+- Beliefs and the committed plan are carried in every prompt, within their own budget
+  (`runtime.beliefs_chars`), and written to `context.md`.
+- Goal-driven execution cycle for every agent. Each agent now runs a mailbox loop and a
+  cycle loop that advances its highest-priority open goal through perceive, deliberate,
+  act, and reflect, on a configurable interval with a staggered first tick.
+- File-backed agent memory: `workspace/agents/<agent>/memory.md` for durable facts and
+  `context.md` for working context, plus a shared `workspace/context.md` world snapshot.
+  Memory is compacted into a summary once it outgrows its budget.
+- Character budgets for every prompt (`runtime.prompt_chars`, `memory_chars`,
+  `context_chars`, `inbox_chars`), sized for small local models.
+- Replaceable per-agent behaviors, with dedicated ones for Guardian, Evaluator, Evolver,
+  and Architect.
+- First-class goals with priority, status, attempts, progress notes, and a recurring flag.
+- Observed agent phase (`offline`, `starting`, `idle`, `thinking`, `acting`,
+  `waiting-human`, `error`) reported separately from the persisted desired status.
+- Console commands `/cycle`, `/goals`, `/goal add|done|drop`, `/memory`, `/context`, and
+  `/evolution start|promote|discard|rollback`.
+- Settings sections `runtime:` and `evolution:`, and a `workspace_path`.
 - Localhost control channel so the Windows Control Center can attach to an already running mesh.
 - Persistent Control Center and mesh logs under `.runtime/logs`.
 - Dynamic Ollama model dropdowns in both Agents and Settings, populated directly from the configured Ollama instance.
 - Per-system-agent provider/model settings for Architect, Guardian, Evaluator, and Evolver.
 
+### Changed
+
+- Agent Architect no longer runs a six-question interview. It derives a complete draft from
+  one sentence, uses at most one model call to improve the wording, and is refined by
+  instruction rather than by answering questions.
+- The Environment Evolver is a staged pipeline that opens a candidate generation on its
+  first cycle and advances one stage per tick, parking at `await-human` until the candidate
+  is promoted or discarded.
+- System agents boot with a standing goal instead of an empty mind.
+
 ### Fixed
 
+- Discarding a candidate generation left its directory behind while removing its
+  metadata, so the next candidate collided with the leftovers and failed to open.
+- The Environment Evolver never did anything: `EnvironmentEvolver` was never constructed by
+  the runtime, so the agent was a chat echo with no pipeline behind it.
+- Agent status was meaningless. Agents were persisted as `active` whether or not a loop was
+  running, Architect was reported `active` while explicitly excluded from all loops, and a
+  stale status from a previous run survived a restart. Status and phase are now separate,
+  and an agent that cannot start reports `offline` with the reason.
+- Agents lost their memory partway through a goal, because prompts carried no memory and
+  were truncated by the model server from the oldest end.
+- A goal could be closed by a small model rubber-stamping `DONE: yes` on its first look at
+  it, leaving the agent idle forever.
+- Guardian reported running agents as offline: its view of the mesh was snapshotted when it
+  started rather than resolved per cycle, and it printed raw agent ids.
+- A candidate generation that was never validated was recorded as failed.
+- Candidate generations contained the live SQLite database and every agent's memory,
+  because the workspace copy only skipped directories named `data` and `workspace`. It
+  now excludes the configured state paths explicitly, which also removes a race between
+  the copy and the running mesh.
+- Every agent came back `stopped` after a restart: shutting the mesh down persisted the
+  same status a human `/agent stop` does. A shutdown now leaves desired status untouched,
+  and changing an agent's model no longer disables it.
+- Agent Architect accepted whatever a small model returned, so a draft could be degraded
+  to `name: D:/notes`, `name: agent`, or a purpose of `read`. Model output must now be a
+  plausible improvement or the derived value stands.
+- Reasoning-model `<think>` blocks leaked into stored memory and subsequent prompts.
+- Saving settings from the Control Center silently dropped `workspace_path`, `runtime:`,
+  and `evolution:` from `evomesh.yaml`.
 - Robust Windows `uv.exe` discovery and actionable startup diagnostics.
 - Explicit button foreground/background colors for readable labels across Windows themes.
 - Settings model dropdown no longer closes while Ollama models are refreshed.

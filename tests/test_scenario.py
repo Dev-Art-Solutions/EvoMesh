@@ -10,17 +10,10 @@ from evomesh.models import MockProvider
 async def test_create_grant_message_and_restart(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "state.db", generation_path=tmp_path / "generations")
     interview = ArchitectInterview()
-    interview.begin("Create a research agent")
-    for answer in [
-        "Researcher",
-        "Summarize papers",
-        "Read only",
-        "papers",
-        "Markdown.Read",
-        "ollama:qwen3:8b",
-    ]:
-        interview.answer(answer)
+    interview.begin("Create an agent called Researcher that summarizes markdown papers")
+    interview.refine("ollama:qwen3:8b")
     agent = interview.confirm()
+    assert agent.name == "Researcher"
 
     environment = Environment(settings, {"ollama": MockProvider(["summary complete"])})
     await environment.start()

@@ -9,6 +9,16 @@ class ModelUnavailableError(RuntimeError):
     pass
 
 
+def describe(exc: Exception) -> str:
+    """A message a human can act on.
+
+    httpx raises timeouts with an empty str(), so a bare str(exc) reaches the
+    console as "Model error for ollama:qwen3:" with nothing after the colon.
+    """
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 class ModelProvider(Protocol):
     async def generate(
         self, prompt: str, *, system: str = "", model: str | None = None
@@ -20,9 +30,10 @@ class ModelProvider(Protocol):
 
 
 class OllamaProvider:
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(self, base_url: str, model: str, timeout_seconds: float = 600) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout_seconds = timeout_seconds
 
     async def health(self) -> tuple[bool, str]:
         try:
@@ -34,7 +45,7 @@ class OllamaProvider:
                     return False, f"Ollama is running, but model '{self.model}' is not installed"
                 return True, "ready"
         except (httpx.HTTPError, KeyError, ValueError) as exc:
-            return False, f"Cannot reach Ollama at {self.base_url}: {exc}"
+            return False, f"Cannot reach Ollama at {self.base_url}: {describe(exc)}"
 
     async def list_models(self) -> list[str]:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -43,12 +54,12 @@ class OllamaProvider:
                 response.raise_for_status()
                 return sorted(str(item["name"]) for item in response.json().get("models", []))
             except (httpx.HTTPError, KeyError, ValueError) as exc:
-                raise ModelUnavailableError(str(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
 
     async def generate(
         self, prompt: str, *, system: str = "", model: str | None = None
     ) -> str:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await client.post(
                     f"{self.base_url}/api/generate",
@@ -62,14 +73,21 @@ class OllamaProvider:
                 response.raise_for_status()
                 return str(response.json()["response"])
             except (httpx.HTTPError, KeyError) as exc:
-                raise ModelUnavailableError(str(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
 
 
 class OpenAICompatibleProvider:
-    def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        timeout_seconds: float = 600,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
 
     async def health(self) -> tuple[bool, str]:
         try:
@@ -80,7 +98,7 @@ class OpenAICompatibleProvider:
                 response.raise_for_status()
             return True, "ready"
         except httpx.HTTPError as exc:
-            return False, f"Cannot reach local provider at {self.base_url}: {exc}"
+            return False, f"Cannot reach local provider at {self.base_url}: {describe(exc)}"
 
     async def list_models(self) -> list[str]:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -89,7 +107,7 @@ class OpenAICompatibleProvider:
                 response.raise_for_status()
                 return sorted(str(item["id"]) for item in response.json().get("data", []))
             except (httpx.HTTPError, KeyError, ValueError) as exc:
-                raise ModelUnavailableError(str(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -99,7 +117,7 @@ class OpenAICompatibleProvider:
         self, prompt: str, *, system: str = "", model: str | None = None
     ) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
@@ -109,7 +127,7 @@ class OpenAICompatibleProvider:
                 response.raise_for_status()
                 return str(response.json()["choices"][0]["message"]["content"])
             except (httpx.HTTPError, KeyError, IndexError) as exc:
-                raise ModelUnavailableError(str(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
 
 
 class MockProvider:
