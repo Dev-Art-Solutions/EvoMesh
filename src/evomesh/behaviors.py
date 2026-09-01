@@ -34,6 +34,7 @@ from evomesh.evolution import (
     GenerationStatus,
     excerpt,
 )
+from evomesh.git import GitError
 
 PROVIDER_KEY = "provider.ready"
 DEGRADED_KEY = "mesh.degraded"
@@ -580,15 +581,35 @@ class EvolverBehavior(BDIBehavior):
     async def _decide(
         self, evolver: EnvironmentEvolver, number: int, *, passed: bool, state: dict[str, Any]
     ) -> StepResult:
-        await evolver.decide_candidate(number, promote=passed)
+        try:
+            commit = await evolver.decide_candidate(
+                number, promote=passed, objective=str(state.get("objective", ""))
+            )
+        except GitError as exc:
+            # The tree would not take it -- a human's uncommitted work is in the
+            # way, or the change does not apply. Park rather than discard: the
+            # candidate is fine, the place it was going is not.
+            await evolver.set_pipeline_state(
+                {**state, "stage": STAGE_AWAIT_HUMAN, "error": str(exc)}
+            )
+            return StepResult(
+                summary=(
+                    f"generation {number} validated but could not be applied to the "
+                    f"working tree: {exc}. It is left for you to promote by hand."
+                ),
+                fact=f"generation {number} could not be applied to the tree",
+                phase=AgentPhase.WAITING_HUMAN,
+                achieved=True,
+            )
         # Not set_pipeline_state: the reset clears the repair counters and the
         # failure digest, so the next candidate starts from a clean slate.
         await evolver.reset_pipeline()
         action = "promoted" if passed else "discarded"
+        landed = f" as {commit[:8]}, restart the mesh to run it" if commit else ""
         return StepResult(
             summary=(
-                f"{action} generation {number} on its own verdict ({self._verdict(state)}); "
-                "the pipeline is free for the next objective"
+                f"{action} generation {number} on its own verdict ({self._verdict(state)})"
+                f"{landed}; the pipeline is free for the next objective"
             ),
             fact=f"generation {number} was {action} by policy, with no human asked",
             phase=AgentPhase.ACTING,

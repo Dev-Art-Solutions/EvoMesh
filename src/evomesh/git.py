@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,25 @@ class GitRepository:
             f"Objective:\n{objective}\n\nCreated by:\nEnvironmentEvolver"
         )
         await self.run("commit", "-m", message)
+        return await self.current_commit()
+
+    async def is_clean(self) -> bool:
+        return not (await self.status()).strip()
+
+    async def cherry_pick(self, commit: str) -> str:
+        """Land one commit from a candidate worktree on this checkout."""
+        try:
+            await self.run("cherry-pick", commit)
+        except GitError as exc:
+            # Never leave a checkout sitting mid-pick. A half-applied generation
+            # is worse than a refused one, and the next pass would inherit it.
+            with suppress(GitError):
+                await self.run("cherry-pick", "--abort")
+            raise GitError(f"{commit[:8]} does not apply cleanly: {exc}") from exc
+        return await self.current_commit()
+
+    async def reset_to(self, commit: str) -> str:
+        await self.run("reset", "--hard", commit)
         return await self.current_commit()
 
     async def history(self, limit: int = 20) -> str:

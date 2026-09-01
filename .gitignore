@@ -19,3 +19,8 @@ desktop/**/obj/
 desktop/**/.vs/
 .runtime/
 dist/
+
+# Per-candidate scratch: the objective lives in the commit message, and a
+# validation record belongs to the generation that produced it.
+MUTATION_OBJECTIVE.md
+validation-result*.json

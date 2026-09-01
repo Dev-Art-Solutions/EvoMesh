@@ -268,7 +268,13 @@ Every outcome still ends in a verdict for you. A model that cannot author a usab
 
 The policy only ever acts on a verdict validation actually produced. With `auto_validate` off, or when the run was blocked by this machine, there is no verdict: promoting would ship unchecked code and discarding would throw away work for the host's fault, so it still stops and waits for you.
 
-Be clear about what promotion is today: it moves `active` and `last_known_good` in the supervisor metadata, which is what numbers and parents the next candidate. **It does not swap the code the running mesh executes.** Making a promoted generation the live runtime is still the unbuilt half of this.
+### What promotion actually does
+
+Promoting cherry-picks the candidate's commit onto the checkout the mesh runs from, then moves `active` and `last_known_good` in the supervisor metadata. Git is the lineage, so the generation lands as an ordinary commit on an ordinary history rather than by swapping a directory — one canonical tree, and a commit to reset to when a generation turns out to be a mistake. `/evolution rollback` does exactly that reset.
+
+Two refusals are deliberate. A generation is never applied over uncommitted changes in the checkout, so work in progress is never clobbered — under a promotion policy the candidate is parked for you instead of discarded, because the candidate is fine and the place it was going is not. And a change that does not cherry-pick cleanly aborts the pick rather than leaving the tree half-applied.
+
+**A restart is still yours to make.** The running process keeps executing the code it started with, so `/evolution status` says `RESTART REQUIRED` once the tree has moved ahead of it, and the flag clears when the mesh next starts. The restart is deliberately not automatic: a rollback path has to outlive a process that may not come back up, which means it cannot live inside that process.
 
 Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, `evolution.max_repairs` to bound how often it may fix its own candidate, or `evolution.auto_promote` to take yourself out of the loop.
 

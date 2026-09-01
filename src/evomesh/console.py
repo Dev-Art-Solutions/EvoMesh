@@ -326,12 +326,20 @@ class ConsoleChannel:
                 f"  {item.number} [{item.status}] {item.path}"
                 for item in supervisor.candidates()
             )
+            applied = str(metadata.get("active_commit") or "")
+            restart = (
+                "\nRESTART REQUIRED: the tree holds a newer generation than this "
+                "process is running"
+                if metadata.get("restart_required")
+                else ""
+            )
             return (
-                f"active generation: {metadata['active']}\n"
+                f"active generation: {metadata['active']}"
+                f"{f' ({applied[:8]})' if applied else ''}\n"
                 f"last known good: {metadata['last_known_good']}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
                 f"self-repairs on this candidate: {state.get('repairs', 0)}\n"
-                f"candidates:\n{candidates or '  none'}"
+                f"candidates:\n{candidates or '  none'}{restart}"
             )
         if action == "start" and len(parts) > 2:
             definition = self.environment.registry.get("evolver")
@@ -346,15 +354,23 @@ class ConsoleChannel:
             if not number:
                 return "There is no candidate generation."
             if action == "promote":
-                supervisor.promote(number)
-            else:
-                supervisor.discard(number)
+                commit = await evolver.promote_candidate(number)
+                await evolver.reset_pipeline()
+                return (
+                    f"Generation {number} promoted and applied as {commit[:8]}. "
+                    "Restart the mesh to run it. The pipeline is free for the next objective."
+                )
+            supervisor.discard(number)
             await evolver.reset_pipeline()
-            past = "promoted" if action == "promote" else "discarded"
-            return f"Generation {number} {past}. The pipeline is free for the next objective."
+            return f"Generation {number} discarded. The pipeline is free for the next objective."
         if action == "rollback":
             supervisor.rollback()
-            return f"Rolled back to generation {supervisor.metadata()['active']}."
+            restored = await evolver.revert_tree()
+            where = f" and the tree to {restored[:8]}" if restored else ""
+            return (
+                f"Rolled back to generation {supervisor.metadata()['active']}{where}. "
+                "Restart the mesh to run it."
+            )
         return "Usage: /evolution status|start <objective>|promote [n]|discard [n]|rollback"
 
     # -- helpers --------------------------------------------------------

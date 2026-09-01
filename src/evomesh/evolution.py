@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from evomesh.cognition import strip_reasoning
-from evomesh.git import GitRepository
+from evomesh.git import GitError, GitRepository
 from evomesh.models import ModelProvider
 from evomesh.storage import SQLiteRepository
 
@@ -221,6 +221,25 @@ class GenerationSupervisor:
     def rollback(self) -> None:
         metadata = self.metadata()
         metadata["active"] = metadata["last_known_good"]
+        self._write(metadata)
+
+    def record_commits(self, *, active: str, last_known_good: str) -> None:
+        """Remember what the tree held before and after a generation landed.
+
+        The running process still executes the code it started with, so this
+        also raises the flag that says a restart is owed. Nothing here restarts
+        anything: the rollback path has to outlive a process that may not come
+        back up, which means it cannot live inside that process.
+        """
+        metadata = self.metadata()
+        metadata["last_known_good_commit"] = last_known_good
+        metadata["active_commit"] = active
+        metadata["restart_required"] = True
+        self._write(metadata)
+
+    def clear_restart_flag(self) -> None:
+        metadata = self.metadata()
+        metadata["restart_required"] = False
         self._write(metadata)
 
     def _write(self, data: dict[str, Any]) -> None:
@@ -608,20 +627,78 @@ class EnvironmentEvolver:
         )
         return generation
 
-    async def decide_candidate(self, number: int, *, promote: bool) -> None:
-        """Promote or discard without a human, and leave a record that it happened."""
-        supervisor = self.workspace.supervisor
-        if promote:
-            supervisor.promote(number)
-        else:
-            supervisor.discard(number)
+    async def apply_generation(self, number: int, objective: str = "") -> str:
+        """Land a candidate's change on the tree the mesh is checked out from.
+
+        Until this ran, promotion moved a number in a metadata file and the mesh
+        went on executing exactly the code it always had. Git is the lineage, so
+        the candidate's commit is cherry-picked onto the checkout rather than the
+        directory being swapped: one canonical tree, an ordinary history, and a
+        commit to reset to when the generation turns out to be a mistake.
+        """
+        generation = self.candidate(number)
+        checkout = GitRepository(self.workspace.repository_root)
+        if not await checkout.is_clean():
+            raise GitError(
+                "the working tree has uncommitted changes; a generation is never "
+                "applied over work a human has not committed"
+            )
+        commit = generation.git_commit
+        if commit is None:
+            candidate = GitRepository(generation.path)
+            if not (await candidate.status()).strip():
+                raise GitError(f"generation {number} changed nothing to apply")
+            commit = await candidate.commit_mutation(number, objective)
+            generation.git_commit = commit
+            self.workspace.supervisor.record_candidate(generation)
+        previous = await checkout.current_commit()
+        applied = await checkout.cherry_pick(commit)
+        self.workspace.supervisor.record_commits(active=applied, last_known_good=previous)
         await self.repository.record_mutation(
             {
                 "generation": number,
-                "status": "promoted" if promote else "discarded",
-                "decided_by": "policy",
+                "status": "applied-to-tree",
+                "commit": applied,
+                "previous": previous,
             }
         )
+        return applied
+
+    async def revert_tree(self) -> str | None:
+        """Put the checkout back on the commit the last promotion replaced."""
+        metadata = self.workspace.supervisor.metadata()
+        target = metadata.get("last_known_good_commit")
+        if not target:
+            return None
+        checkout = GitRepository(self.workspace.repository_root)
+        if not await checkout.is_clean():
+            raise GitError(
+                "the working tree has uncommitted changes; refusing to reset over them"
+            )
+        restored = await checkout.reset_to(str(target))
+        self.workspace.supervisor.record_commits(active=restored, last_known_good=str(target))
+        await self.repository.record_mutation({"status": "reverted", "commit": restored})
+        return restored
+
+    async def promote_candidate(self, number: int, objective: str = "") -> str:
+        """Apply the generation first; only a landed change earns the promotion."""
+        applied = await self.apply_generation(number, objective)
+        self.workspace.supervisor.promote(number)
+        await self.repository.record_mutation(
+            {"generation": number, "status": "promoted", "commit": applied}
+        )
+        return applied
+
+    async def decide_candidate(self, number: int, *, promote: bool, objective: str = "") -> str:
+        """Promote or discard without a human, and leave a record that it happened."""
+        if promote:
+            applied = await self.promote_candidate(number, objective)
+            return applied
+        self.workspace.supervisor.discard(number)
+        await self.repository.record_mutation(
+            {"generation": number, "status": "discarded", "decided_by": "policy"}
+        )
+        return ""
 
     async def commit_candidate(self, generation: Generation, objective: str) -> str:
         git = GitRepository(generation.path)

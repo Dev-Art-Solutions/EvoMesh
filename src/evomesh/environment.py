@@ -90,6 +90,9 @@ class Environment:
 
     async def start(self, *, start_agent_loops: bool = False) -> None:
         self.health_state = HealthState.STARTING
+        # This process is starting from whatever the tree holds right now, so a
+        # restart owed by an earlier promotion has just been paid.
+        self.evolver.workspace.supervisor.clear_restart_flag()
         await self.repository.initialize()
         await self.skills.load()
         await self.skills.register_builtins()

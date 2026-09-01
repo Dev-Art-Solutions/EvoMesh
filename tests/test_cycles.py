@@ -19,6 +19,7 @@ from evomesh.evolution import (
     GenerationStatus,
     ValidationResult,
 )
+from evomesh.git import GitRepository
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.models import MockProvider
 
@@ -978,9 +979,9 @@ async def test_a_host_failure_is_not_blamed_on_the_candidate(
 # -- deciding without a human --------------------------------------------
 
 
-async def test_a_validated_candidate_is_promoted_without_asking(
-    tmp_path: Path, project: Path
-) -> None:
+async def test_a_validated_candidate_is_promoted_without_asking(tmp_path: Path) -> None:
+    # A real checkout: promotion now lands the change, so it needs somewhere to land.
+    project = await git_project(tmp_path / "project")
     validator = ScriptedValidator([passing()])
     evolver, context, _ = await evolving(
         tmp_path, project, [MUTATION], validator, StubRepairer()
@@ -1073,3 +1074,102 @@ async def test_the_checklist_says_it_decides_rather_than_hands_over(
     steps = [step.description for step in context.definition.mind.intentions[0].steps]
     assert steps[-1] == "promote or discard the candidate on its verdict"
     assert "hand the candidate to the human" not in steps
+
+
+# -- landing a generation in the tree ------------------------------------
+
+
+def _seed_tree(root: Path) -> None:
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "app.py").write_text("ACTIVE = True\n", encoding="utf-8")
+
+
+async def git_project(root: Path) -> Path:
+    """A real git checkout, because cherry-pick cannot be faked usefully."""
+    _seed_tree(root)
+    repository = GitRepository(root)
+    await repository.run("init", "-b", "main")
+    await repository.run("config", "user.email", "test@example.com")
+    await repository.run("config", "user.name", "Test")
+    await repository.run("add", "-A")
+    await repository.run("commit", "-m", "initial")
+    return root
+
+
+async def test_a_promoted_generation_lands_on_the_checkout(tmp_path: Path) -> None:
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(4):  # plan, propose, validate, decide
+        await behavior.cycle(context)
+
+    # The mutation is now in the tree the mesh runs from, not just in a candidate.
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = False\n"
+    metadata = evolver.workspace.supervisor.metadata()
+    assert metadata["active"] == 2
+    assert metadata["active_commit"] != metadata["last_known_good_commit"]
+    # The running process still executes what it started with.
+    assert metadata["restart_required"] is True
+
+
+async def test_a_generation_is_never_applied_over_uncommitted_work(tmp_path: Path) -> None:
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    # A human is midway through something in the checkout.
+    (project / "src" / "human.py").write_text("MINE = 1\n", encoding="utf-8")
+    parked = await behavior.cycle(context)
+
+    assert "could not be applied" in parked.summary
+    assert "uncommitted changes" in parked.summary
+    assert parked.phase is AgentPhase.WAITING_HUMAN
+    # Untouched: neither the human's file nor the promotion happened.
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
+    assert (project / "src" / "human.py").exists()
+    assert evolver.workspace.supervisor.metadata()["active"] == 1
+    assert (await evolver.pipeline_state())["stage"] == "await-human"
+
+
+async def test_reverting_puts_the_tree_back_on_the_replaced_commit(tmp_path: Path) -> None:
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(4):
+        await behavior.cycle(context)
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = False\n"
+
+    restored = await evolver.revert_tree()
+
+    assert restored is not None
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
+
+
+async def test_a_discarded_generation_never_touches_the_tree(tmp_path: Path) -> None:
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT)])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=0, auto_promote=True)
+
+    for _ in range(4):
+        await behavior.cycle(context)
+
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
+    metadata = evolver.workspace.supervisor.metadata()
+    assert metadata["active"] == 1
+    assert not metadata.get("restart_required")

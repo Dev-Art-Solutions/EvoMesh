@@ -16,6 +16,18 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- Promotion now lands the generation. The candidate's commit is cherry-picked onto the
+  checkout the mesh runs from, so a promoted generation is code in the tree rather than
+  a number in a metadata file.
+  - Never applied over uncommitted changes in the checkout, and a pick that conflicts is
+    aborted rather than left half-applied. Under a promotion policy either refusal parks
+    the candidate for a human instead of discarding it.
+  - `/evolution rollback` resets the tree to the commit the last promotion replaced.
+  - `/evolution status` reports `RESTART REQUIRED` while the tree is ahead of the running
+    process; starting the mesh clears it. The restart is deliberately manual -- a
+    rollback path cannot live inside the process it may have to rescue.
+  - Candidate scratch (`MUTATION_OBJECTIVE.md`, validation records) is ignored, so it
+    never rides along into a promoted commit.
 - `evolution.auto_promote` closes the loop. A candidate that validated is promoted, one
   that failed is discarded, and the next pass starts without asking anyone.
   - The policy acts only on a verdict validation produced. With validation off, or when
