@@ -67,10 +67,34 @@ class Generation(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+# Proof in the output that the machine, not the mutation, broke the run. A
+# candidate is a copy of a tree that already validated, so when the toolchain
+# cannot open a directory or reach the network, no rewrite of one source file
+# will help -- and asking a model to "fix" it wastes the attempt budget on a
+# failure the candidate never caused.
+ENVIRONMENT_MARKERS = (
+    "PermissionError",
+    "[WinError 5]",
+    "Access is denied",
+    "No space left on device",
+    "OSError: [Errno 28]",
+    "Connection refused",
+    "Temporary failure in name resolution",
+)
+
+
 class ValidationResult(BaseModel):
     passed: bool
     commands: list[dict[str, object]]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def environment_blocker(self) -> str | None:
+        """The marker proving the host broke this run, or None if it did not."""
+        failure = self.failure()
+        if failure is None:
+            return None
+        output = str(failure.get("output", ""))
+        return next((marker for marker in ENVIRONMENT_MARKERS if marker in output), None)
 
     def failure(self) -> dict[str, object] | None:
         """The command that broke the candidate, or None when nothing did."""
@@ -205,7 +229,18 @@ class GenerationSupervisor:
         temporary.replace(self.metadata_path)
 
 
-IGNORED_NAMES = (".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".runtime", "dist")
+PYTEST_TEMP_DIR = ".pytest-tmp"
+
+IGNORED_NAMES = (
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    PYTEST_TEMP_DIR,
+    ".ruff_cache",
+    ".runtime",
+    "dist",
+)
 
 
 class CandidateWorkspace:
@@ -298,11 +333,22 @@ def uv_executable(start: Path) -> str:
 
 
 class CandidateValidator:
+    """Runs the same five commands a human would, inside the candidate only.
+
+    pytest gets an explicit ``--basetemp`` under the candidate rather than the
+    machine's shared temp root. On a host where that root is not writable by
+    this user, every ``tmp_path`` test errors at fixture setup and the candidate
+    is reported as failed for something it did not do. Keeping the temp tree
+    inside the generation also means a discarded candidate takes its scratch
+    files with it. The directory is relative because every command already runs
+    with the generation as its working directory.
+    """
+
     COMMANDS = (
         ("uv", "sync"),
         ("uv", "run", "ruff", "check", "."),
         ("uv", "run", "pyright"),
-        ("uv", "run", "pytest"),
+        ("uv", "run", "pytest", "--basetemp", PYTEST_TEMP_DIR),
         ("uv", "run", "python", "-m", "evomesh.smoke"),
     )
 

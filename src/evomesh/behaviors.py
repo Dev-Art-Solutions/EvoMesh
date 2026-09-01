@@ -423,15 +423,31 @@ class EvolverBehavior(BDIBehavior):
         # attempts left would go the same way. Stop and let the human see it.
         stalled = bool(digest) and digest == state.get("failure_digest")
         exhausted = repairs >= self.max_repairs
-        repairing = not result.passed and not stalled and not exhausted
+        blocker = result.environment_blocker()
+        repairing = not result.passed and not blocker and not stalled and not exhausted
         await evolver.set_pipeline_state(
             {
                 **state,
                 "stage": STAGE_REPAIR if repairing else STAGE_REPORT,
-                "passed": result.passed,
+                # A host failure is not a verdict on the candidate, so it is
+                # reported as unvalidated rather than failed. None is what the
+                # report stage already reads as "validation never happened".
+                "passed": None if blocker else result.passed,
+                "environment": blocker,
                 "failure_digest": digest,
             }
         )
+        if blocker:
+            command = (result.failure() or {}).get("command")
+            return StepResult(
+                summary=(
+                    f"validation of generation {generation.number} was blocked by this "
+                    f"machine, not by the candidate: `{command}` reported {blocker}. "
+                    "Nothing is repaired, because no rewrite of the candidate would help."
+                ),
+                fact=f"generation {generation.number} could not be validated here",
+                phase=AgentPhase.ACTING,
+            )
         return StepResult(
             summary=(
                 f"validation {self._outcome(result.passed, repairs)} for generation "
@@ -539,6 +555,8 @@ class EvolverBehavior(BDIBehavior):
 
     @staticmethod
     def _verdict(state: dict[str, Any]) -> str:
+        if blocker := state.get("environment"):
+            return f"not validated: this machine blocked the run ({blocker})"
         passed = state.get("passed")
         if passed is None:
             return "not validated"

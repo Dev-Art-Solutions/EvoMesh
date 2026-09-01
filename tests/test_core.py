@@ -290,7 +290,14 @@ async def test_validation_fails_with_a_readable_reason_when_uv_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A missing toolchain must read as a failed validation, not a broken mutation."""
-    monkeypatch.setattr("evomesh.evolution.shutil.which", lambda name: None)
+
+    # Stub the lookup rather than the filesystem it walks. pytest's temp tree now
+    # lives inside the checkout, so "no .tools/uv above this path" is no longer
+    # something a temp directory can promise. Discovery itself is covered above.
+    def missing(start: Path) -> str:
+        raise FileNotFoundError(f"uv is not on PATH and no bundled copy was found above {start}")
+
+    monkeypatch.setattr("evomesh.evolution.uv_executable", missing)
     candidate = tmp_path / "generations" / "1"
     candidate.mkdir(parents=True)
     generation = Generation(number=1, status=GenerationStatus.CANDIDATE, path=candidate)

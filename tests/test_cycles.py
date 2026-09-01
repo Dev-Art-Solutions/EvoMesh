@@ -9,7 +9,10 @@ from evomesh.console import ConsoleChannel
 from evomesh.contracts import AgentDefinition, AgentPhase, AgentStatus, GoalStatus, Message
 from evomesh.environment import Environment
 from evomesh.evolution import (
+    IGNORED_NAMES,
+    PYTEST_TEMP_DIR,
     CandidateRepairer,
+    CandidateValidator,
     CandidateWorkspace,
     EnvironmentEvolver,
     Generation,
@@ -909,3 +912,64 @@ async def test_max_repairs_zero_keeps_the_single_shot_pipeline(
 
     assert repairer.calls == 0
     assert (await evolver.pipeline_state())["stage"] == "report"
+
+
+# -- failures the candidate did not cause --------------------------------
+
+# The real shape of it: pytest's shared temp root is not writable by this user,
+# so every tmp_path test errors at fixture setup and nothing in the candidate
+# is implicated.
+PERMISSION_OUTPUT = (
+    "ERROR at setup of test_a_percept_revises_a_belief\n"
+    "E   PermissionError: [WinError 5] Access is denied: "
+    r"'C:\Users\AI\AppData\Local\Temp\pytest-of-AI'"
+    "\n78 errors in 2.56s\n"
+)
+
+
+def test_pytest_is_given_a_temp_directory_inside_the_candidate() -> None:
+    command = next(item for item in CandidateValidator.COMMANDS if "pytest" in item)
+    assert "--basetemp" in command
+    assert command[command.index("--basetemp") + 1] == PYTEST_TEMP_DIR
+    # Relative, because every validation command runs with the generation as cwd.
+    assert not Path(PYTEST_TEMP_DIR).is_absolute()
+    # And never copied into the next candidate.
+    assert PYTEST_TEMP_DIR in IGNORED_NAMES
+
+
+def test_a_real_failure_is_not_mistaken_for_a_host_failure() -> None:
+    assert failing("uv run ruff check .", RUFF_FIXABLE).environment_blocker() is None
+    assert failing("uv run pytest", PYTEST_OUTPUT).environment_blocker() is None
+    assert passing().environment_blocker() is None
+    assert failing("uv run pytest", PERMISSION_OUTPUT).environment_blocker() == "PermissionError"
+
+
+async def test_a_host_failure_is_not_blamed_on_the_candidate(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([failing("uv run pytest", PERMISSION_OUTPUT)])
+    repairer = StubRepairer()
+    evolver, context, provider = await evolving(
+        tmp_path, project, [MUTATION], validator, repairer
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    await behavior.cycle(context)  # plan
+    await behavior.cycle(context)  # propose
+    validated = await behavior.cycle(context)
+
+    assert "blocked by this machine, not by the candidate" in validated.summary
+    assert "PermissionError" in validated.summary
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "report"
+    # Not failed: nothing was learned about the candidate either way.
+    assert state["passed"] is None
+    assert state["environment"] == "PermissionError"
+    # No repair was attempted, mechanically or with the model.
+    assert repairer.calls == 0
+    assert len(provider.calls) == 1
+    assert validator.calls == 1
+
+    report = await behavior.cycle(context)
+    assert "this machine blocked the run (PermissionError)" in report.summary
+    assert evolver.candidate(2).status is GenerationStatus.CANDIDATE
