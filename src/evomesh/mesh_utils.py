@@ -1,73 +1,81 @@
-"""Utility helpers for the EvoMesh package.
-
-This module provides small, self-contained geometric helpers that operate on
-plain vertex/face arrays so they can be reused across the package without
-pulling in heavy dependencies.
-"""
-
 from __future__ import annotations
 
-from collections.abc import Sequence
-
-Vector = Sequence[float]
-Face = Sequence[int]
-
-
-def compute_area(vertices: Sequence[Sequence[float]], faces: Sequence[Sequence[int]]) -> float:
-    """Return the total surface area of a triangle mesh.
-
-    Args:
-        vertices: An (N, 3) array-like of vertex coordinates.
-        faces: A (T, 3) array-like of triangle vertex indices.
-
-    Returns:
-        The summed area of all triangular faces.
-    """
-    total = 0.0
-    for f in faces:
-        i, j, k = f[0], f[1], f[2]
-        ax = vertices[j][0] - vertices[i][0]
-        ay = vertices[j][1] - vertices[i][1]
-        az = vertices[j][2] - vertices[i][2]
-        bx = vertices[k][0] - vertices[i][0]
-        by = vertices[k][1] - vertices[i][1]
-        bz = vertices[k][2] - vertices[i][2]
-        cross_x = ay * bz - az * by
-        cross_y = az * bx - ax * bz
-        cross_z = ax * by - ay * bx
-        total += 0.5 * (cross_x ** 2 + cross_y ** 2 + cross_z ** 2) ** 0.5
-    return total
+from collections import defaultdict
+from collections.abc import Iterable
+from typing import Any
 
 
-def compute_centroid(
-    vertices: Sequence[Sequence[float]], faces: Sequence[Sequence[int]]
-) -> tuple[float, float, float]:
-    """Return the area-weighted centroid of a triangle mesh.
+def _normalize_nodes(nodes: Any) -> list[Any]:
+    if nodes is None:
+        return []
+    if isinstance(nodes, dict):
+        return list(nodes.values())
+    if isinstance(nodes, Iterable):
+        return list(nodes)
+    return [nodes]
 
-    Args:
-        vertices: An (N, 3) array-like of vertex coordinates.
-        faces: A (T, 3) array-like of triangle vertex indices.
 
-    Returns:
-        A 3-tuple of centroid coordinates.
-    """
-    cx = cy = cz = area = 0.0
-    for f in faces:
-        i, j, k = f[0], f[1], f[2]
-        ax = vertices[j][0] - vertices[i][0]
-        ay = vertices[j][1] - vertices[i][1]
-        az = vertices[j][2] - vertices[i][2]
-        bx = vertices[k][0] - vertices[i][0]
-        by = vertices[k][1] - vertices[i][1]
-        bz = vertices[k][2] - vertices[i][2]
-        cross_x = ay * bz - az * by
-        cross_y = az * bx - ax * bz
-        cross_z = ax * by - ay * bx
-        tri_area = 0.5 * (cross_x ** 2 + cross_y ** 2 + cross_z ** 2) ** 0.5
-        cx += (vertices[i][0] + vertices[j][0] + vertices[k][0]) / 3.0 * tri_area
-        cy += (vertices[i][1] + vertices[j][1] + vertices[k][1]) / 3.0 * tri_area
-        cz += (vertices[i][2] + vertices[j][2] + vertices[k][2]) / 3.0 * tri_area
-        area += tri_area
-    if area == 0.0:
-        return 0.0, 0.0, 0.0
-    return cx / area, cy / area, cz / area
+def _normalize_edges(edges: Any) -> list[tuple[Any, Any]]:
+    if edges is None:
+        return []
+    if isinstance(edges, dict):
+        normalized: list[tuple[Any, Any]] = []
+        for src, targets in edges.items():
+            for dst in _normalize_nodes(targets):
+                normalized.append((src, dst))
+        return normalized
+    if isinstance(edges, Iterable):
+        result: list[tuple[Any, Any]] = []
+        for edge in edges:
+            if isinstance(edge, (list, tuple)) and len(edge) == 2:
+                result.append((edge[0], edge[1]))
+            else:
+                raise ValueError(f"Invalid edge definition: {edge!r}")
+        return result
+    raise ValueError(f"Cannot interpret edges as {type(edges)!r}")
+
+
+def build_adjacency(nodes: Any, edges: Any) -> dict[Any, list[Any]]:
+    adjacency: dict[Any, list[Any]] = defaultdict(list)
+    for node in _normalize_nodes(nodes):
+        adjacency.setdefault(node, [])
+    for src, dst in _normalize_edges(edges):
+        adjacency.setdefault(src, [])
+        adjacency.setdefault(dst, [])
+        adjacency[src].append(dst)
+    return {node: list(targets) for node, targets in adjacency.items()}
+
+
+def directed_pair_count(edges: Iterable[tuple[Any, Any]]) -> dict[tuple[Any, Any], int]:
+    counts: dict[tuple[Any, Any], int] = defaultdict(int)
+    for src, dst in edges:
+        counts[(src, dst)] += 1
+    return dict(counts)
+
+
+def undirected_edges(edges: Iterable[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    seen: set = set()
+    result: list[tuple[Any, Any]] = []
+    for src, dst in edges:
+        key = frozenset((src, dst))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((src, dst))
+    return result
+
+
+def _coerce_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _coerce_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_coerce_value(v) for v in value]
+    return value
+
+
+def merge_attributes(base: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
+    merged: dict[str, Any] = {k: _coerce_value(v) for k, v in base.items()}
+    if override:
+        for key, value in override.items():
+            merged[key] = _coerce_value(value)
+    return merged
