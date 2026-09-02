@@ -16,6 +16,15 @@ $ErrorActionPreference = 'Stop'
 # param() defaults before $PSScriptRoot is populated, so the default silently
 # came out empty and Split-Path failed before the script logged anything.
 if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
+
+# `uv run` finds the project in the working directory, not from the paths it is
+# handed, so a script launched from anywhere else -- a shortcut, a scheduled
+# task, an admin shell sitting in system32 -- got "program not found: evomesh"
+# and a supervisor that gave up on the spot. start-evomesh.bat has always done
+# the same thing with `cd /d "%~dp0"`; this was the one launcher that resolved a
+# root and then never stood in it.
+Set-Location -LiteralPath $Root
+
 $RestartExitCode = 86
 
 $env:UV_CACHE_DIR = Join-Path $Root '.runtime\uv-cache'
