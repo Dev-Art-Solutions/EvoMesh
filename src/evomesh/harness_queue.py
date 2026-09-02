@@ -43,6 +43,9 @@ class HarnessJob:
     # that agent's filesystem grants and sends the result to its mailbox.
     agent_id: str = ""
     allow_write: bool = False
+    # What to call this job in a status line. Optional: an objective that is one
+    # sentence needs no label, and one that is a page needs one.
+    label: str = ""
     status: JobStatus = JobStatus.QUEUED
     steps: int = 0
     result: HarnessResult | None = None
@@ -56,20 +59,27 @@ class HarnessJob:
 
     @property
     def title(self) -> str:
-        """One line of the objective, because the objective is no longer one line.
+        """One line, because the objective is no longer one line.
 
         Since the Evolver started asking through the harness, an objective
         carries the project map and the standing rules -- a page of text. A
         status line that prints it is a status line nobody can read.
+
+        The submitter may say what the job is; failing that, the ``OBJECTIVE:``
+        line is looked for, and only then the first line -- which for a repair
+        job is the map's own header, which is how this was noticed.
         """
-        first = next(
-            (line.strip() for line in self.objective.splitlines() if line.strip()), ""
-        )
-        for line in self.objective.splitlines():
-            if line.startswith("OBJECTIVE: "):
-                first = line[len("OBJECTIVE: ") :].strip()
-                break
-        return first[:100] + ("..." if len(first) > 100 else "")
+        chosen = self.label
+        if not chosen:
+            for line in self.objective.splitlines():
+                if line.startswith("OBJECTIVE: "):
+                    chosen = line[len("OBJECTIVE: ") :].strip()
+                    break
+        if not chosen:
+            chosen = next(
+                (line.strip() for line in self.objective.splitlines() if line.strip()), ""
+            )
+        return chosen[:100] + ("..." if len(chosen) > 100 else "")
 
     def describe(self) -> str:
         who = self.agent_id or "console"
@@ -123,6 +133,7 @@ class HarnessQueue:
         *,
         agent_id: str = "",
         allow_write: bool = False,
+        label: str = "",
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -138,6 +149,7 @@ class HarnessQueue:
             root=root,
             agent_id=agent_id,
             allow_write=allow_write,
+            label=label,
         )
         self._next += 1
         self.jobs[job.number] = job
@@ -182,8 +194,12 @@ class HarnessGateway:
         self.queue = queue
         self.sessions = sessions
 
-    def submit(self, objective: str, *, agent_id: str, root: Path) -> HarnessJob:
-        return self.queue.submit(objective, root, agent_id=agent_id, allow_write=True)
+    def submit(
+        self, objective: str, *, agent_id: str, root: Path, label: str = ""
+    ) -> HarnessJob:
+        return self.queue.submit(
+            objective, root, agent_id=agent_id, allow_write=True, label=label
+        )
 
     def job(self, number: int) -> HarnessJob | None:
         return self.queue.jobs.get(number)

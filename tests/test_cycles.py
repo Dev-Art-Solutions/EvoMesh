@@ -636,6 +636,64 @@ async def test_an_agent_answers_about_its_work_from_runtime_state(tmp_path: Path
     await environment.stop()
 
 
+async def test_a_missing_toolchain_is_blocked_not_failed(tmp_path: Path) -> None:
+    """The case string-matching got wrong, and it cost a candidate its verdict.
+
+    `uv` missing is the host's problem. Reported as a failure, the pipeline reads
+    it as a verdict and spends the repair budget asking a model to fix somebody's
+    PATH -- the exact thing "not validated is not failed" exists to prevent.
+    """
+    missing = ValidationResult(
+        passed=False,
+        commands=[
+            {
+                "command": "uv",
+                "exit_code": -1,
+                "output": "uv is not on PATH and no .tools/uv/bin/uv.exe was found",
+                "blocked": True,
+            }
+        ],
+    )
+    busy = ValidationResult(
+        passed=False,
+        commands=[
+            {
+                "command": "uv sync",
+                "exit_code": 2,
+                "output": "failed to remove file ... (os error 32)",
+            }
+        ],
+    )
+    real = ValidationResult(
+        passed=False,
+        commands=[{"command": "uv run pytest", "exit_code": 1, "output": "E assert 1 == 2"}],
+    )
+
+    assert missing.environment_blocker(), "a missing toolchain is the host's fault"
+    # Found by this test on this machine: uv could not replace a file in the
+    # candidate's venv because something else held it open.
+    assert busy.environment_blocker() == "os error 32"
+    assert real.environment_blocker() is None, "a failing test is the candidate's fault"
+
+
+def test_subprocesses_leave_no_asyncio_transport_behind() -> None:
+    """Why this project runs commands on a thread rather than through asyncio.
+
+    The proactor loop finalises a subprocess transport during a later garbage
+    collection, after the loop that owned it has closed, and the unraisable
+    ValueError it raises gets attributed to whichever test is running. Candidate
+    validation *is* this suite, so roughly one candidate in three failed for a
+    reason it had not caused.
+    """
+    import evomesh.evolution as evolution
+    import evomesh.git as git
+    import evomesh.skills as skills
+
+    for module in (evolution, git, skills):
+        source = Path(module.__file__ or "").read_text(encoding="utf-8")
+        assert "create_subprocess_exec" not in source, module.__name__
+
+
 async def test_the_objective_orients_the_model_before_it_looks(tmp_path: Path) -> None:
     """What replaced the JSON contract: an objective, not a format.
 
@@ -717,10 +775,16 @@ class FakeHarness(HarnessGateway):
         self.batches = batches
         self.answer = answer
         self.objectives: list[str] = []
+        self.labels: list[str] = []
 
-    def submit(self, objective: str, *, agent_id: str, root: Path) -> HarnessJob:
+    def submit(
+        self, objective: str, *, agent_id: str, root: Path, label: str = ""
+    ) -> HarnessJob:
         self.objectives.append(objective)
-        job = self.queue.submit(objective, root, agent_id=agent_id, allow_write=True)
+        self.labels.append(label)
+        job = self.queue.submit(
+            objective, root, agent_id=agent_id, allow_write=True, label=label
+        )
         batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
         entries: list[dict[str, object]] = []
         for path, content in batch:

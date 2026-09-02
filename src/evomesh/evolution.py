@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from evomesh.codebase import project_map
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
+from evomesh.processes import run_command
 from evomesh.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,11 @@ ENVIRONMENT_MARKERS = (
     "Access is denied",
     "No space left on device",
     "OSError: [Errno 28]",
+    # Windows, and seen on this machine: uv could not replace a file in the
+    # candidate's venv because something else had it open. Nothing about the
+    # candidate's source caused it and no rewrite of it would help.
+    "os error 32",
+    "being used by another process",
     "Connection refused",
     "Temporary failure in name resolution",
 )
@@ -140,10 +146,18 @@ class ValidationResult(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def environment_blocker(self) -> str | None:
-        """The marker proving the host broke this run, or None if it did not."""
+        """The proof that the host broke this run, or None if it did not.
+
+        A flag first, markers second. Matching strings in output is a guess that
+        happens to be right often; a command that *knows* it could not run says
+        so, and the missing-toolchain case is the one where guessing was wrong
+        and cost the candidate a verdict it never earned.
+        """
         failure = self.failure()
         if failure is None:
             return None
+        if failure.get("blocked"):
+            return str(failure.get("output", "")).strip().splitlines()[0][:120]
         output = str(failure.get("output", ""))
         return next((marker for marker in ENVIRONMENT_MARKERS if marker in output), None)
 
@@ -335,7 +349,7 @@ class CandidateWorkspace:
         while destination.exists():
             number += 1
             destination = self.supervisor.root / f"{number:06d}-candidate"
-        process = await asyncio.create_subprocess_exec(
+        result = await run_command(
             "git",
             "-C",
             str(self.repository_root),
@@ -345,11 +359,8 @@ class CandidateWorkspace:
             f"evomesh/candidate-{number:06d}",
             str(destination),
             "HEAD",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
         )
-        await process.communicate()
-        if process.returncode != 0:
+        if result.exit_code != 0:
             await asyncio.to_thread(
                 shutil.copytree, self.repository_root, destination, ignore=self._ignore
             )
@@ -409,30 +420,34 @@ class CandidateValidator:
         try:
             uv = uv_executable(generation.path)
         except FileNotFoundError as exc:
+            # Marked blocked, not failed. A candidate cannot be blamed for a
+            # toolchain that is not installed, and without this flag the
+            # pipeline reads "no uv" as a verdict and spends the repair budget
+            # asking a model to fix somebody's PATH.
             return self._write(
                 generation,
                 ValidationResult(
                     passed=False,
-                    commands=[{"command": "uv", "exit_code": -1, "output": str(exc)}],
+                    commands=[
+                        {
+                            "command": "uv",
+                            "exit_code": -1,
+                            "output": str(exc),
+                            "blocked": True,
+                        }
+                    ],
                 ),
             )
         for command in self.COMMANDS:
-            process = await asyncio.create_subprocess_exec(
-                uv,
-                *command[1:],
-                cwd=generation.path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            output, _ = await process.communicate()
+            result = await run_command(uv, *command[1:], cwd=generation.path)
             outcomes.append(
                 {
                     "command": " ".join(command),
-                    "exit_code": process.returncode,
-                    "output": output.decode(errors="replace"),
+                    "exit_code": result.exit_code,
+                    "output": result.output,
                 }
             )
-            if process.returncode != 0:
+            if result.exit_code != 0:
                 break
         return self._write(
             generation,
@@ -479,18 +494,11 @@ class CandidateRepairer:
 
     async def autofix(self, generation: Generation) -> dict[str, object]:
         uv = uv_executable(generation.path)
-        process = await asyncio.create_subprocess_exec(
-            uv,
-            *self.AUTOFIX[1:],
-            cwd=generation.path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        output, _ = await process.communicate()
+        result = await run_command(uv, *self.AUTOFIX[1:], cwd=generation.path)
         return {
             "command": " ".join(self.AUTOFIX),
-            "exit_code": process.returncode,
-            "output": output.decode(errors="replace"),
+            "exit_code": result.exit_code,
+            "output": result.output,
         }
 
 

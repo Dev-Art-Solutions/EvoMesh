@@ -430,6 +430,7 @@ class EvolverBehavior(BDIBehavior):
             state,
             generation,
             build=lambda: evolver.mutation_objective(objective),
+            label=objective,
             status="applied",
             on_done=lambda touched: (
                 STAGE_VALIDATE if self.auto_validate else STAGE_REPORT,
@@ -445,6 +446,7 @@ class EvolverBehavior(BDIBehavior):
         generation: Generation,
         *,
         build: Callable[[], str],
+        label: str,
         status: str,
         on_done: Callable[[list[str]], tuple[str, dict[str, Any]]],
     ) -> StepResult:
@@ -457,7 +459,9 @@ class EvolverBehavior(BDIBehavior):
         number = state.get("job")
         job = harness.job(int(number)) if number else None
         if job is None:
-            job = harness.submit(build(), agent_id=context.definition.id, root=generation.path)
+            job = harness.submit(
+                build(), agent_id=context.definition.id, root=generation.path, label=label
+            )
             await evolver.set_pipeline_state({**state, "job": job.number})
             # Falls through when the job is somehow already finished, which is
             # never true of a real worker and always true of a synchronous one.
@@ -594,6 +598,7 @@ class EvolverBehavior(BDIBehavior):
                 state,
                 generation,
                 build=lambda: evolver.repair_objective(failure, touched),
+                label=f"repair {attempt}: `{failure.get('command')}` failed",
                 status="repaired",
                 on_done=lambda changed: (STAGE_VALIDATE, {"repairs": attempt}),
             )

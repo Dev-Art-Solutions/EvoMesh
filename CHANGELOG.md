@@ -2,6 +2,35 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.2] - 2026-09-02
+
+### Fixed
+
+- **Roughly one candidate in three was failing validation for a reason it had
+  not caused, and the Evolver was spending its repair budget on it.** Every
+  subprocess in the project went through `asyncio.create_subprocess_exec`, whose
+  transport the proactor loop finalises during a later garbage collection --
+  after the loop that owned it has closed. The `ValueError: I/O operation on
+  closed pipe` that follows is attributed by pytest to whichever test happens to
+  be running, and candidate validation *is* the test suite.
+  - Commands now run through `evomesh.processes.run_command`, a blocking
+    `subprocess.run` on a worker thread. There is no transport to finalise, and
+    these commands -- git plumbing, `uv run pytest` -- are blocking work anyway.
+  - Measured: before, one full run in three failed on a different test each
+    time; after, four consecutive runs green and the warning count down from
+    five to one.
+- **A missing toolchain is reported as blocked, not as a verdict.** `uv` not
+  being installed said "the candidate failed", so the pipeline sent it to repair
+  and asked a model to fix somebody's PATH. A command that knows it could not run
+  now says so with a flag, which `environment_blocker()` reads before it falls
+  back to matching strings in output.
+- Two more host failures are recognised: `os error 32` and "being used by another
+  process" -- Windows refusing to replace a file in the candidate's venv because
+  something else held it open. Found by the test written for the case above.
+- `/harness status` shows a job's own label. The repair job's objective has no
+  `OBJECTIVE:` line, so the status line printed the first line of the project map
+  instead of what the job was for.
+
 ## [0.2.0-alpha.1] - 2026-09-02
 
 ### Changed

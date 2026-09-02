@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from evomesh.processes import run_command
 
 # Who signs a generation. The mesh authors its own commits, and a human reading
 # the history has to be able to tell them apart from their own work at a glance,
@@ -44,7 +45,7 @@ class GitRepository:
     identity: GitIdentity = field(default_factory=GitIdentity)
 
     async def run(self, *arguments: str) -> str:
-        process = await asyncio.create_subprocess_exec(
+        result = await run_command(
             "git",
             "-C",
             str(self.root),
@@ -57,14 +58,10 @@ class GitRepository:
             "-c",
             f"user.email={self.identity.email}",
             *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
         )
-        output, _ = await process.communicate()
-        text = output.decode(errors="replace")
-        if process.returncode != 0:
-            raise GitError(text.strip())
-        return text
+        if result.exit_code != 0:
+            raise GitError(result.output.strip())
+        return result.output
 
     async def status(self) -> str:
         return await self.run("status", "--short")

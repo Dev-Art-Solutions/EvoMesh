@@ -6,6 +6,7 @@ from typing import Any
 
 from evomesh.contracts import SkillDefinition
 from evomesh.permissions import FilesystemPolicy
+from evomesh.processes import run_command
 from evomesh.storage import SQLiteRepository
 
 SkillHandler = Callable[[str, dict[str, Any]], Awaitable[Any]]
@@ -67,11 +68,7 @@ class SkillRegistry:
             arguments = ["git", "-C", str(root), command]
             if command == "diff":
                 arguments.append("--")
-            process = await asyncio.create_subprocess_exec(
-                *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-            )
-            output, _ = await process.communicate()
-            return output.decode(errors="replace")
+            return (await run_command(*arguments)).output
 
         definitions = [
             ("Filesystem.Read", "Read a UTF-8 file", read_text, ["filesystem:read"]),
