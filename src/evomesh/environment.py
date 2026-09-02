@@ -22,6 +22,9 @@ from evomesh.contracts import (
     SkillDefinition,
 )
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
+from evomesh.harness import HarnessResult, build_runner
+from evomesh.harness_queue import HarnessJob, HarnessQueue, HarnessWorker
+from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.memory import AgentMemory, WorldContext
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, OllamaProvider, OpenAICompatibleProvider
@@ -50,6 +53,8 @@ class Environment:
         self.skills = SkillRegistry(self.repository, self.permissions)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
+        self.harness_queue = HarnessQueue(settings.harness.max_queue)
+        self.harness_workers: list[HarnessWorker] = []
         self.health_state = HealthState.STOPPED
         self.provider_health: tuple[bool, str] = (False, "not checked")
         self.world = WorldContext(settings.workspace_path)
@@ -179,6 +184,7 @@ class Environment:
         else:
             self.provider_health = (False, f"Provider '{default_name}' is not configured")
         self.evolver.provider = self.providers.get(default_name)
+        self._start_harness_workers()
         if start_agent_loops:
             await self.start_all()
         await self.refresh_world()
@@ -259,6 +265,7 @@ class Environment:
     async def stop(self) -> None:
         # Shutting the mesh down leaves every agent's desired status untouched,
         # so the next boot starts exactly what was running before.
+        await self._stop_harness_workers()
         for runtime in list(self.runtimes.values()):
             await runtime.stop(persist_status=False)
         self.runtimes.clear()
@@ -329,7 +336,91 @@ class Environment:
                 definition.id,
                 AgentRuntimeState(agent_id=definition.id, name=definition.name),
             )
+        # Derived, never stored: an agent with a job in flight is doing
+        # something, and reporting it as `thinking` would be a label with no
+        # loop behind it -- the exact failure the status/phase split exists to
+        # prevent. An offline agent keeps its reason; a job cannot revive it.
+        for job in self.harness_queue.open_jobs():
+            state = states.get(job.agent_id)
+            if state is not None and state.phase is not AgentPhase.OFFLINE:
+                state.phase = AgentPhase.AWAITING_HARNESS
+                state.last_outcome = job.describe()
         return states
+
+    # -- the harness worker ---------------------------------------------
+
+    def _start_harness_workers(self) -> None:
+        """No harness configured, no worker task. Rule: off means absent."""
+        if not self.settings.harness.enabled or self.harness_workers:
+            return
+        for index in range(max(1, self.settings.harness.workers)):
+            worker = HarnessWorker(self.harness_queue, self._run_harness_job, self._deliver_harness)
+            worker.start(f"evomesh-harness-{index + 1}")
+            self.harness_workers.append(worker)
+
+    async def _stop_harness_workers(self) -> None:
+        for worker in self.harness_workers:
+            await worker.stop()
+        self.harness_workers.clear()
+
+    def submit_harness_job(
+        self, objective: str, *, agent_id: str = "", root: Path | None = None
+    ) -> HarnessJob:
+        """Queue a job and return its handle, which may be one already running."""
+        if not self.settings.harness.enabled:
+            raise RuntimeError("the harness is off; set harness.enabled in evomesh.yaml")
+        return self.harness_queue.submit(
+            objective,
+            root or self.project_root,
+            agent_id=agent_id,
+            allow_write=self.settings.harness.allow_write,
+        )
+
+    async def _run_harness_job(self, job: HarnessJob) -> HarnessResult:
+        settings = self.settings.harness
+        provider_name = self.settings.models.default_provider
+        model: str | None = None
+        if job.agent_id and self._has(job.agent_id):
+            definition = self.registry.get(job.agent_id)
+            provider_name, model = definition.provider, definition.model_name
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            raise RuntimeError(f"Provider '{provider_name}' is not configured")
+        runner = build_runner(
+            provider,
+            job.root,
+            session=HarnessSession(next_session_path(settings.session_path)),
+            limits=settings.limits(),
+            model=model,
+            max_steps=settings.max_steps,
+            max_seconds=settings.max_seconds,
+            read_only=not job.allow_write,
+            allow_write=job.allow_write,
+        )
+        # An agent's job runs under that agent's grants, so the harness is the
+        # loudest user of the permission policy rather than a way around it.
+        if job.agent_id:
+            runner.context.policy = self.permissions
+            runner.context.agent_id = job.agent_id
+        return await runner.run(job.objective)
+
+    async def _deliver_harness(self, job: HarnessJob) -> None:
+        """A finished job is an ordinary inbound message, not a callback.
+
+        It lands in the mailbox, gets the audit record every message gets, and
+        wakes the loop the agent already has -- so no behavior has to know that
+        a worker exists.
+        """
+        if not job.agent_id:
+            return
+        if job.result is not None:
+            said = job.result.answer or job.result.detail
+            body = f"Harness job {job.number} {job.result.outcome}: {said}"
+        else:
+            body = f"Harness job {job.number} did not finish: {job.detail}"
+        await self.send_message(
+            Message(sender_id="harness", recipient_id=job.agent_id, content=body)
+        )
 
     def _services(self) -> dict[str, object]:
         return {

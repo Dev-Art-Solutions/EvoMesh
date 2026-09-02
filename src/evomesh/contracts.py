@@ -38,6 +38,9 @@ class AgentPhase(StrEnum):
     IDLE = "idle"
     THINKING = "thinking"
     ACTING = "acting"
+    # Blocked on a harness worker, which will certainly come back -- unlike
+    # WAITING_HUMAN, which is blocked on a person who may not.
+    AWAITING_HARNESS = "awaiting-harness"
     WAITING_HUMAN = "waiting-human"
     ERROR = "error"
 

@@ -13,8 +13,8 @@ than to each other. Everything runs against local models (Ollama by default, Inf
 OpenAI-compatible local endpoint), so every design decision assumes a **small context window and a
 slow model**, not GPT-class headroom.
 
-Version lives in [pyproject.toml](pyproject.toml) (`0.1.0a1`; tags and the Windows package use the
-`v0.1.0-alpha.N` form). Python 3.13+, `uv`, plus a .NET WinForms Control Center on Windows.
+Version lives in [pyproject.toml](pyproject.toml); tags and the Windows package use the
+`v0.1.0-alpha.N` form of the same number. Python 3.13+, `uv`, plus a .NET WinForms Control Center on Windows.
 
 ## Repository layout
 
@@ -41,7 +41,7 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `memory.py` | `memory.md` append + compaction, `context.md` rewrite |
 | `evolution.py` | the whole generational pipeline: supervisor metadata, candidates, validation, repair, promotion, publishing, backlog |
 | `codebase.py` | `project_map()` — surveys `src/evomesh/`, resolves the import graph, marks load-bearing vs dead |
-| `harness.py`, `harness_tools.py`, `harness_session.py` | the tool loop: a model that reads and searches the project before it answers. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
+| `harness.py`, `harness_tools.py`, `harness_session.py`, `harness_queue.py` | the tool loop, its tools, its JSONL record, and the job queue an agent submits work to. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
 | `git.py` | `GitRepository`, `GitIdentity`, `PublishPolicy` — per-invocation identity, never `git config` |
 | `storage.py` | SQLite behind a repository; nothing else opens the database |
 | `models.py` | Ollama / OpenAI-compatible providers, per-request model, `timeout_seconds` |
@@ -141,6 +141,13 @@ regresses.
     (`candidate`/`active`/`stopped`); `phase` is what the agent is doing right now, rebuilt on every
     boot and never read from disk. An agent that cannot start reports `offline` with a reason
     instead of coming back labelled `active` with no loop behind the label.
+
+    **Amended by the harness queue: the phase list gained `awaiting-harness`.** It is a phase and
+    not a status, because an agent waiting on a job is `active` and is doing something.
+    Considered and rejected: reusing `waiting-human` — the two read identically on a roster and
+    mean opposite things, one blocked on a person who may never return and one on a worker that
+    certainly will. The phase is *derived* in `runtime_states()` from the queue, never stored, and
+    an `offline` agent stays offline: a queued job cannot revive an agent with no loop.
 16. **Runtime dependencies stay at five** — `aiosqlite`, `httpx`, `pydantic`, `pydantic-settings`,
     `pyyaml`. A local-first runtime that drags in a framework has stopped being the thing. Add one
     only with an argument recorded here.
@@ -190,6 +197,16 @@ reasons it is shaped this way:
   each match*, so widening the anchor costs no second read. Do not add an `occurrence: 2` argument:
   it lets a model that cannot widen an anchor guess an index instead, and every wrong guess is a
   silent wrong edit.
+- **A harness job is asked for, not done.** An agent submits to `HarnessQueue` and keeps cycling;
+  the worker runs the tool loop and the result comes back as an **ordinary inbound message**
+  (rule 2), with the audit record every message gets. This is what keeps rule 7 true — the run
+  happens in the worker, the cycle only checks its handle, so one tick still advances one stage.
+  One worker by default: two tool loops on one card queue inside the GPU, where nothing can see
+  them, instead of in a queue where `/harness status` can. A second submit from an agent that
+  already has an open job **returns the first handle**, because a behavior submitting once per
+  cycle would otherwise fill the queue with copies that all edit the same files. The queue is
+  **not durable** and stopping the mesh cancels what is in it — reported to the submitter as a
+  message, because the only thing worse than a cancelled job is a plan step no event will finish.
 - **Writing is two gates, not one.** `harness.enabled` turns the harness on; `harness.allow_write`
   decides whether any job may change a file. A read-only job is not given the write tools at all,
   and a writing job on a mesh that forbids writes gets a refusal *naming the setting* — which the

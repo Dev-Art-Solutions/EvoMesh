@@ -2,6 +2,36 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.1.0-alpha.4] - 2026-09-02
+
+### Added
+
+- The harness became work an agent *asks for* rather than work it stops to do. A
+  job queue and a worker task run the tool loop off the cycle, so an agent that
+  wants minutes of file-reading keeps ticking, keeps answering `/chat`, and keeps
+  appearing in `/agents` while its job runs.
+  - This is what keeps "one cycle advances one stage" true. A harness run is
+    minutes and a cycle has to stay a tick; the run happens in the worker and the
+    agent's cycle only checks its handle.
+  - **The result comes back as an ordinary inbound message**, not a callback, so
+    it lands in the mailbox with the audit record every message gets and wakes the
+    loop the agent already has. No behavior has to know a worker exists.
+  - `harness.workers` defaults to **1**. Two tool loops on one card do not go
+    twice as fast; they queue inside the GPU where nothing can see them, instead
+    of in a queue where `/harness status` can.
+  - A second submit from an agent that already has an open job returns the first
+    handle. A behavior submitting once per cycle would otherwise fill the queue
+    with copies of one objective, all editing the same files.
+  - A new agent phase, `awaiting-harness`, derived from the queue and never
+    stored. It is deliberately not `waiting-human`: those read the same on a
+    roster and mean opposite things.
+  - `harness.max_queue` (8) bounds the wait list, and `/harness status` shows the
+    workers, the open jobs and what the last ones did.
+  - **The queue is not durable.** Stopping the mesh cancels what is in it and
+    tells the submitter so, because the only thing worse than a cancelled job is a
+    plan step that no event will ever finish. A job that raises is cancelled with
+    the reason and the worker carries on.
+
 ## [0.1.0-alpha.3] - 2026-09-02
 
 ### Added

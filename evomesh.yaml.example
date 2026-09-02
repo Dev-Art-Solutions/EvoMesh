@@ -68,6 +68,10 @@ evolution:
 #   grep_matches: 40
 #   # One JSONL file per job, written as it runs.
 #   session_path: .runtime/harness
+#   # One tool loop at a time. Two on one card do not go twice as fast -- they
+#   # queue inside the GPU instead of in a queue you can look at.
+#   workers: 1
+#   max_queue: 8
 
 system_agents:
   architect:

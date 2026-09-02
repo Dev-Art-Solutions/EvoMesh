@@ -12,6 +12,7 @@ from evomesh.git import (
     GitIdentity,
     PublishPolicy,
 )
+from evomesh.harness_tools import ToolLimits
 from evomesh.memory import MemoryBudget
 
 
@@ -104,6 +105,20 @@ class HarnessSettings(BaseModel):
     grep_matches: int = 40
     # Empty means .runtime/harness next to the checkout.
     session_path: Path = Path(".runtime/harness")
+    # One tool loop at a time. Two on one card do not go twice as fast; they
+    # queue inside the GPU, where nothing can see them, instead of in a queue
+    # where /harness status can. The number is a setting because a second
+    # card or a remote provider is a different bet, and a hard-coded 1 is an
+    # argument nobody can test.
+    workers: int = 1
+    max_queue: int = 8
+
+    def limits(self) -> ToolLimits:
+        return ToolLimits(
+            result_chars=self.tool_result_chars,
+            result_lines=self.tool_result_lines,
+            grep_matches=self.grep_matches,
+        )
 
 
 class GitSettings(BaseModel):

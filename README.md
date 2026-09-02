@@ -11,7 +11,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.1.0-alpha.2 is an early runnable foundation. Implemented: the console, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI-shaped state, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, supervisor metadata, and automated tests. Experimental: model-authored mutations and manual generation promotion. Planned: richer mutation authoring, stronger OS sandboxing, web/Telegram channels, and autonomous promotion policies.
+Version 0.1.0-alpha.4 is an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. Experimental: model-authored mutations and manual generation promotion. Planned: the Evolver moved onto the harness, transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -260,6 +260,22 @@ evomesh> /harness do "make second() add 2 instead of 1"
 Two things are deliberate. Tool output is truncated **by the tool**, which says how many lines it withheld and which offset asks for them — so a model can request the rest instead of silently believing it has seen a whole file. And a job that runs out of steps or wall clock ends as `capped`, not `failed`: it did not go wrong, it ran out of room, and those need different responses.
 
 Every job writes one JSONL file under `.runtime/harness/`, flushed as it runs, so a job that hangs still leaves the whole story up to that moment.
+
+### An agent asks for a job rather than stopping to do one
+
+A tool loop takes minutes; a cycle has to stay a tick. So an agent submits a job to a queue and keeps running — it still answers `/chat`, still reports what it is working on, still appears in `/agents` — and simply commits to nothing new while a job of its own is open. Its phase reads `awaiting-harness`, which is deliberately not `waiting-human`: one is blocked on a person who may never come back, the other on a worker that certainly will.
+
+When the job finishes, the result arrives in the agent's mailbox **as an ordinary message**, with the audit record every message gets. Nothing calls back into the agent, and no behaviour has to know a worker exists.
+
+```text
+evomesh> /harness status
+workers: 1, open jobs: 1
+  job 2 [evolver] running, 7 steps: wire metrics into a module that runs
+  job 1 [console] answered -- 4 steps, 67.1 s, 4 tool calls, native tools
+The queue is not durable: stopping the mesh cancels what is in it.
+```
+
+`harness.workers` defaults to 1. Two tool loops on one card do not go twice as fast; they queue inside the GPU, where nothing can see them, instead of in a queue where you can. Stopping the mesh cancels open jobs and **tells the submitter** — the only thing worse than a cancelled job is a plan step no event will ever finish.
 
 ## Evolution and generations
 

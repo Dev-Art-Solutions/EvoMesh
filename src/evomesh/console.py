@@ -41,6 +41,7 @@ HELP = """Commands:
   /evolution rollback           Return to the last known good generation
   /harness ask "<question>"     Let the model read the project before answering
   /harness do "<objective>" [path]  Let it change files, if harness.allow_write
+  /harness status               Queue, workers, and what the last jobs did
   /telegram status              Whether the bot is connected, and who may use it
   /telegram test                Ask Telegram whether the configured token works
   /telegram allow|revoke <id>   Manage which chats may talk to the mesh
@@ -344,8 +345,23 @@ class ConsoleChannel:
                 "and restart the mesh."
             )
         action = parts[1].lower() if len(parts) > 1 else ""
+        if action == "status":
+            queue = self.environment.harness_queue
+            workers = len(self.environment.harness_workers)
+            rows = [job.describe() for job in queue.recent()]
+            return (
+                f"workers: {workers}, open jobs: {len(queue.open_jobs())}\n"
+                + ("\n".join(f"  {row}" for row in rows) if rows else "  no jobs yet")
+                + "\nThe queue is not durable: stopping the mesh cancels what is in it."
+            )
+        if action == "job" and len(parts) > 2 and parts[2].isdigit():
+            job = self.environment.harness_queue.jobs.get(int(parts[2]))
+            return job.describe() if job else f"There is no job {parts[2]}."
         if action not in ("ask", "do") or len(parts) < 3:
-            return 'Usage: /harness ask "<question>"  |  /harness do "<objective>" [path]'
+            return (
+                'Usage: /harness ask "<question>"  |  /harness do "<objective>" [path]'
+                "  |  /harness status  |  /harness job <n>"
+            )
         if action == "do" and not settings.allow_write:
             return (
                 "The harness may not change files. Set harness.allow_write: true "

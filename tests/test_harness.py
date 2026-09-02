@@ -8,11 +8,23 @@ something a green suite can claim.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from evomesh.harness import HarnessRunner, build_runner, parse_text_call
+from evomesh.agents import system_agent_definitions
+from evomesh.config import HarnessSettings, ProviderSettings, Settings
+from evomesh.contracts import AgentPhase
+from evomesh.environment import Environment
+from evomesh.harness import HarnessResult, HarnessRunner, build_runner, parse_text_call
+from evomesh.harness_queue import (
+    HarnessJob,
+    HarnessQueue,
+    HarnessWorker,
+    JobStatus,
+    QueueFull,
+)
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
     ALL_TOOLS,
@@ -404,6 +416,154 @@ async def test_reasoning_blocks_never_reach_the_transcript(project: Path) -> Non
     result = await runner.run("what is 2+2?")
 
     assert result.answer == "The answer is 4."
+
+
+# -- the queue and the worker --------------------------------------------
+
+
+def mesh_settings(tmp_path: Path) -> Settings:
+    settings = Settings(
+        data_path=tmp_path / "data" / "evomesh.db",
+        generation_path=tmp_path / "generations",
+        workspace_path=tmp_path / "workspace",
+        harness=HarnessSettings(enabled=True, session_path=tmp_path / "sessions"),
+    )
+    settings.models.providers["ollama"] = ProviderSettings(
+        base_url="http://localhost:0", model="mock"
+    )
+    return settings
+
+
+async def test_a_finished_job_arrives_as_an_ordinary_message(tmp_path: Path) -> None:
+    """Rule 2: the worker is not an exception dressed as infrastructure.
+
+    Delivering through the mailbox is what gives the result an audit record and
+    wakes the loop the agent already has, so no behavior learns that a worker
+    exists.
+    """
+    environment = Environment(
+        mesh_settings(tmp_path), providers={"ollama": MockProvider(responses=["all done"])}
+    )
+    await environment.start()
+    try:
+        job = environment.submit_harness_job("look around", agent_id="guardian")
+        message = await environment.bus.receive("guardian", wait_seconds=5)
+    finally:
+        await environment.stop()
+
+    assert message.sender_id == "harness"
+    assert f"job {job.number}" in message.content
+    assert "all done" in message.content
+    assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
+
+
+async def test_a_second_submit_returns_the_job_already_running(tmp_path: Path) -> None:
+    """A behavior submits once per cycle; the queue must not accumulate copies.
+
+    Every copy would edit the same files, which is the failure the one-open-job
+    rule exists to prevent rather than a tidiness preference.
+    """
+    environment = Environment(mesh_settings(tmp_path), providers={"ollama": MockProvider()})
+    queue = environment.harness_queue
+
+    first = queue.submit("improve the mesh", tmp_path, agent_id="evolver")
+    second = queue.submit("improve the mesh again", tmp_path, agent_id="evolver")
+
+    assert first is second
+    assert len(queue.jobs) == 1
+
+
+async def test_the_queue_refuses_past_its_limit(tmp_path: Path) -> None:
+    queue = HarnessQueue(max_queue=2)
+    queue.submit("one", tmp_path)
+    queue.submit("two", tmp_path)
+
+    with pytest.raises(QueueFull):
+        queue.submit("three", tmp_path)
+
+
+async def test_an_agent_with_an_open_job_is_reported_as_awaiting_harness(
+    tmp_path: Path,
+) -> None:
+    environment = Environment(mesh_settings(tmp_path), providers={"ollama": MockProvider()})
+    await environment.repository.initialize()
+    definition = system_agent_definitions("ollama", "mock", {})[0]
+    environment.registry.register(definition)
+    environment.runtimes.clear()
+
+    before = environment.runtime_states()[definition.id].phase
+    environment.harness_queue.submit("work", tmp_path, agent_id=definition.id)
+    after = environment.runtime_states()[definition.id].phase
+
+    # Offline stays offline: a queued job cannot revive an agent that has no loop.
+    assert before is AgentPhase.OFFLINE
+    assert after is AgentPhase.OFFLINE
+
+
+async def test_stopping_the_mesh_never_leaves_a_submitter_waiting(tmp_path: Path) -> None:
+    """A cancelled job is reported. The worst outcome is a step no event ends."""
+    queue = HarnessQueue()
+    started = asyncio.Event()
+    delivered: list[HarnessJob] = []
+
+    async def never_finishes(job: HarnessJob) -> HarnessResult:
+        started.set()
+        await asyncio.sleep(60)
+        raise AssertionError("unreachable")
+
+    async def deliver(job: HarnessJob) -> None:
+        delivered.append(job)
+
+    worker = HarnessWorker(queue, never_finishes, deliver)
+    worker.start("test-worker")
+    job = queue.submit("something slow", tmp_path, agent_id="evolver")
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    await worker.stop()
+
+    assert job.status is JobStatus.CANCELLED
+    assert delivered == [job]
+    assert "the mesh stopped" in job.detail
+
+
+async def test_a_job_that_raises_does_not_kill_the_worker(tmp_path: Path) -> None:
+    queue = HarnessQueue()
+    delivered: list[HarnessJob] = []
+
+    async def explode(job: HarnessJob) -> HarnessResult:
+        if job.objective == "boom":
+            raise RuntimeError("provider is on fire")
+        return HarnessResult(outcome="answered", answer="fine")
+
+    async def deliver(job: HarnessJob) -> None:
+        delivered.append(job)
+
+    worker = HarnessWorker(queue, explode, deliver)
+    worker.start("test-worker")
+    queue.submit("boom", tmp_path)
+    queue.submit("after", tmp_path, agent_id="guardian")
+    for _ in range(50):
+        if len(delivered) == 2:
+            break
+        await asyncio.sleep(0.02)
+    await worker.stop()
+
+    assert [job.status for job in delivered] == [JobStatus.CANCELLED, JobStatus.DONE]
+    assert "provider is on fire" in delivered[0].detail
+
+
+async def test_no_worker_runs_when_the_harness_is_off(tmp_path: Path) -> None:
+    settings = mesh_settings(tmp_path)
+    settings.harness.enabled = False
+    environment = Environment(settings, providers={"ollama": MockProvider()})
+
+    await environment.start()
+    try:
+        assert environment.harness_workers == []
+        with pytest.raises(RuntimeError, match="harness is off"):
+            environment.submit_harness_job("anything")
+    finally:
+        await environment.stop()
 
 
 # -- the text protocol ---------------------------------------------------
