@@ -11,12 +11,12 @@ from evomesh.environment import Environment, HealthState
 from evomesh.evolution import (
     CandidateValidator,
     CandidateWorkspace,
-    FileMutation,
     Generation,
     GenerationStatus,
     GenerationSupervisor,
     uv_executable,
 )
+from evomesh.harness_tools import ALL_TOOLS, ToolContext, ToolRegistry
 from evomesh.messaging import MessageBus
 from evomesh.models import MockProvider, OllamaProvider, describe
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
@@ -193,10 +193,24 @@ async def test_candidate_workspace_is_isolated(tmp_path: Path) -> None:
     assert GenerationSupervisor(tmp_path / "runtime").metadata()["active"] == 1
 
 
-def test_mutation_cannot_escape_candidate(tmp_path: Path) -> None:
-    mutation = FileMutation(relative_path=Path("../active.py"), content="unsafe")
-    with pytest.raises(ValueError):
-        mutation.target(tmp_path / "candidate")
+async def test_a_generation_cannot_be_written_outside_its_candidate(tmp_path: Path) -> None:
+    """Containment moved to the tool that writes, and is still enforced.
+
+    The old FileMutation checked its own path on the way in. Now the harness
+    resolves every path against the job root and refuses before opening a file,
+    which is the same guarantee closer to the disk.
+    """
+    root = tmp_path / "candidate"
+    (root / "src").mkdir(parents=True)
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        ToolContext(root=root, allow_write=True),
+        "write",
+        {"path": "../active.py", "content": "unsafe"},
+    )
+
+    assert result.startswith("DENIED:")
+    assert not (tmp_path / "active.py").exists()
 
 
 async def test_architect_ignores_a_small_model_that_returns_junk() -> None:

@@ -159,27 +159,34 @@ regresses.
     read or edit them while the mesh runs and the agent picks the change up next cycle. Keep them
     human-readable; do not "optimise" them into a binary or a database blob.
 
-## The mutation contract (and where the next work is)
+## How a generation is authored
 
-`propose_mutation` / `propose_repair` in [evolution.py](src/evomesh/evolution.py) ask the model for
-**one JSON object on one line** — `relative_path`, `content` (the *complete* file, not a patch),
-`rationale` — and the prompt carries `project_map()` so the model sees which modules are
-load-bearing and which are dead. The instruction names a brand-new file as the wrong answer,
-because with one file per mutation nothing can import it. That combination (map + reachability test)
-is what stopped the Evolver producing well-formed dead modules; ten of them, 431 lines, had already
-landed.
+**A generation is a harness job in the candidate workspace.** The propose stage builds an objective
+(`mutation_objective()` — the project map, the standing rules, the ask), submits it, and the worker
+runs the tool loop; the repair stage does the same with the failing command and its real output.
+There is **no `FileMutation`, no `parse_mutation`, no whole-file JSON contract** — it was deleted
+rather than kept beside the new path, because two mutation paths is one path nobody exercises.
 
-Its known limits, in order of how much they cost: whole-file rewrites scale badly with file size and
-a small model's context; one file per generation cannot express a change that spans modules; and the
-model gets no ability to *look* at anything it was not handed. **This is exactly the gap the coding
-harness track is meant to close** — see `plans/roadmap-harness.md`. Do not paper over it by
-enlarging the prompt.
+What that bought, and what it cost, are both worth knowing:
 
-**The seam now exists and the pipeline does not use it yet.** `harness.py` runs a tool loop over
-`ModelProvider.chat(messages, tools)`; phase 4 is what replaces `propose_mutation` / `apply_mutation`
-/ `propose_repair` with it, in one move. Two mutation paths at once would leave a fallback nobody
-exercises, so do not wire it in halfway. Three properties of the loop are load-bearing and are the
-reasons it is shaped this way:
+- **The record comes from what was written, not from what the model said.** `record_harness_changes`
+  reads the session's `edit`/`write` entries, so a model that claims two files and touches three no
+  longer writes its own history. Each `GenerationChange` carries the unified diff, and
+  `docs/evolution/<n>.md` prints it.
+- **A job that changed nothing is not a candidate.** The pipeline reports it and stops rather than
+  validating an untouched copy — which would pass, and a generation that passes while changing
+  nothing is the dead-module failure wearing a verdict.
+- **The propose stage now spans several cycles** (submit, observe, record) and is still one stage:
+  the run is in the worker and the cycle only checks its handle. That is what keeps rule 7 true.
+- **The environment grants the agent the root it hands out.** A candidate is a directory the mesh
+  created *for that agent to work in*, and the harness runs under that agent's grants — so without
+  the grant every tool is denied, which is exactly what the first real generation discovered. The
+  grant is scoped to that one disposable copy and is visible in `/grant` like any other.
+- **There is deliberately no `validate` tool.** Validation is a five-minute subprocess with its own
+  stage and its own verdict; behind a tool a model could burn its whole step budget on `uv sync`,
+  and "not validated" (rule 9) would become something the model reports about itself.
+
+Three properties of the loop are load-bearing and are the reasons it is shaped this way:
 
 - **A model with no tool calling drives the same tools through a text protocol**, permanently for
   that job once the provider has refused once. Most models that fit on a small card cannot call

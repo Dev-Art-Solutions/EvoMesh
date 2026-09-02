@@ -2,6 +2,46 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.1] - 2026-09-02
+
+### Changed
+
+- **The Evolver no longer writes whole files.** A generation is now a harness job
+  in the candidate workspace: the model reads, greps and edits its way to the
+  change instead of returning one complete file as a JSON string.
+  - The single-file contract is **deleted**, not deprecated -- `FileMutation`,
+    `parse_mutation`, `propose_mutation`, `propose_repair` and `apply_mutation`
+    are gone. Two mutation paths would leave one that nobody exercises.
+  - A generation can now change more than one file. The first real one did: a 27B
+    local model wired the dead `humanize` module into `harness_tools`, in two
+    edits, and explained which call site it chose and why.
+  - **What the generation changed is read from the session, not from the model's
+    word.** Each recorded change carries the unified diff, and
+    `docs/evolution/<n>.md` prints it, so "why did it do that" is answerable from
+    the commit rather than from a JSONL on one machine.
+  - A job that finishes without changing a file is reported and stops there. The
+    old path would have validated an untouched candidate, which passes -- and a
+    generation that passes while changing nothing is the worst kind of progress.
+  - Repair works the same way, with the failing command and its real output as
+    the objective, so the model can read the file that failed before rewriting
+    it. Ruff's own fixer still runs first, because it costs nothing.
+  - The propose stage now spans several cycles (submit, observe, record) and is
+    still one stage per cycle: the run happens in the worker.
+
+### Fixed
+
+- The environment now grants an agent the job root it hands it. A candidate is a
+  directory the mesh creates for that agent, the harness runs under that agent's
+  grants, and without the grant every tool was denied -- which is how the first
+  real generation spent four steps discovering it could not read anything.
+- `read` marks its line numbers with `|` and says in its own description that
+  they are not part of the file. A 27B model copied the number and the apparent
+  indentation into an edit anchor and lost two attempts to a target that was
+  never there.
+- `/harness status` shows a job's objective as one line. Since the Evolver asks
+  through the harness, an objective carries the whole project map, and the status
+  line printed all of it.
+
 ## [0.1.0-alpha.4] - 2026-09-02
 
 ### Added

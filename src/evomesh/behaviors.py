@@ -14,7 +14,7 @@ agent reconsider on its own rather than being told to.
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any, cast
 
 from evomesh.bdi import (
@@ -35,6 +35,7 @@ from evomesh.evolution import (
     excerpt,
 )
 from evomesh.git import GitError
+from evomesh.harness_queue import HarnessGateway
 
 PROVIDER_KEY = "provider.ready"
 DEGRADED_KEY = "mesh.degraded"
@@ -415,23 +416,91 @@ class EvolverBehavior(BDIBehavior):
     async def _propose(
         self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
     ) -> StepResult:
+        """Submit a harness job, wait for it across cycles, then record it.
+
+        Three possible cycles, one stage. The run itself happens in the worker,
+        so a tick never becomes a ten-minute authoring session -- which is what
+        lets rule 7 survive a model that reads twenty files before it edits one.
+        """
         generation = evolver.candidate(int(state["generation"]))
         objective = str(state["objective"])
-        mutation = await evolver.propose_mutation(
-            objective,
-            context=await context.build_prompt(""),
-            # The Evolver's own model, not the mesh default: a human who assigns
-            # it a stronger model expects the mutation to come from that one.
-            model=context.definition.model_name,
+        return await self._through_harness(
+            context,
+            evolver,
+            state,
+            generation,
+            build=lambda: evolver.mutation_objective(objective),
+            status="applied",
+            on_done=lambda touched: (
+                STAGE_VALIDATE if self.auto_validate else STAGE_REPORT,
+                {"file": touched[0] if touched else ""},
+            ),
         )
-        await evolver.apply_mutation(generation, mutation, objective)
-        next_stage = STAGE_VALIDATE if self.auto_validate else STAGE_REPORT
-        await evolver.set_pipeline_state(
-            {**state, "stage": next_stage, "file": str(mutation.relative_path)}
+
+    async def _through_harness(
+        self,
+        context: CycleContext,
+        evolver: EnvironmentEvolver,
+        state: dict[str, Any],
+        generation: Generation,
+        *,
+        build: Callable[[], str],
+        status: str,
+        on_done: Callable[[list[str]], tuple[str, dict[str, Any]]],
+    ) -> StepResult:
+        harness = context.service("harness")
+        if not isinstance(harness, HarnessGateway):
+            return StepResult.blocked(
+                "the harness is off, so this generation cannot be authored. "
+                "Set harness.enabled and harness.allow_write in evomesh.yaml."
+            )
+        number = state.get("job")
+        job = harness.job(int(number)) if number else None
+        if job is None:
+            job = harness.submit(build(), agent_id=context.definition.id, root=generation.path)
+            await evolver.set_pipeline_state({**state, "job": job.number})
+            # Falls through when the job is somehow already finished, which is
+            # never true of a real worker and always true of a synchronous one.
+            if job.open:
+                return StepResult(
+                    summary=(
+                        f"handed generation {generation.number} to harness job "
+                        f"{job.number}; it reads the candidate and edits it while "
+                        "this cycle carries on"
+                    ),
+                    phase=AgentPhase.AWAITING_HARNESS,
+                )
+        if job.open:
+            return StepResult(
+                summary=f"harness job {job.number} is still working: {job.describe()}",
+                phase=AgentPhase.AWAITING_HARNESS,
+            )
+        rationale = job.result.answer.strip() if job.result else job.detail
+        touched = await evolver.record_harness_changes(
+            generation, harness.changes(job), str(state.get("objective", "")), rationale, status
         )
+        moved = {key: value for key, value in state.items() if key != "job"}
+        if not touched:
+            # D5: a candidate that changed nothing would validate, and a
+            # generation that passes while changing nothing is the dead-module
+            # failure wearing a verdict.
+            await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT, "passed": None})
+            return StepResult(
+                summary=(
+                    f"harness job {job.number} finished without changing a file "
+                    f"({job.describe()}); there is nothing to validate"
+                ),
+                fact=f"generation {generation.number} was authored but changed nothing",
+                phase=AgentPhase.ACTING,
+            )
+        stage, extra = on_done(touched)
+        await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
         return StepResult(
-            summary=f"applied a mutation to {mutation.relative_path}: {mutation.rationale}",
-            fact=f"generation {generation.number} changed {mutation.relative_path}",
+            summary=(
+                f"harness job {job.number} changed {', '.join(touched)} in generation "
+                f"{generation.number}: {excerpt(rationale, 160)}"
+            ),
+            fact=f"generation {generation.number} changed {', '.join(touched)}",
             phase=AgentPhase.ACTING,
         )
 
@@ -514,37 +583,23 @@ class EvolverBehavior(BDIBehavior):
                 phase=AgentPhase.ACTING,
             )
         attempt = int(state.get("repairs", 0)) + 1
-        moved = {**state, "stage": STAGE_VALIDATE, "repairs": attempt}
-        if evolver.repairer.can_repair(failure):
-            outcome = await evolver.autofix(generation)
-            how = f"ruff --fix: {excerpt(str(outcome.get('output', '')), 120)}"
-        else:
-            try:
-                mutation = await evolver.propose_repair(
-                    generation,
-                    failure,
-                    Path(str(state["file"])) if state.get("file") else None,
-                    model=context.definition.model_name,
-                )
-            except (RuntimeError, ValueError) as exc:
-                # The model could not author a fix. Reporting the failure as it
-                # stands beats the generic handler, which would send the whole
-                # pipeline back to plan and strand this candidate unreviewed.
-                await evolver.set_pipeline_state(
-                    {**state, "stage": STAGE_REPORT, "error": str(exc)}
-                )
-                return StepResult(
-                    summary=(
-                        f"no repair could be authored for generation "
-                        f"{generation.number} ({exc}); reporting the failure as it stands"
-                    ),
-                    phase=AgentPhase.ACTING,
-                )
-            await evolver.apply_mutation(
-                generation, mutation, str(state.get("objective", "")), status="repaired"
+        if not evolver.repairer.can_repair(failure):
+            # The model repairs by reading the candidate, not by rewriting a file
+            # it was shown. The attempt is only counted once the job comes back,
+            # so waiting for the worker never burns the repair budget.
+            touched = [change.path for change in generation.changes]
+            return await self._through_harness(
+                context,
+                evolver,
+                state,
+                generation,
+                build=lambda: evolver.repair_objective(failure, touched),
+                status="repaired",
+                on_done=lambda changed: (STAGE_VALIDATE, {"repairs": attempt}),
             )
-            moved["file"] = str(mutation.relative_path)
-            how = f"{mutation.relative_path}: {mutation.rationale}"
+        moved = {**state, "stage": STAGE_VALIDATE, "repairs": attempt}
+        outcome = await evolver.autofix(generation)
+        how = f"ruff --fix: {excerpt(str(outcome.get('output', '')), 120)}"
         await evolver.set_pipeline_state(moved)
         return StepResult(
             summary=(

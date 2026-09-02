@@ -23,7 +23,7 @@ from evomesh.contracts import (
 )
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
 from evomesh.harness import HarnessResult, build_runner
-from evomesh.harness_queue import HarnessJob, HarnessQueue, HarnessWorker
+from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue, HarnessWorker
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.memory import AgentMemory, WorldContext
 from evomesh.messaging import MessageBus
@@ -55,6 +55,11 @@ class Environment:
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
         self.harness_workers: list[HarnessWorker] = []
+        # What each finished job actually wrote, keyed by job number. Held here
+        # rather than re-read from the JSONL: the record of a generation must not
+        # depend on a file a human may have moved.
+        self.harness_sessions: dict[int, list[dict[str, Any]]] = {}
+        self.harness = HarnessGateway(self.harness_queue, self.harness_sessions)
         self.health_state = HealthState.STOPPED
         self.provider_health: tuple[bool, str] = (False, "not checked")
         self.world = WorldContext(settings.workspace_path)
@@ -386,10 +391,11 @@ class Environment:
         provider = self.providers.get(provider_name)
         if provider is None:
             raise RuntimeError(f"Provider '{provider_name}' is not configured")
+        session = HarnessSession(next_session_path(settings.session_path))
         runner = build_runner(
             provider,
             job.root,
-            session=HarnessSession(next_session_path(settings.session_path)),
+            session=session,
             limits=settings.limits(),
             model=model,
             max_steps=settings.max_steps,
@@ -399,10 +405,30 @@ class Environment:
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.
+        #
+        # Which is why the environment has to grant the root it just handed out.
+        # A candidate generation is a directory the mesh created *for this agent
+        # to work in*, and without a grant every tool is denied -- the first real
+        # generation through the harness spent four steps discovering that. The
+        # grant is scoped to that one disposable copy, is visible in `/grant`
+        # like any other, and dies with the directory.
         if job.agent_id:
+            await self.permissions.grant(
+                FilesystemGrant(
+                    agent_id=job.agent_id,
+                    path=str(job.root),
+                    read=True,
+                    write=job.allow_write,
+                )
+            )
             runner.context.policy = self.permissions
             runner.context.agent_id = job.agent_id
-        return await runner.run(job.objective)
+        try:
+            return await runner.run(job.objective)
+        finally:
+            # Kept even when the job failed: what it managed to change before
+            # it broke is the part a human has to look at.
+            self.harness_sessions[job.number] = list(session.entries)
 
     async def _deliver_harness(self, job: HarnessJob) -> None:
         """A finished job is an ordinary inbound message, not a callback.
@@ -431,6 +457,7 @@ class Environment:
             "runtime_states": self.runtime_states(),
             "provider_health": self.provider_health,
             "registry": self.registry,
+            "harness": self.harness if self.settings.harness.enabled else None,
         }
 
     async def configure_agent_model(

@@ -26,7 +26,7 @@ from evomesh.environment import Environment
 from evomesh.evolution import (
     CandidateWorkspace,
     EnvironmentEvolver,
-    FileMutation,
+    Generation,
     ValidationResult,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
@@ -75,14 +75,33 @@ async def evolver_for(
     )
 
 
+async def change(
+    evolver: EnvironmentEvolver,
+    generation: Generation,
+    objective: str,
+    rationale: str,
+    status: str = "applied",
+    diff: str = "",
+) -> None:
+    """Write a file into the candidate and record it, as the harness does.
+
+    The harness writes the file and hands the pipeline the session entries; a
+    test does the same two things by hand rather than through a model.
+    """
+    (generation.path / "src" / "app.py").write_text(MUTATED, encoding="utf-8")
+    await evolver.record_harness_changes(
+        generation,
+        [{"kind": "edit", "path": "src/app.py", "diff": diff}],
+        objective,
+        rationale,
+        status,
+    )
+
+
 async def landed(evolver: EnvironmentEvolver) -> str:
     """Open a candidate, change one file in it, and apply it to the checkout."""
     generation = await evolver.create_candidate("keep the mesh honest")
-    await evolver.apply_mutation(
-        generation,
-        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="flip it"),
-        "keep the mesh honest",
-    )
+    await change(evolver, generation, "keep the mesh honest", "flip it")
     return await evolver.apply_generation(generation.number, "keep the mesh honest")
 
 
@@ -280,16 +299,9 @@ async def test_the_backlog_records_the_verdict_and_the_repairs(tmp_path: Path) -
     project = await checkout(tmp_path / "project")
     evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
     generation = await evolver.create_candidate("make the mesh honest")
-    await evolver.apply_mutation(
-        generation,
-        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="flip"),
-        "make the mesh honest",
-    )
-    await evolver.apply_mutation(
-        generation,
-        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="unbreak"),
-        "make the mesh honest",
-        status="repaired",
+    await change(evolver, generation, "make the mesh honest", "flip")
+    await change(
+        evolver, generation, "make the mesh honest", "unbreak", status="repaired"
     )
     (generation.path / "validation-result.json").write_text(
         ValidationResult(
@@ -323,11 +335,7 @@ async def test_a_generation_with_no_rationale_still_produces_a_readable_entry(
     project = await checkout(tmp_path / "project")
     evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
     generation = await evolver.create_candidate("do something")
-    await evolver.apply_mutation(
-        generation,
-        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="  "),
-        "do something",
-    )
+    await change(evolver, generation, "do something", "  ")
 
     text = evolver.render_backlog(generation)
 

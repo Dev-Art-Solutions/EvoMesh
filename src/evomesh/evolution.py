@@ -12,10 +12,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from evomesh.codebase import project_map
-from evomesh.cognition import strip_reasoning
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
 from evomesh.storage import SQLiteRepository
@@ -28,50 +27,61 @@ PIPELINE_STATE_KEY = "evolution.pipeline"
 # behind a change has to travel with the change.
 BACKLOG_DIR = Path("docs") / "evolution"
 
-MUTATION_INSTRUCTION = (
-    "Propose ONE small, safe file change to EvoMesh that advances the objective.\n"
-    "\n"
-    "CHANGE A FILE THAT ALREADY EXISTS. A brand new module is almost always the "
-    "wrong answer: nothing imports it, so none of its code ever runs, and the "
-    "project already carries several files like that. Pick one of these instead:\n"
-    "  1. improve a load-bearing module listed above, or\n"
-    "  2. edit a load-bearing module so it imports and uses one of the DEAD "
-    "modules, which brings that code to life.\n"
-    "A new file is acceptable only when an existing module is edited in the same "
-    "change to import it -- and you only get one file, so prefer options 1 and 2.\n"
-    "\n"
-    "Return only a JSON object, no prose and no code fences, with exactly these keys:\n"
-    '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete file>", '
-    '"rationale": "<why this change matters, and what now uses it>"}\n'
-    "content must be the COMPLETE file after your change, not a patch.\n"
-    "The path must be relative and must stay inside the project.\n"
-    "Escape every newline in content as \\n and every quote as \\\", so the object "
-    "stays on one line and parses as JSON."
-)
-MUTATION_SYSTEM = (
-    "You are Environment Evolver. You improve a codebase that is running right "
-    "now. Code nobody calls is worse than no change at all, so every mutation "
-    "must leave the project with more working behaviour, not more files. Never "
-    "target absolute paths or parent directories. Output JSON only."
+# What a generation is asked for, now that the asking goes to an agent that can
+# read the project rather than to one prompt which had to carry all of it.
+HARNESS_RULES = "\n".join(
+    (
+        "Rules for this project:",
+        "- Change a module that ALREADY RUNS. A brand new file is almost always "
+        "the wrong answer: nothing imports it, so none of its code executes, and "
+        "the validation suite fails any module nothing imports.",
+        "- Wiring one of the DEAD modules above into a load-bearing one is real "
+        "work, and is worth more than another new file.",
+        "- Read a file before you change it. Use edit, not write, for a file that "
+        "already exists, and keep each change as small as the objective allows.",
+        "- Everything you touch must stay valid Python: ruff, pyright and pytest "
+        "are run against your work as soon as you are finished.",
+        "- Stay inside this directory. It is a disposable copy, not the running mesh.",
+    )
 )
 
-REPAIR_INSTRUCTION = (
-    "The candidate generation failed validation. Repair it with ONE file change.\n"
-    "Return only a JSON object, no prose and no code fences, with exactly these keys:\n"
-    '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete repaired file>", '
-    '"rationale": "<one sentence>"}\n'
-    "Return the whole file, not a patch, and change only what the failure demands.\n"
-    "The path must be relative and must stay inside the project.\n"
-    "Escape every newline in content as \\n and every quote as \\\", so the object "
-    "stays on one line and parses as JSON."
-)
-REPAIR_SYSTEM = (
-    "You are Environment Evolver repairing your own candidate. Fix the reported "
-    "failure and nothing else. If the failure says a module is unreachable, the "
-    "fix is to edit a module that already runs so it imports and uses it -- never "
-    "to rewrite the unreachable file again. Never target absolute paths or parent "
-    "directories. Output JSON only."
-)
+
+def harness_objective(objective: str, project: str, context: str = "") -> str:
+    """What the Evolver asks the harness for, in the harness's own terms.
+
+    The map still goes first, because the rules refer to it -- "the DEAD modules
+    above" needs something above it, or the model is guessing at the codebase
+    again. What changed is that the map is now orientation for an agent that can
+    go and look, rather than the whole of what it will ever see.
+    """
+    parts = (context, project, f"OBJECTIVE: {objective}", HARNESS_RULES)
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def harness_repair_objective(
+    failure: dict[str, object], project: str, touched: Iterable[str] = ()
+) -> str:
+    """Fix what validation reported, with the file it happened in reachable.
+
+    The old repair prompt carried the error text and one whole file, and the
+    model had to rewrite that file from whatever it could infer. This one names
+    the command, its real output and what this generation has already touched;
+    the model reads the rest for itself.
+    """
+    changed = ", ".join(touched)
+    parts = (
+        project,
+        f"The validation command `{failure.get('command')}` failed with exit "
+        f"code {failure.get('exit_code')}.",
+        f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
+        f"Files this generation has already changed: {changed}" if changed else "",
+        "Read the files involved, then fix the failure and nothing else. If the "
+        "output says a module is unreachable, the fix is to edit a module that "
+        "already runs so that it imports and uses it -- never to rewrite the "
+        "unreachable file again.",
+        HARNESS_RULES,
+    )
+    return "\n".join(part for part in parts if part)
 
 
 class GenerationStatus(StrEnum):
@@ -87,6 +97,9 @@ class GenerationChange(BaseModel):
     path: str
     rationale: str
     kind: str = "mutation"
+    # The unified diff the harness recorded before it touched the file, so the
+    # backlog entry can show what happened rather than only where.
+    diff: str = ""
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -153,37 +166,6 @@ class ValidationResult(BaseModel):
             return ""
         raw = f"{failure.get('command')}\n{failure.get('output')}"
         return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
-
-
-class FileMutation(BaseModel):
-    relative_path: Path
-    content: str
-    rationale: str = ""
-
-    def target(self, candidate_root: Path) -> Path:
-        if self.relative_path.is_absolute():
-            raise ValueError("Mutation path must be relative")
-        target = (candidate_root / self.relative_path).resolve(strict=False)
-        root = candidate_root.resolve(strict=False)
-        if target != root and root not in target.parents:
-            raise ValueError("Mutation path escapes the candidate workspace")
-        return target
-
-
-def parse_mutation(raw: str) -> FileMutation:
-    """Pull the mutation object out of whatever the model actually said."""
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError(f"no JSON object was found in the answer: {excerpt(raw)}")
-    try:
-        return FileMutation.model_validate_json(raw[start : end + 1])
-    except ValidationError as exc:
-        problem = exc.errors()[0] if exc.errors() else {}
-        location = ".".join(str(part) for part in problem.get("loc", ())) or "the object"
-        raise ValueError(
-            f"the JSON object was unusable at {location}: "
-            f"{problem.get('msg', 'invalid JSON')}"
-        ) from exc
 
 
 def excerpt(text: str, limit: int = 200) -> str:
@@ -574,81 +556,19 @@ class EnvironmentEvolver:
         )
         return generation
 
-    async def _author(
-        self, prompt: str, instruction: str, system: str, model: str | None
-    ) -> FileMutation:
-        if self.provider is None:
-            raise RuntimeError("A local model provider is required to propose a mutation")
-        failure = ""
-        for _ in range(2):
-            raw = strip_reasoning(await self.provider.generate(prompt, system=system, model=model))
-            try:
-                return parse_mutation(raw)
-            except ValueError as exc:
-                failure = str(exc)
-                # One repair pass. A local model that buried the object in prose
-                # or truncated a string usually returns it clean once it is told
-                # exactly what could not be read.
-                prompt = (
-                    f"{instruction}\n\nYour previous answer could not be used: "
-                    f"{failure}\nReturn only the JSON object, nothing else."
-                )
-        raise ValueError(f"The model did not return a usable JSON mutation. {failure}")
-
     def project_map(self) -> str:
         """What the package looks like right now, for the model to aim at."""
         return project_map(self.workspace.repository_root)
 
-    async def propose_mutation(
-        self, objective: str, context: str = "", model: str | None = None
-    ) -> FileMutation:
-        # The map goes before the instruction because the instruction refers to
-        # it -- "the load-bearing modules listed above" needs something above it,
-        # or the model is guessing at the codebase again.
-        prompt = "\n\n".join(
-            part
-            for part in (
-                context,
-                self.project_map(),
-                f"OBJECTIVE: {objective}",
-                MUTATION_INSTRUCTION,
-            )
-            if part
-        ).strip()
-        return await self._author(prompt, MUTATION_INSTRUCTION, MUTATION_SYSTEM, model)
+    def mutation_objective(self, objective: str, context: str = "") -> str:
+        """The harness job that authors this generation."""
+        return harness_objective(objective, self.project_map(), context)
 
-    async def propose_repair(
-        self,
-        generation: Generation,
-        failure: dict[str, object],
-        focus: Path | None = None,
-        model: str | None = None,
-    ) -> FileMutation:
-        """Ask the model to fix the command that failed, shown the real output."""
-        prompt = "\n".join(
-            part
-            for part in (
-                self.project_map(),
-                f"COMMAND: {failure.get('command')}",
-                f"EXIT CODE: {failure.get('exit_code')}",
-                f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
-                self._focus(generation, focus),
-                REPAIR_INSTRUCTION,
-            )
-            if part
-        )
-        return await self._author(prompt, REPAIR_INSTRUCTION, REPAIR_SYSTEM, model)
-
-    @staticmethod
-    def _focus(generation: Generation, focus: Path | None) -> str:
-        """Show the model the file it last wrote, so it can return a whole one."""
-        if focus is None:
-            return ""
-        path = generation.path / focus
-        if not path.is_file():
-            return ""
-        body = clip(path.read_text(encoding="utf-8", errors="replace"), 2000, keep_end=False)
-        return f"The last change touched {focus.as_posix()}, which currently reads:\n{body}"
+    def repair_objective(
+        self, failure: dict[str, object], touched: Iterable[str] = ()
+    ) -> str:
+        """The harness job that fixes what validation reported."""
+        return harness_repair_objective(failure, self.project_map(), touched)
 
     async def autofix(self, generation: Generation) -> dict[str, object]:
         outcome = await self.repairer.autofix(generation)
@@ -662,37 +582,51 @@ class EnvironmentEvolver:
         )
         return outcome
 
-    async def apply_mutation(
+    async def record_harness_changes(
         self,
         generation: Generation,
-        mutation: FileMutation,
+        entries: Iterable[dict[str, Any]],
         objective: str,
+        rationale: str,
         status: str = "applied",
-    ) -> Path:
+    ) -> list[str]:
+        """Record what the harness actually wrote, not what the model said.
+
+        The old contract took the model's word for the path it had changed. A
+        session records every applied edit and write with its diff, so the
+        generation's history now comes from what reached the disk, and the
+        model's prose is only the reason attached to it.
+        """
         if generation.status != GenerationStatus.CANDIDATE:
             raise ValueError("Mutations may only be applied to candidates")
-        target = mutation.target(generation.path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(mutation.content, encoding="utf-8")
         generation.objective = generation.objective or objective
-        generation.changes.append(
-            GenerationChange(
-                path=mutation.relative_path.as_posix(),
-                rationale=mutation.rationale,
-                kind="repair" if status == "repaired" else "mutation",
+        touched: list[str] = []
+        for entry in entries:
+            if entry.get("kind") not in ("edit", "write"):
+                continue
+            path = str(entry.get("path") or "")
+            if not path:
+                continue
+            touched.append(path)
+            generation.changes.append(
+                GenerationChange(
+                    path=path,
+                    rationale=rationale,
+                    kind="repair" if status == "repaired" else "mutation",
+                    diff=str(entry.get("diff") or ""),
+                )
             )
-        )
+            await self.repository.record_mutation(
+                {
+                    "generation": generation.number,
+                    "objective": objective,
+                    "path": path,
+                    "rationale": rationale,
+                    "status": status,
+                }
+            )
         self.workspace.supervisor.record_candidate(generation)
-        await self.repository.record_mutation(
-            {
-                "generation": generation.number,
-                "objective": objective,
-                "path": str(mutation.relative_path),
-                "rationale": mutation.rationale,
-                "status": status,
-            }
-        )
-        return target
+        return touched
 
     async def validate(self, generation: Generation) -> ValidationResult:
         result = await self.validator.validate(generation)
@@ -803,6 +737,20 @@ class EnvironmentEvolver:
                 label = "Repair" if change.kind == "repair" else "Change"
                 reason = change.rationale.strip() or "(the model gave no rationale)"
                 lines += [f"{index}. **{label} to `{change.path}`** — {reason}"]
+                # The diff travels with the reason. "Why did it do that" is asked
+                # about a commit a month later, and the answer belongs in the
+                # repository rather than in a session file on one machine.
+                if change.diff.strip():
+                    lines += [
+                        "",
+                        "   ```diff",
+                        *(
+                            f"   {line}"
+                            for line in clip(change.diff, 1200, keep_end=False).splitlines()
+                        ),
+                        "   ```",
+                        "",
+                    ]
             lines.append("")
         else:
             lines += ["No file changes were recorded for this generation.", ""]

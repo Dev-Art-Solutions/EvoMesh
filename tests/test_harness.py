@@ -71,7 +71,7 @@ async def test_read_numbers_its_lines_and_honours_the_window(project: Path) -> N
 
     result = await tool_read(context, {"path": "src/answer.py", "offset": 2, "limit": 1})
 
-    assert result.strip().startswith("2  ")
+    assert result.strip().startswith("2| ")
     assert "return True" in result
     assert "def reconsider" not in result
 
@@ -457,6 +457,32 @@ async def test_a_finished_job_arrives_as_an_ordinary_message(tmp_path: Path) -> 
     assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
 
 
+async def test_a_job_is_granted_the_root_it_was_handed(tmp_path: Path) -> None:
+    """Found by the first real generation: every tool was denied.
+
+    The harness runs under the agent's grants on purpose, so a workspace the
+    mesh creates *for* an agent has to be granted to it as well. The grant is
+    scoped to that directory, visible like any other, and dies with it.
+    """
+    environment = Environment(
+        mesh_settings(tmp_path), providers={"ollama": MockProvider(responses=["looked"])}
+    )
+    root = tmp_path / "candidate"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("ACTIVE = True\n", encoding="utf-8")
+    await environment.start()
+    try:
+        job = environment.harness.submit("look at it", agent_id="evolver", root=root)
+        await environment.bus.receive("evolver", wait_seconds=5)
+        grants = await environment.repository.load_grants("evolver")
+    finally:
+        await environment.stop()
+
+    assert [Path(grant.path) for grant in grants] == [root]
+    assert grants[0].read and grants[0].write
+    assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
+
+
 async def test_a_second_submit_returns_the_job_already_running(tmp_path: Path) -> None:
     """A behavior submits once per cycle; the queue must not accumulate copies.
 
@@ -471,6 +497,25 @@ async def test_a_second_submit_returns_the_job_already_running(tmp_path: Path) -
 
     assert first is second
     assert len(queue.jobs) == 1
+
+
+def test_a_status_line_shows_the_objective_not_the_whole_briefing(tmp_path: Path) -> None:
+    """An Evolver objective is a page: the map, the rules, then the ask.
+
+    Printing it into /harness status made the console unreadable the first time
+    a real generation ran through the queue.
+    """
+    queue = HarnessQueue()
+    job = queue.submit(
+        "THE PACKAGE AS IT STANDS (src/evomesh/).\nLoad-bearing modules:\n- contracts.py\n\n"
+        "OBJECTIVE: wire humanize.py into a module that runs\n\nRules for this project:\n- ...",
+        tmp_path,
+        agent_id="evolver",
+    )
+
+    assert job.describe() == (
+        "job 1 [evolver] queued: wire humanize.py into a module that runs"
+    )
 
 
 async def test_the_queue_refuses_past_its_limit(tmp_path: Path) -> None:

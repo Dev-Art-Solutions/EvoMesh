@@ -20,6 +20,8 @@ from evomesh.evolution import (
     ValidationResult,
 )
 from evomesh.git import GitRepository
+from evomesh.harness import HarnessResult
+from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.models import MockProvider
 
@@ -394,15 +396,11 @@ async def test_evolver_pipeline_advances_one_stage_per_cycle(
 
     repository = SQLiteRepository(tmp_path / "state.db")
     await repository.initialize()
-    mutation = (
-        '{"relative_path": "src/app.py", "content": "ACTIVE = False\\n", '
-        '"rationale": "flip the flag"}'
-    )
     validator = StubValidator()
     evolver = EnvironmentEvolver(
         CandidateWorkspace(project, tmp_path / "generations"),
         repository,
-        MockProvider([mutation]),
+        MockProvider(),
         validator,  # type: ignore[arg-type]
     )
     definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
@@ -411,10 +409,10 @@ async def test_evolver_pipeline_advances_one_stage_per_cycle(
     await memory.ensure()
     context = CycleContext(
         definition=definition,
-        provider=MockProvider([mutation]),
+        provider=MockProvider(),
         memory=memory,
         budget=MemoryBudget(),
-        services={"evolver": evolver},
+        services={"evolver": evolver, "harness": FakeHarness([MUTATION])},
     )
     behavior = EvolverBehavior(auto_validate=True)
 
@@ -638,49 +636,53 @@ async def test_an_agent_answers_about_its_work_from_runtime_state(tmp_path: Path
     await environment.stop()
 
 
-async def test_a_mutation_survives_reasoning_and_a_first_bad_answer(tmp_path: Path) -> None:
-    """Local models bury the object in reasoning, then get it right when told why."""
+async def test_the_objective_orients_the_model_before_it_looks(tmp_path: Path) -> None:
+    """What replaced the JSON contract: an objective, not a format.
+
+    The map still goes first because the rules refer to it, but it is now
+    orientation for an agent that can go and read the files, rather than the
+    whole of what the model will ever see about the project.
+    """
     from evomesh.storage import SQLiteRepository
 
     repository = SQLiteRepository(tmp_path / "state.db")
     await repository.initialize()
-    good = (
-        '{"relative_path": "src/app.py", "content": "ACTIVE = False\\n", '
-        '"rationale": "flip the flag"}'
+    source = tmp_path / "source"
+    (source / "src" / "evomesh").mkdir(parents=True)
+    (source / "src" / "evomesh" / "__init__.py").write_text(
+        "from evomesh.core import thing\n", encoding="utf-8"
     )
-    provider = MockProvider(
-        [
-            "I should change the flag, but I will not answer in JSON.\n</think>\nSure thing!",
-            f"Reasoning about the file first.\n</think>\n{good}",
-        ]
-    )
+    (source / "src" / "evomesh" / "core.py").write_text('"""Core."""\n', encoding="utf-8")
     evolver = EnvironmentEvolver(
-        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"),
-        repository,
-        provider,
+        CandidateWorkspace(source, tmp_path / "generations"), repository
     )
 
-    mutation = await evolver.propose_mutation("flip the flag", model="qwen3:14b")
+    objective = evolver.mutation_objective("flip the flag")
 
-    assert mutation.relative_path == Path("src/app.py")
-    assert len(provider.calls) == 2
-    assert provider.calls[-1]["model"] == "qwen3:14b"
-    assert "could not be used" in str(provider.calls[-1]["prompt"])
+    assert "OBJECTIVE: flip the flag" in objective
+    assert "core.py" in objective
+    assert "Read a file before you change it" in objective
+    # The old contract's JSON envelope is gone, not merely unused.
+    assert "relative_path" not in objective
 
 
-async def test_an_unusable_mutation_names_what_was_wrong(tmp_path: Path) -> None:
+async def test_a_repair_objective_carries_the_real_failure(tmp_path: Path) -> None:
     from evomesh.storage import SQLiteRepository
 
     repository = SQLiteRepository(tmp_path / "state.db")
     await repository.initialize()
     evolver = EnvironmentEvolver(
-        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"),
-        repository,
-        MockProvider(["no object here at all"]),
+        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"), repository
     )
 
-    with pytest.raises(ValueError, match="no JSON object was found"):
-        await evolver.propose_mutation("flip the flag")
+    objective = evolver.repair_objective(
+        {"command": "uv run pytest", "exit_code": 1, "output": "E assert 1 == 2"},
+        ["src/app.py"],
+    )
+
+    assert "`uv run pytest` failed with exit code 1" in objective
+    assert "E assert 1 == 2" in objective
+    assert "already changed: src/app.py" in objective
 
 
 # -- self-repair ---------------------------------------------------------
@@ -693,11 +695,47 @@ RUFF_FIXABLE = (
 )
 PYTEST_OUTPUT = "E   assert ACTIVE is True\nE   AssertionError\n1 failed in 0.12s\n"
 
-MUTATION = '{"relative_path": "src/app.py", "content": "ACTIVE = False\\n", "rationale": "flip"}'
-REPAIR = (
-    '{"relative_path": "src/app.py", "content": "ACTIVE = True\\n", '
-    '"rationale": "restore the flag the suite expects"}'
-)
+# What a harness job writes, rather than what a model claimed it would.
+MUTATION = [("src/app.py", "ACTIVE = False\n")]
+REPAIR = [("src/app.py", "ACTIVE = True\n")]
+NOTHING: list[tuple[str, str]] = []
+
+
+class FakeHarness(HarnessGateway):
+    """A harness whose jobs finish the moment they are asked.
+
+    The pipeline is what these tests are about, not the tool loop, and a
+    synchronous job keeps one stage to one cycle. The behavior falls through
+    when a job it just submitted is already done, so this shortcut exercises the
+    same code path a real worker reaches one cycle later.
+    """
+
+    def __init__(
+        self, batches: list[list[tuple[str, str]]], answer: str = "flip"
+    ) -> None:
+        super().__init__(HarnessQueue(), {})
+        self.batches = batches
+        self.answer = answer
+        self.objectives: list[str] = []
+
+    def submit(self, objective: str, *, agent_id: str, root: Path) -> HarnessJob:
+        self.objectives.append(objective)
+        job = self.queue.submit(objective, root, agent_id=agent_id, allow_write=True)
+        batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
+        entries: list[dict[str, object]] = []
+        for path, content in batch:
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            entries.append({"kind": "edit", "path": path, "diff": f"+{content.strip()}"})
+        self.sessions[job.number] = entries
+        self.queue.finish(
+            job,
+            HarnessResult(
+                outcome="answered", answer=self.answer, steps=3, edits=len(entries)
+            ),
+        )
+        return job
 
 
 def failing(command: str, output: str) -> ValidationResult:
@@ -749,15 +787,15 @@ class StubRepairer(CandidateRepairer):
 async def evolving(
     tmp_path: Path,
     project: Path,
-    replies: list[str],
+    batches: list[list[tuple[str, str]]],
     validator: ScriptedValidator,
     repairer: CandidateRepairer | None = None,
-) -> tuple[EnvironmentEvolver, CycleContext, MockProvider]:
+) -> tuple[EnvironmentEvolver, CycleContext, FakeHarness]:
     from evomesh.storage import SQLiteRepository
 
     repository = SQLiteRepository(tmp_path / "state.db")
     await repository.initialize()
-    provider = MockProvider(list(replies))
+    provider = MockProvider(["the model is not asked to author anything any more"])
     evolver = EnvironmentEvolver(
         CandidateWorkspace(project, tmp_path / "generations"),
         repository,
@@ -769,14 +807,15 @@ async def evolving(
     definition.mind.add_goal("Improve health reporting", recurring=True)
     memory = AgentMemory(tmp_path / "workspace", definition)
     await memory.ensure()
+    harness = FakeHarness(list(batches))
     context = CycleContext(
         definition=definition,
         provider=provider,
         memory=memory,
         budget=MemoryBudget(),
-        services={"evolver": evolver},
+        services={"evolver": evolver, "harness": harness},
     )
-    return evolver, context, provider
+    return evolver, context, harness
 
 
 async def test_a_fixable_lint_failure_is_repaired_without_the_model(
@@ -784,7 +823,7 @@ async def test_a_fixable_lint_failure_is_repaired_without_the_model(
 ) -> None:
     validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE), passing()])
     repairer = StubRepairer()
-    evolver, context, provider = await evolving(
+    evolver, context, harness = await evolving(
         tmp_path, project, [MUTATION], validator, repairer
     )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
@@ -797,8 +836,8 @@ async def test_a_fixable_lint_failure_is_repaired_without_the_model(
 
     repaired = await behavior.cycle(context)
     assert repairer.calls == 1
-    # The linter fixed it, so the mutation is still the only model call.
-    assert len(provider.calls) == 1
+    # The linter fixed it, so no second harness job was ever asked for.
+    assert len(harness.objectives) == 1
     assert "ruff --fix" in repaired.summary
 
     passed = await behavior.cycle(context)
@@ -817,7 +856,7 @@ async def test_a_failure_the_linter_cannot_fix_goes_to_the_model(
 ) -> None:
     validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT), passing()])
     repairer = StubRepairer()
-    evolver, context, provider = await evolving(
+    evolver, context, harness = await evolving(
         tmp_path, project, [MUTATION, REPAIR], validator, repairer
     )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
@@ -826,11 +865,12 @@ async def test_a_failure_the_linter_cannot_fix_goes_to_the_model(
         await behavior.cycle(context)
 
     assert repairer.calls == 0
-    prompt = str(provider.calls[-1]["prompt"])
-    # The model is shown the command, the real output, and the file it wrote.
-    assert "uv run pytest" in prompt
-    assert "assert ACTIVE is True" in prompt
-    assert "ACTIVE = False" in prompt
+    objective = harness.objectives[-1]
+    # The repair job names the command, its real output, and what this
+    # generation already touched -- and the model reads the file itself.
+    assert "uv run pytest" in objective
+    assert "assert ACTIVE is True" in objective
+    assert "already changed: src/app.py" in objective
     generation = evolver.candidate(2)
     assert (generation.path / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
 
@@ -885,7 +925,7 @@ async def test_an_unusable_repair_answer_still_reaches_the_human(
 ) -> None:
     validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT)])
     evolver, context, _ = await evolving(
-        tmp_path, project, [MUTATION, "I would rather not."], validator, StubRepairer()
+        tmp_path, project, [MUTATION, NOTHING], validator, StubRepairer()
     )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
 
@@ -893,7 +933,9 @@ async def test_an_unusable_repair_answer_still_reaches_the_human(
         await behavior.cycle(context)
     broken = await behavior.cycle(context)
 
-    assert "no repair could be authored" in broken.summary
+    # A repair job that changed nothing does not loop and does not validate an
+    # untouched tree: the candidate goes to the human exactly as it stands.
+    assert "finished without changing a file" in broken.summary
     # Not back to plan: that would strand this candidate and open another.
     assert (await evolver.pipeline_state())["stage"] == "report"
     assert len(evolver.workspace.supervisor.candidates()) == 1
@@ -950,7 +992,7 @@ async def test_a_host_failure_is_not_blamed_on_the_candidate(
 ) -> None:
     validator = ScriptedValidator([failing("uv run pytest", PERMISSION_OUTPUT)])
     repairer = StubRepairer()
-    evolver, context, provider = await evolving(
+    evolver, context, harness = await evolving(
         tmp_path, project, [MUTATION], validator, repairer
     )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
@@ -966,9 +1008,9 @@ async def test_a_host_failure_is_not_blamed_on_the_candidate(
     # Not failed: nothing was learned about the candidate either way.
     assert state["passed"] is None
     assert state["environment"] == "PermissionError"
-    # No repair was attempted, mechanically or with the model.
+    # No repair was attempted, mechanically or through the harness.
     assert repairer.calls == 0
-    assert len(provider.calls) == 1
+    assert len(harness.objectives) == 1
     assert validator.calls == 1
 
     report = await behavior.cycle(context)
@@ -1007,7 +1049,7 @@ async def test_a_failed_candidate_is_discarded_without_asking(
 ) -> None:
     validator = ScriptedValidator([failing("uv run pytest", PYTEST_OUTPUT)])
     evolver, context, _ = await evolving(
-        tmp_path, project, [MUTATION, "not a mutation"], validator, StubRepairer()
+        tmp_path, project, [MUTATION, NOTHING], validator, StubRepairer()
     )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=0, auto_promote=True)
 

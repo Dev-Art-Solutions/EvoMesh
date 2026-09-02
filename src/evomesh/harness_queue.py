@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from evomesh.harness import HarnessResult
 
@@ -53,17 +54,34 @@ class HarnessJob:
     def open(self) -> bool:
         return self.status in (JobStatus.QUEUED, JobStatus.RUNNING)
 
+    @property
+    def title(self) -> str:
+        """One line of the objective, because the objective is no longer one line.
+
+        Since the Evolver started asking through the harness, an objective
+        carries the project map and the standing rules -- a page of text. A
+        status line that prints it is a status line nobody can read.
+        """
+        first = next(
+            (line.strip() for line in self.objective.splitlines() if line.strip()), ""
+        )
+        for line in self.objective.splitlines():
+            if line.startswith("OBJECTIVE: "):
+                first = line[len("OBJECTIVE: ") :].strip()
+                break
+        return first[:100] + ("..." if len(first) > 100 else "")
+
     def describe(self) -> str:
         who = self.agent_id or "console"
         if self.status is JobStatus.RUNNING:
-            return f"job {self.number} [{who}] running, {self.steps} steps: {self.objective}"
+            return f"job {self.number} [{who}] running: {self.title}"
         if self.status is JobStatus.DONE and self.result is not None:
             return (
                 f"job {self.number} [{who}] {self.result.outcome} -- {self.result.summary()}"
             )
         if self.status is JobStatus.CANCELLED:
             return f"job {self.number} [{who}] cancelled: {self.detail}"
-        return f"job {self.number} [{who}] queued: {self.objective}"
+        return f"job {self.number} [{who}] queued: {self.title}"
 
 
 class QueueFull(RuntimeError):
@@ -150,6 +168,33 @@ class HarnessQueue:
 
     def recent(self, limit: int = 5) -> list[HarnessJob]:
         return sorted(self.jobs.values(), key=lambda job: job.number, reverse=True)[:limit]
+
+
+class HarnessGateway:
+    """What a behavior is allowed to do with the harness: ask, and look.
+
+    A behavior never reaches the worker, the provider or the session writer --
+    it submits an objective and reads what came back. Keeping the surface this
+    narrow is what stops the queue becoming a second way into the filesystem.
+    """
+
+    def __init__(self, queue: HarnessQueue, sessions: dict[int, list[dict[str, Any]]]) -> None:
+        self.queue = queue
+        self.sessions = sessions
+
+    def submit(self, objective: str, *, agent_id: str, root: Path) -> HarnessJob:
+        return self.queue.submit(objective, root, agent_id=agent_id, allow_write=True)
+
+    def job(self, number: int) -> HarnessJob | None:
+        return self.queue.jobs.get(number)
+
+    def changes(self, job: HarnessJob) -> list[dict[str, Any]]:
+        """Every edit and write the job actually applied, with its diff."""
+        return [
+            entry
+            for entry in self.sessions.get(job.number, [])
+            if entry.get("kind") in ("edit", "write")
+        ]
 
 
 class HarnessWorker:

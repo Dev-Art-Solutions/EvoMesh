@@ -177,9 +177,12 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
     window = lines[offset - 1 :]
     if limit > 0:
         window = window[:limit]
-    numbered = "\n".join(f"{number:>5}  {line}" for number, line in enumerate(window, offset))
+    numbered = "\n".join(f"{number:>5}| {line}" for number, line in enumerate(window, offset))
     if not numbered:
         return f"{target} has no lines at offset {offset} ({len(lines)} lines total)"
+    # The bar is not decoration. With two spaces, a 27B model copied the number
+    # and the indentation into its edit anchor and lost two attempts to a target
+    # that was never in the file; a delimiter makes the prefix unmistakable.
     return _clip(numbered, context.limits, unit="lines")
 
 
@@ -384,8 +387,10 @@ READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
         description=(
-            "Read a text file, with line numbers. Long files are truncated; the "
-            "reply says how many lines were withheld and which offset asks for them."
+            "Read a text file. Each line is shown with its number as a display "
+            "prefix that is NOT part of the file -- never copy those numbers into "
+            "an edit anchor. Long files are truncated; the reply says how many "
+            "lines were withheld and which offset asks for them."
         ),
         parameters={
             "type": "object",
