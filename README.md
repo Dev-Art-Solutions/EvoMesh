@@ -227,6 +227,26 @@ Use `/grant <agent> <path> read|write` and `/revoke <agent> <path>`. Paths are r
 
 Direct and broadcast messages use per-agent asynchronous mailboxes, correlation/conversation IDs, and durable audit records. Agent business behavior does not call other agent objects directly.
 
+## The harness: a model that looks before it answers
+
+Everywhere else in EvoMesh a model is asked one question and whatever comes back is the answer. The harness is the other shape: it hands the model tools, runs what it asks for, gives it the results, and asks again — until it answers without calling a tool, or a cap ends the job.
+
+Today it can only look. Three tools — `read` (with line numbers and a window), `grep`, `ls` — all confined to the project root, and nothing that can change a file. Turn it on with `harness.enabled: true`:
+
+```text
+evomesh> /harness ask "which module decides when an agent reconsiders?"
+  grep {"pattern": "def reconsider"}
+  read {"path": "src/evomesh/bdi.py", "offset": 210, "limit": 40}
+bdi.py:reconsider() decides, and it never calls a model.
+  3 steps, 11.2 s, 2 tool calls, native tools, session: .runtime/harness/000001.jsonl
+```
+
+**Models that cannot call tools still get to use them.** Most models that fit on a small card have no tool calling in their chat template, so the harness falls back to a one-line JSON protocol in plain text and drives the same tools through it. A harness that only worked on tool-calling models would not work on the hardware this project is built for.
+
+Two things are deliberate. Tool output is truncated **by the tool**, which says how many lines it withheld and which offset asks for them — so a model can request the rest instead of silently believing it has seen a whole file. And a job that runs out of steps or wall clock ends as `capped`, not `failed`: it did not go wrong, it ran out of room, and those need different responses.
+
+Every job writes one JSONL file under `.runtime/harness/`, flushed as it runs, so a job that hangs still leaves the whole story up to that moment.
+
 ## Evolution and generations
 
 The Environment Evolver is a staged pipeline, and one cycle advances exactly one stage:

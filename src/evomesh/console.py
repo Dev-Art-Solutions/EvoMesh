@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import threading
 
@@ -8,6 +9,9 @@ from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
 from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
 from evomesh.environment import Environment
+from evomesh.harness import build_runner
+from evomesh.harness_session import HarnessSession, next_session_path
+from evomesh.harness_tools import ToolLimits
 
 HELP = """Commands:
   /help                         Show this help
@@ -34,6 +38,7 @@ HELP = """Commands:
   /evolution start <objective>  Give the Evolver a new objective
   /evolution promote|discard [n]
   /evolution rollback           Return to the last known good generation
+  /harness ask "<question>"     Let the model read the project before answering
   /telegram status              Whether the bot is connected, and who may use it
   /telegram test                Ask Telegram whether the configured token works
   /telegram allow|revoke <id>   Manage which chats may talk to the mesh
@@ -318,6 +323,49 @@ class ConsoleChannel:
         path = " ".join(parts[2:])
         await self.environment.revoke_access(agent.id, path)
         return f"Revoked access to {self.environment.permissions.normalize(path)}."
+
+    async def _command_harness(self, parts: list[str]) -> str:
+        settings = self.environment.settings.harness
+        if not settings.enabled:
+            return (
+                "The harness is off. Set harness.enabled: true in evomesh.yaml "
+                "and restart the mesh."
+            )
+        action = parts[1].lower() if len(parts) > 1 else ""
+        if action != "ask" or len(parts) < 3:
+            return 'Usage: /harness ask "<question>"'
+        provider_name = self.environment.settings.models.default_provider
+        provider = self.environment.providers.get(provider_name)
+        if provider is None:
+            return f"Provider '{provider_name}' is not configured."
+        runner = build_runner(
+            provider,
+            self.environment.project_root,
+            session=HarnessSession(next_session_path(settings.session_path)),
+            limits=ToolLimits(
+                result_chars=settings.tool_result_chars,
+                result_lines=settings.tool_result_lines,
+                grep_matches=settings.grep_matches,
+            ),
+            max_steps=settings.max_steps,
+            max_seconds=settings.max_seconds,
+        )
+        result = await runner.run(" ".join(parts[2:]))
+        # Every tool call is printed, not just the answer: the point of the
+        # first harness phase is watching what a small model actually does with
+        # the tools, and a summary line hides exactly that.
+        trace = "\n".join(
+            f"  {entry['name']} {json.dumps(entry['args'], ensure_ascii=False)}"
+            for entry in runner.session.entries
+            if entry["kind"] == "tool"
+        )
+        body = (
+            result.answer
+            if result.outcome == "answered"
+            else f"[{result.outcome}] {result.detail}"
+        )
+        tail = f"{body}\n  {result.summary()}"
+        return f"{trace}\n{tail}" if trace else tail
 
     async def _command_evolution(self, parts: list[str]) -> str:
         evolver = self.environment.evolver

@@ -24,3 +24,8 @@ dist/
 # validation record belongs to the generation that produced it.
 MUTATION_OBJECTIVE.md
 validation-result*.json
+
+# Build briefs for work in progress. Local to the maintainer's checkout: a brief
+# is an argument in progress, and the decisions it settles land in CLAUDE.md and
+# docs/evolution/ where a reader was going to look anyway.
+plans/

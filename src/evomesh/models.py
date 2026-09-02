@@ -1,12 +1,82 @@
 from __future__ import annotations
 
-from typing import Protocol
+import json
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import httpx
 
 
 class ModelUnavailableError(RuntimeError):
     pass
+
+
+class ToolsUnsupportedError(RuntimeError):
+    """The provider or the model has no tool-calling in its chat template.
+
+    Not a failure. Most models that fit on a small card cannot call tools, and
+    the harness answers this by driving them with a text protocol instead, so
+    what this exception means is "take the other front end", not "give up".
+    """
+
+
+@dataclass
+class ToolCall:
+    name: str
+    arguments: dict[str, Any]
+    # OpenAI-compatible servers correlate a tool result with the call by id.
+    # Ollama does not send one, so we mint it and both dialects stay one shape.
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+
+@dataclass
+class ChatTurn:
+    """One answer from the model: what it said, and what it wants run."""
+
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+@dataclass
+class ChatMessage:
+    """A transcript entry in our own shape, translated per provider dialect.
+
+    Keeping our own shape is what lets the same transcript drive an Ollama
+    ``/api/chat`` call, an OpenAI-compatible one, and the text protocol for a
+    model that can do neither.
+    """
+
+    role: str
+    content: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_id: str = ""
+    name: str = ""
+
+
+def _parse_arguments(raw: object) -> dict[str, Any]:
+    """Tool arguments arrive as an object from Ollama and a string from OpenAI."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _tools_are_unsupported(exc: httpx.HTTPStatusError) -> bool:
+    """Whether a 4xx is the server saying this model has no tools.
+
+    Ollama answers 400 with "does not support tools"; llama.cpp and vLLM word it
+    differently. Matching on the word rather than the sentence keeps one refusal
+    from being reported to a human as an unreachable provider.
+    """
+    if exc.response.status_code not in (400, 404, 422, 501):
+        return False
+    return "tool" in exc.response.text.lower()
 
 
 def describe(exc: Exception) -> str:
@@ -23,6 +93,15 @@ class ModelProvider(Protocol):
     async def generate(
         self, prompt: str, *, system: str = "", model: str | None = None
     ) -> str: ...
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        model: str | None = None,
+    ) -> ChatTurn: ...
 
     async def health(self) -> tuple[bool, str]: ...
 
@@ -74,6 +153,55 @@ class OllamaProvider:
                 return str(response.json()["response"])
             except (httpx.HTTPError, KeyError) as exc:
                 raise ModelUnavailableError(describe(exc)) from exc
+
+    @staticmethod
+    def _wire(message: ChatMessage) -> dict[str, Any]:
+        payload: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            payload["tool_calls"] = [
+                {"function": {"name": call.name, "arguments": call.arguments}}
+                for call in message.tool_calls
+            ]
+        if message.role == "tool" and message.name:
+            payload["tool_name"] = message.name
+        return payload
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        model: str | None = None,
+    ) -> ChatTurn:
+        wire = [ChatMessage(role="system", content=system)] if system else []
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [self._wire(item) for item in wire + messages],
+            "stream": False,
+        }
+        if tools:
+            body["tools"] = tools
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await client.post(f"{self.base_url}/api/chat", json=body)
+                response.raise_for_status()
+                answer = response.json()["message"]
+            except httpx.HTTPStatusError as exc:
+                if tools and _tools_are_unsupported(exc):
+                    raise ToolsUnsupportedError(describe(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
+            except (httpx.HTTPError, KeyError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+        calls = [
+            ToolCall(
+                name=str(item["function"]["name"]),
+                arguments=_parse_arguments(item["function"].get("arguments")),
+            )
+            for item in answer.get("tool_calls") or []
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        ]
+        return ChatTurn(text=str(answer.get("content") or ""), tool_calls=calls)
 
 
 class OpenAICompatibleProvider:
@@ -129,11 +257,77 @@ class OpenAICompatibleProvider:
             except (httpx.HTTPError, KeyError, IndexError) as exc:
                 raise ModelUnavailableError(describe(exc)) from exc
 
+    @staticmethod
+    def _wire(message: ChatMessage) -> dict[str, Any]:
+        payload: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            payload["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments),
+                    },
+                }
+                for call in message.tool_calls
+            ]
+        if message.role == "tool":
+            payload["tool_call_id"] = message.tool_call_id
+        return payload
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        model: str | None = None,
+    ) -> ChatTurn:
+        wire = [ChatMessage(role="system", content=system)] if system else []
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [self._wire(item) for item in wire + messages],
+        }
+        if tools:
+            body["tools"] = tools
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions", headers=self._headers, json=body
+                )
+                response.raise_for_status()
+                answer = response.json()["choices"][0]["message"]
+            except httpx.HTTPStatusError as exc:
+                if tools and _tools_are_unsupported(exc):
+                    raise ToolsUnsupportedError(describe(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
+            except (httpx.HTTPError, KeyError, IndexError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+        calls = [
+            ToolCall(
+                name=str(item["function"]["name"]),
+                arguments=_parse_arguments(item["function"].get("arguments")),
+                id=str(item.get("id") or uuid.uuid4().hex[:12]),
+            )
+            for item in answer.get("tool_calls") or []
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        ]
+        return ChatTurn(text=str(answer.get("content") or ""), tool_calls=calls)
+
 
 class MockProvider:
-    def __init__(self, responses: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        turns: list[ChatTurn] | None = None,
+    ) -> None:
         self.responses = responses or ["Mock response"]
         self.calls: list[dict[str, str | None]] = []
+        # None means "this model has no tools", which is the case the harness
+        # has to work in anyway -- so it is the default a test gets for free.
+        self.turns = turns
+        self.chats: list[list[ChatMessage]] = []
 
     async def health(self) -> tuple[bool, str]:
         return True, "ready"
@@ -146,3 +340,16 @@ class MockProvider:
     ) -> str:
         self.calls.append({"prompt": prompt, "system": system, "model": model})
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        model: str | None = None,
+    ) -> ChatTurn:
+        if self.turns is None:
+            raise ToolsUnsupportedError("mock model has no tool calling")
+        self.chats.append(list(messages))
+        return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]

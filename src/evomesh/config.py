@@ -79,6 +79,29 @@ class EvolutionSettings(BaseModel):
     objective: str | None = None
 
 
+class HarnessSettings(BaseModel):
+    """A model that can look at the project before it answers.
+
+    Off by default, and read-only for now: the tools can read, search and list,
+    and nothing here can change a file. The caps are not tuning knobs -- they
+    are what turns a model that keeps asking for one more file into a job that
+    ends and says why.
+    """
+
+    enabled: bool = False
+    # Steps, not tool calls: one step is one model turn, which may ask for
+    # several tools at once.
+    max_steps: int = 24
+    max_seconds: float = 300.0
+    # How much of a file may enter the transcript. Rule of the house: the trim
+    # is ours, and the tool says what it withheld so the model can ask again.
+    tool_result_chars: int = 4000
+    tool_result_lines: int = 200
+    grep_matches: int = 40
+    # Empty means .runtime/harness next to the checkout.
+    session_path: Path = Path(".runtime/harness")
+
+
 class GitSettings(BaseModel):
     """Who signs a generation, and where it is published once it lands."""
 
@@ -128,11 +151,14 @@ class Settings(BaseModel):
     system_agents: dict[str, AgentModelSettings] = Field(default_factory=dict)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     evolution: EvolutionSettings = Field(default_factory=EvolutionSettings)
+    harness: HarnessSettings = Field(default_factory=HarnessSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
     def resolve(self, root: Path) -> Settings:
         clone = self.model_copy(deep=True)
+        if not clone.harness.session_path.is_absolute():
+            clone.harness.session_path = root / clone.harness.session_path
         for name in ("data_path", "generation_path", "workspace_path"):
             value = getattr(clone, name)
             if not value.is_absolute():

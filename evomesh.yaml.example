@@ -45,6 +45,26 @@ evolution:
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 
+# A model that can look at the project before it answers, instead of being handed
+# one prompt and asked to guess. Off by default, and read-only for now: its tools
+# can read, search and list files, and nothing here can change one.
+#
+# harness:
+#   enabled: false
+#   # One step is one model turn, which may ask for several tools at once. The
+#   # caps are what turn a model that keeps asking for one more file into a job
+#   # that ends and says why.
+#   max_steps: 24
+#   max_seconds: 300
+#   # How much of a file may enter the transcript. The tool truncates and says
+#   # what it withheld, so the model can ask for the rest -- rather than the
+#   # model server silently dropping the oldest end of the prompt.
+#   tool_result_chars: 4000
+#   tool_result_lines: 200
+#   grep_matches: 40
+#   # One JSONL file per job, written as it runs.
+#   session_path: .runtime/harness
+
 system_agents:
   architect:
     provider: ollama

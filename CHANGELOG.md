@@ -2,9 +2,37 @@
 
 All notable changes to EvoMesh are documented in this file.
 
-## [Unreleased]
+## [0.1.0-alpha.2] - 2026-09-02
 
 ### Added
+
+- A model can now look at the project before it answers. `ModelProvider` gained a
+  second way to be asked something — `chat(messages, tools)` alongside
+  `generate(prompt)` — and `harness.py` runs the loop over it: send the transcript
+  and the tool schemas, run what the model asked for, append the results, ask
+  again, until it answers without calling a tool.
+  - Three tools, all read-only: `read` (line numbers, offset and limit), `grep`
+    and `ls`. Every one resolves its path against the job root, proves the result
+    is inside it, and then asks the same `FilesystemPolicy` a skill asks. The
+    check lives in the tool, so a fourth tool cannot arrive unguarded.
+  - **Models with no tool calling drive the same tools through a one-line JSON
+    protocol in plain text.** Most models that fit on a small card have none, so a
+    harness that required it would not run on the hardware this project targets.
+  - Tool output is truncated by the tool, which says how many lines it withheld
+    and which offset asks for them. The alternative is the model server dropping
+    the oldest end of the prompt — the objective — with nothing said.
+  - A job that runs out of steps or wall clock ends as `capped`, not `failed`. It
+    did not go wrong, it ran out of room, and a caller that treats those the same
+    throws away work for the budget's fault.
+  - Every job writes one JSONL file under `.runtime/harness/`, flushed as it runs,
+    so a job that hangs or is killed still leaves the whole story up to that point.
+  - `/harness ask "<question>"` in the console, off unless `harness.enabled`.
+  - `grep` skips `.git`, `.venv` and their kind by comparing only the path parts
+    **below the job root**. Matching the absolute path would have meant a checkout
+    living under a directory called `bin` or `dist` had every file skipped and was
+    told "no match" for code plainly there — which is how the test found it.
+  - This is the seam the Evolver's single-file mutation contract is waiting for; it
+    is deliberately not wired into the pipeline yet.
 
 - The Evolver is shown the codebase before it is asked to change it. A new
   `evomesh.codebase` module surveys the package, resolves the import graph, and puts
