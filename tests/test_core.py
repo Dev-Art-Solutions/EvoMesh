@@ -353,6 +353,77 @@ def test_provider_timeout_comes_from_configuration(tmp_path: Path) -> None:
     assert provider.timeout_seconds == 42
 
 
+def test_provider_num_ctx_comes_from_configuration(tmp_path: Path) -> None:
+    """Unset, Ollama loads the model at its own default context regardless of
+    how generous the project's character budgets are, and truncates the
+    prompt from the oldest end before this process ever sees it."""
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            default_provider="ollama",
+            providers={
+                "ollama": ProviderSettings(
+                    base_url="http://127.0.0.1:11434", model="qwen3", num_ctx=8192
+                )
+            },
+        ),
+    )
+
+    provider = Environment(settings).providers["ollama"]
+
+    assert isinstance(provider, OllamaProvider)
+    assert provider.num_ctx == 8192
+
+
+async def test_ollama_requests_carry_num_ctx_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one thing that makes the project's character budgets authoritative
+    instead of aspirational: the server has to be told it actually has that
+    much room, or it silently truncates from the oldest end itself."""
+    bodies: list[dict[str, object]] = []
+
+    async def fake_post(
+        self: httpx.AsyncClient, url: str, *, json: dict[str, object]
+    ) -> httpx.Response:
+        bodies.append(json)
+        request = httpx.Request("POST", url)
+        if url.endswith("/api/generate"):
+            return httpx.Response(200, json={"response": "ok"}, request=request)
+        return httpx.Response(200, json={"message": {"content": "ok"}}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    provider = OllamaProvider("http://127.0.0.1:11434", "qwen3", num_ctx=8192)
+    await provider.generate("hello")
+    await provider.chat([])
+
+    assert len(bodies) == 2
+    assert all(body["options"] == {"num_ctx": 8192} for body in bodies)
+
+
+async def test_ollama_requests_omit_options_when_num_ctx_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No configured value means no opinion -- the provider's own default stands,
+    which matters for a server with no such knob at all."""
+    bodies: list[dict[str, object]] = []
+
+    async def fake_post(
+        self: httpx.AsyncClient, url: str, *, json: dict[str, object]
+    ) -> httpx.Response:
+        bodies.append(json)
+        return httpx.Response(200, json={"response": "ok"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    provider = OllamaProvider("http://127.0.0.1:11434", "qwen3")
+    await provider.generate("hello")
+
+    assert "options" not in bodies[0]
+
+
 async def test_a_wiped_database_heals_on_the_next_write(
     repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
 ) -> None:

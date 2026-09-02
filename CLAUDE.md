@@ -87,6 +87,14 @@ regresses.
    plan, memory, working context, inbox. This is not tidiness — an oversized prompt gets truncated
    by the model server *from the oldest end*, which is exactly where memory lives. Budgeting means
    the trim is ours and the newest facts survive. Never append to a prompt outside the budget.
+   **The budget only holds if the server is told it has that much room.** Ollama loads a model at
+   its own default context (2048 tokens on most Modelfiles) no matter how the model was trained or
+   how generous the character budgets above are, and truncates from the oldest end itself —
+   silently, and before any of this project's budgeting runs — if the request never says otherwise.
+   `models.providers.ollama.num_ctx` (`ProviderSettings.num_ctx`, sent as `options.num_ctx` on
+   every `/api/generate` and `/api/chat` call) is what makes the budget authoritative instead of
+   aspirational; size it above the largest thing actually sent — the harness's `transcript_chars`
+   is usually the biggest — not above the per-cycle prompt alone.
 4. **`<think>` blocks are stripped before anything is stored or re-prompted**, including the case
    where the chat template opened the block and the model returns only the closing tag.
    `strip_reasoning` is the one place that happens.

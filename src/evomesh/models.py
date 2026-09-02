@@ -109,10 +109,26 @@ class ModelProvider(Protocol):
 
 
 class OllamaProvider:
-    def __init__(self, base_url: str, model: str, timeout_seconds: float = 600) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout_seconds: float = 600,
+        num_ctx: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
+        # Sent as `options.num_ctx` on every call. Unset, Ollama loads the model
+        # at its own default (2048 tokens on most Modelfiles) no matter how
+        # generous the caller's character budgets are, and the server truncates
+        # the prompt from the oldest end -- silently, and before this class ever
+        # sees it. Configuring this is what makes the project's own budgets the
+        # thing that trims, per the load-bearing rule in CLAUDE.md.
+        self.num_ctx = num_ctx
+
+    def _options(self) -> dict[str, Any] | None:
+        return {"num_ctx": self.num_ctx} if self.num_ctx else None
 
     async def health(self) -> tuple[bool, str]:
         try:
@@ -138,17 +154,17 @@ class OllamaProvider:
     async def generate(
         self, prompt: str, *, system: str = "", model: str | None = None
     ) -> str:
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "prompt": prompt,
+            "system": system,
+            "stream": False,
+        }
+        if options := self._options():
+            body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json={
-                        "model": model or self.model,
-                        "prompt": prompt,
-                        "system": system,
-                        "stream": False,
-                    },
-                )
+                response = await client.post(f"{self.base_url}/api/generate", json=body)
                 response.raise_for_status()
                 return str(response.json()["response"])
             except (httpx.HTTPError, KeyError) as exc:
@@ -182,6 +198,8 @@ class OllamaProvider:
         }
         if tools:
             body["tools"] = tools
+        if options := self._options():
+            body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await client.post(f"{self.base_url}/api/chat", json=body)

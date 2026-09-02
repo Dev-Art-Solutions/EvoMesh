@@ -110,6 +110,19 @@ models:
       model: qwen3
       # Seconds to wait for one answer. A 30B model on a busy GPU needs minutes.
       timeout_seconds: 600
+      # Sent as `options.num_ctx` on every request. Ollama's own default is
+      # 2048 tokens no matter how large the model was trained for, and every
+      # character budget in this file (runtime.*_chars, harness.transcript_chars)
+      # assumes the server actually has room for what gets sent -- unset, the
+      # server truncates the prompt from the oldest end itself, silently, before
+      # this project's own budgeting ever runs. Size it above your largest
+      # budget: runtime's four *_chars fields plus prompt_chars top out around
+      # 6000 chars (~1500-2000 tokens) per cycle, and the harness's
+      # transcript_chars (12000 chars) plus its system prompt and tool schemas
+      # can reach 6000-7000 tokens in one turn. 8192 covers both with margin;
+      # raise it if VRAM allows and leave it unset only for a server with no
+      # such option (OpenAI-compatible providers ignore this field).
+      num_ctx: 8192
     inferhub:
       base_url: http://127.0.0.1:5080/v1
       model: qwen3

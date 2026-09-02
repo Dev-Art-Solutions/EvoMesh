@@ -139,7 +139,7 @@ class Environment:
         for name, config in self.settings.models.providers.items():
             if name == "ollama":
                 result[name] = OllamaProvider(
-                    config.base_url, config.model, config.timeout_seconds
+                    config.base_url, config.model, config.timeout_seconds, config.num_ctx
                 )
             else:
                 result[name] = OpenAICompatibleProvider(

@@ -23,6 +23,15 @@ class ProviderSettings(BaseModel):
     # A 30B model on a busy GPU answers a full prompt in minutes, not seconds.
     # Too low a ceiling here reads to a human as "the agent is broken".
     timeout_seconds: float = 600
+    # Ollama's own default is 2048 tokens regardless of what the Modelfile's
+    # trained context is, and every prompt budget in this project (RuntimeSettings,
+    # HarnessSettings.transcript_chars) is sized in *characters* on the assumption
+    # that the server actually has room for them. Leaving this unset means the
+    # server silently truncates from the oldest end -- exactly the failure the
+    # character budgets exist to prevent -- so a local model gets no context
+    # widening unless this is set to match. None keeps a provider's own default
+    # (an OpenAI-compatible server has no equivalent knob and ignores this).
+    num_ctx: int | None = None
 
 
 class ModelSettings(BaseModel):
