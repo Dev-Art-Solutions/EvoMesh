@@ -1,0 +1,26 @@
+# Modules that were already unreachable when the reachability check was added.
+#
+# Nothing imports these and nothing runs them, so none of their code executes.
+# Most were written by the Environment Evolver: asked to improve the project
+# with no picture of it, it produced well-formed modules nobody calls, and the
+# validation suite passed them because ruff, pyright, pytest and the smoke check
+# are all perfectly happy with dead code.
+#
+# They are listed rather than deleted so the check can be a ratchet: everything
+# here is tolerated, anything NEW that becomes unreachable fails the suite. That
+# stopped the bleeding without blocking every candidate behind a 431-line
+# cleanup.
+#
+# This is also the Evolver's backlog. Wiring one of these into a module that
+# actually runs -- or deleting it -- is worth more than another new file. When
+# one is wired up its line here simply goes stale; prune it when convenient.
+_agent_ids
+agent_label
+cycles
+humanize
+mesh
+mesh_utils
+metrics
+node
+phase_label
+verdict_label

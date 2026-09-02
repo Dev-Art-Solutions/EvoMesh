@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from evomesh.codebase import project_map
 from evomesh.cognition import strip_reasoning
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -23,18 +24,35 @@ logger = logging.getLogger(__name__)
 
 PIPELINE_STATE_KEY = "evolution.pipeline"
 
+# Where each generation explains itself. Tracked, not ignored: the reasoning
+# behind a change has to travel with the change.
+BACKLOG_DIR = Path("docs") / "evolution"
+
 MUTATION_INSTRUCTION = (
     "Propose ONE small, safe file change to EvoMesh that advances the objective.\n"
+    "\n"
+    "CHANGE A FILE THAT ALREADY EXISTS. A brand new module is almost always the "
+    "wrong answer: nothing imports it, so none of its code ever runs, and the "
+    "project already carries several files like that. Pick one of these instead:\n"
+    "  1. improve a load-bearing module listed above, or\n"
+    "  2. edit a load-bearing module so it imports and uses one of the DEAD "
+    "modules, which brings that code to life.\n"
+    "A new file is acceptable only when an existing module is edited in the same "
+    "change to import it -- and you only get one file, so prefer options 1 and 2.\n"
+    "\n"
     "Return only a JSON object, no prose and no code fences, with exactly these keys:\n"
-    '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete new file>", '
-    '"rationale": "<one sentence>"}\n'
+    '{"relative_path": "src/evomesh/<file>.py", "content": "<the complete file>", '
+    '"rationale": "<why this change matters, and what now uses it>"}\n'
+    "content must be the COMPLETE file after your change, not a patch.\n"
     "The path must be relative and must stay inside the project.\n"
     "Escape every newline in content as \\n and every quote as \\\", so the object "
     "stays on one line and parses as JSON."
 )
 MUTATION_SYSTEM = (
-    "You are Environment Evolver. Never target absolute paths "
-    "or parent directories. Output JSON only."
+    "You are Environment Evolver. You improve a codebase that is running right "
+    "now. Code nobody calls is worse than no change at all, so every mutation "
+    "must leave the project with more working behaviour, not more files. Never "
+    "target absolute paths or parent directories. Output JSON only."
 )
 
 REPAIR_INSTRUCTION = (
@@ -49,8 +67,10 @@ REPAIR_INSTRUCTION = (
 )
 REPAIR_SYSTEM = (
     "You are Environment Evolver repairing your own candidate. Fix the reported "
-    "failure and nothing else. Never target absolute paths or parent directories. "
-    "Output JSON only."
+    "failure and nothing else. If the failure says a module is unreachable, the "
+    "fix is to edit a module that already runs so it imports and uses it -- never "
+    "to rewrite the unreachable file again. Never target absolute paths or parent "
+    "directories. Output JSON only."
 )
 
 
@@ -61,12 +81,27 @@ class GenerationStatus(StrEnum):
     FAILED = "failed"
 
 
+class GenerationChange(BaseModel):
+    """One file the generation wrote, and the reason it gave for writing it."""
+
+    path: str
+    rationale: str
+    kind: str = "mutation"
+    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class Generation(BaseModel):
     number: int
     status: GenerationStatus
     path: Path
     parent: int | None = None
     git_commit: str | None = None
+    objective: str = ""
+    # Kept on the generation rather than only in the mutation log, because the
+    # rationale has to survive into the commit that lands: a generation whose
+    # reasoning exists only in a database nobody opens is a change nobody can
+    # review a month later.
+    changes: list[GenerationChange] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -560,10 +595,26 @@ class EnvironmentEvolver:
                 )
         raise ValueError(f"The model did not return a usable JSON mutation. {failure}")
 
+    def project_map(self) -> str:
+        """What the package looks like right now, for the model to aim at."""
+        return project_map(self.workspace.repository_root)
+
     async def propose_mutation(
         self, objective: str, context: str = "", model: str | None = None
     ) -> FileMutation:
-        prompt = f"{context}\n\nOBJECTIVE: {objective}\n\n{MUTATION_INSTRUCTION}".strip()
+        # The map goes before the instruction because the instruction refers to
+        # it -- "the load-bearing modules listed above" needs something above it,
+        # or the model is guessing at the codebase again.
+        prompt = "\n\n".join(
+            part
+            for part in (
+                context,
+                self.project_map(),
+                f"OBJECTIVE: {objective}",
+                MUTATION_INSTRUCTION,
+            )
+            if part
+        ).strip()
         return await self._author(prompt, MUTATION_INSTRUCTION, MUTATION_SYSTEM, model)
 
     async def propose_repair(
@@ -577,6 +628,7 @@ class EnvironmentEvolver:
         prompt = "\n".join(
             part
             for part in (
+                self.project_map(),
                 f"COMMAND: {failure.get('command')}",
                 f"EXIT CODE: {failure.get('exit_code')}",
                 f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
@@ -622,6 +674,15 @@ class EnvironmentEvolver:
         target = mutation.target(generation.path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(mutation.content, encoding="utf-8")
+        generation.objective = generation.objective or objective
+        generation.changes.append(
+            GenerationChange(
+                path=mutation.relative_path.as_posix(),
+                rationale=mutation.rationale,
+                kind="repair" if status == "repaired" else "mutation",
+            )
+        )
+        self.workspace.supervisor.record_candidate(generation)
         await self.repository.record_mutation(
             {
                 "generation": generation.number,
@@ -673,6 +734,11 @@ class EnvironmentEvolver:
         commit = generation.git_commit
         if commit is None:
             candidate = GitRepository(generation.path, self.identity)
+            # Written before the status check, so a generation always carries its
+            # own explanation into the commit that lands it.
+            generation.objective = generation.objective or objective
+            state = await self.pipeline_state()
+            self.write_backlog(generation, int(state.get("repairs", 0)))
             if not (await candidate.status()).strip():
                 raise GitError(f"generation {number} changed nothing to apply")
             commit = await candidate.commit_mutation(number, objective)
@@ -699,6 +765,111 @@ class EnvironmentEvolver:
 
     def checkout(self) -> GitRepository:
         return GitRepository(self.workspace.repository_root, self.identity)
+
+    # -- the backlog ----------------------------------------------------
+
+    def write_backlog(self, generation: Generation, repairs: int = 0) -> Path:
+        """Write why this generation exists, into the generation itself.
+
+        It goes inside the candidate so ``git add -A`` picks it up and the
+        reasoning lands in the same commit as the code. A month from now the
+        question about any of these commits is "why did it do that", and the
+        answer has to be in the repository, not in a SQLite file on one machine.
+        """
+        directory = generation.path / BACKLOG_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        entry = directory / f"{generation.number:06d}.md"
+        entry.write_text(self.render_backlog(generation, repairs), encoding="utf-8")
+        self._reindex_backlog(directory)
+        return entry
+
+    def render_backlog(self, generation: Generation, repairs: int = 0) -> str:
+        validation = self.read_validation(generation)
+        lines = [
+            f"# Generation {generation.number}",
+            "",
+            f"- **Opened:** {generation.created_at:%Y-%m-%d %H:%M UTC}",
+            f"- **Parent generation:** {generation.parent if generation.parent else '-'}",
+            f"- **Author:** {self.identity}",
+            "",
+            "## Why this change",
+            "",
+            f"**Objective.** {generation.objective or '(none recorded)'}",
+            "",
+        ]
+        if generation.changes:
+            lines += ["### What it changed, and the reason it gave", ""]
+            for index, change in enumerate(generation.changes, start=1):
+                label = "Repair" if change.kind == "repair" else "Change"
+                reason = change.rationale.strip() or "(the model gave no rationale)"
+                lines += [f"{index}. **{label} to `{change.path}`** — {reason}"]
+            lines.append("")
+        else:
+            lines += ["No file changes were recorded for this generation.", ""]
+
+        lines += ["## How it was checked", ""]
+        if validation is None:
+            lines += [
+                "Validation did not run, so this generation carries no verdict.",
+                "",
+            ]
+        else:
+            verdict = "passed" if validation.passed else "failed"
+            lines.append(f"The suite **{verdict}**:")
+            lines.append("")
+            lines.append("| Command | Exit |")
+            lines.append("| --- | --- |")
+            for command in validation.commands:
+                lines.append(f"| `{command.get('command')}` | {command.get('exit_code')} |")
+            lines.append("")
+            if failure := validation.failure():
+                lines += [
+                    "The failing command reported:",
+                    "",
+                    "```",
+                    clip(str(failure.get("output", "")), 1200).strip(),
+                    "```",
+                    "",
+                ]
+        if repairs:
+            lines += [
+                f"It repaired itself **{repairs} time{'s' if repairs != 1 else ''}** "
+                "before reaching that verdict.",
+                "",
+            ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _reindex_backlog(directory: Path) -> None:
+        """Rebuild the index from the entries on disk, newest first."""
+        entries = sorted(
+            (path for path in directory.glob("[0-9]*.md")),
+            key=lambda path: path.stem,
+            reverse=True,
+        )
+        rows = []
+        for path in entries:
+            heading = ""
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("**Objective.**"):
+                    heading = line.removeprefix("**Objective.**").strip()
+                    break
+            rows.append(f"- [Generation {int(path.stem)}]({path.name}) — {heading or '-'}")
+        (directory / "README.md").write_text(
+            "\n".join(
+                [
+                    "# Evolution backlog",
+                    "",
+                    "One entry per generation the Environment Evolver produced: what it",
+                    "changed, the reason it gave, and how the change was checked. Written",
+                    "by the mesh itself, into the same commit as the code.",
+                    "",
+                    *rows,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
     async def publish(self, commit: str) -> str:
         """Push the landed commit, and report the outcome as one plain sentence.

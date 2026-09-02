@@ -6,6 +6,28 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- The Evolver is shown the codebase before it is asked to change it. A new
+  `evomesh.codebase` module surveys the package, resolves the import graph, and puts
+  a map in the mutation prompt: which modules are load-bearing, and which are dead.
+  - Until now the prompt carried the agent's memory and nothing about the project, so
+    the model invented plausible new modules. Nothing imported them, so none of their
+    code ever ran; ten accumulated, 431 lines of them.
+  - The instruction now names a new file as the wrong answer and points at two real
+    options: improve a module that runs, or edit one so it uses a dead module.
+  - The repair prompt gets the map too, because "this module is unreachable" cannot be
+    fixed by looking at the unreachable file.
+- Unreachable modules fail validation. `tests/test_reachability.py` walks the import
+  graph and fails on anything nothing imports and nothing runs, so such a candidate
+  enters the repair stage instead of landing.
+  - A ratchet, not a cleanup order: the modules that were already dead are listed in
+    `docs/evolution/known-dead-modules.txt` and tolerated, anything new is not. Wiring
+    one up simply makes its line there stale, which is what lets a one-file mutation
+    fix it.
+- Every generation writes `docs/evolution/<number>.md` into its own commit, with an
+  index beside it: the objective, each file it touched and the reason the model gave,
+  each self-repair, and the validation commands with their exit codes and output.
+  Reasoning that lives only in a local database is reasoning nobody can review.
+
 - A landed generation is now published. It is committed under the mesh's own identity
   (`Mesh Evo Agent` by default, configurable as `git.author_name`/`author_email`) and
   pushed to the remote, so the agent's work is distinguishable from a human's in the

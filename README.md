@@ -276,6 +276,45 @@ Promoting cherry-picks the candidate's commit onto the checkout the mesh runs fr
 
 Two refusals are deliberate. A generation is never applied over uncommitted changes in the checkout, so work in progress is never clobbered — under a promotion policy the candidate is parked for you instead of discarded, because the candidate is fine and the place it was going is not. And a change that does not cherry-pick cleanly aborts the pick rather than leaving the tree half-applied.
 
+### Making the change count
+
+A mutation used to be proposed with no picture of the code it was changing. The
+Evolver did the only thing it could with that: it invented a plausible new
+module. Those modules validated -- ruff, pyright, pytest and the smoke check are
+all perfectly happy with well-written code nobody calls -- and landed as dead
+weight. Ten of them accumulated, 431 lines that never execute.
+
+Two things now stop that.
+
+**The model is shown the package.** `evomesh.codebase` surveys `src/evomesh/`,
+resolves the import graph, and hands the Evolver a map: which modules are
+load-bearing and how many things depend on them, and which are dead. The
+instruction that follows tells it to improve a module that runs, or to edit one
+so it imports a dead module and brings that code to life. A brand new file is
+named as the wrong answer, because with one file per mutation there is nothing
+left to import it.
+
+**Unreachable code fails validation.** `tests/test_reachability.py` walks the
+same import graph and fails on any module that nothing imports and nothing runs.
+A candidate that adds one goes to the repair stage, where the model is told to
+wire it into a module that already runs rather than rewrite the orphan again.
+
+It is a ratchet, not a cleanup order. The modules that were already unreachable
+are listed in `docs/evolution/known-dead-modules.txt` and tolerated; anything new
+is not. That list is also the Evolver's backlog: wiring one of those into the
+running mesh is real work, and doing it just makes its line there stale.
+
+### The backlog: why each generation exists
+
+Every generation writes `docs/evolution/<number>.md` **into its own commit**,
+alongside an updated index. The entry records the objective, every file it
+touched with the reason the model gave, each self-repair, the validation
+commands with their exit codes, and the output of whatever failed.
+
+The reasoning travels with the change. A month later the question about any of
+these commits is "why did it do that", and the answer is in the repository
+rather than in a SQLite file on one machine.
+
 ### Publishing a generation
 
 A landed generation is committed by the mesh, under its own identity, and pushed to the remote. Both halves matter: a history where the agent's commits are signed with whatever `git config` happens to hold is a history where nobody can tell the agent's work from their own, and a generation that never leaves the machine has not really shipped.
@@ -335,9 +374,11 @@ Git is the evolutionary lineage. Each generation is one commit, authored by the 
 ## Project structure
 
 ```text
-src/evomesh/   runtime, contracts, bdi, cognition, memory, behaviors, storage, evolution, telegram
+src/evomesh/   runtime, contracts, bdi, cognition, memory, behaviors, storage, evolution,
+               codebase (import graph), telegram
 desktop/       Windows Forms Control Center
-tests/         unit, integration, cycle, and restart scenario coverage
+tests/         unit, integration, cycle, reachability, and restart scenario coverage
+docs/evolution/ one entry per generation: what changed and why, written by the mesh
 data/          local SQLite state (ignored)
 workspace/     per-agent memory.md and context.md, shared world context (ignored)
 generations/   supervisor metadata and candidate workspaces (ignored)

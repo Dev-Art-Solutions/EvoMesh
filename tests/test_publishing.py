@@ -22,7 +22,12 @@ from evomesh.config import (
     TelegramSettings,
 )
 from evomesh.environment import Environment
-from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver, FileMutation
+from evomesh.evolution import (
+    CandidateWorkspace,
+    EnvironmentEvolver,
+    FileMutation,
+    ValidationResult,
+)
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import MockProvider
 from evomesh.storage import SQLiteRepository
@@ -233,6 +238,101 @@ async def test_starting_up_clears_the_restart_it_just_paid(tmp_path: Path) -> No
 
     assert not second.restart_requested.is_set()
     assert not second.evolver.workspace.supervisor.metadata()["restart_required"]
+
+
+# -- the backlog ---------------------------------------------------------
+
+
+async def test_a_landed_generation_explains_itself_in_the_commit(tmp_path: Path) -> None:
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
+
+    applied = await landed(evolver)
+
+    # The reasoning is in the repository, not only in a database on one machine.
+    entry = project / "docs" / "evolution" / "000002.md"
+    text = entry.read_text(encoding="utf-8")
+    assert "# Generation 2" in text
+    assert "keep the mesh honest" in text
+    assert "src/app.py" in text
+    assert "flip it" in text
+    assert "Mesh Evo Agent" in text
+
+    committed = await GitRepository(project).run("show", "--stat", "--name-only", applied)
+    assert "docs/evolution/000002.md" in committed
+    assert "docs/evolution/README.md" in committed
+
+
+async def test_the_backlog_index_lists_every_generation(tmp_path: Path) -> None:
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
+    await landed(evolver)
+
+    index = (project / "docs" / "evolution" / "README.md").read_text(encoding="utf-8")
+
+    assert "# Evolution backlog" in index
+    assert "[Generation 2](000002.md)" in index
+    assert "keep the mesh honest" in index
+
+
+async def test_the_backlog_records_the_verdict_and_the_repairs(tmp_path: Path) -> None:
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
+    generation = await evolver.create_candidate("make the mesh honest")
+    await evolver.apply_mutation(
+        generation,
+        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="flip"),
+        "make the mesh honest",
+    )
+    await evolver.apply_mutation(
+        generation,
+        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="unbreak"),
+        "make the mesh honest",
+        status="repaired",
+    )
+    (generation.path / "validation-result.json").write_text(
+        ValidationResult(
+            passed=False,
+            commands=[
+                {"command": "uv run ruff check .", "exit_code": 0, "output": ""},
+                {"command": "uv run pytest", "exit_code": 1, "output": "E   assert 1 == 2"},
+            ],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    text = evolver.render_backlog(generation, repairs=2)
+
+    assert "**Repair to `src/app.py`** — unbreak" in text
+    assert "**Change to `src/app.py`** — flip" in text
+    assert "The suite **failed**" in text
+    assert "| `uv run pytest` | 1 |" in text
+    assert "assert 1 == 2" in text
+    assert "repaired itself **2 times**" in text
+
+
+async def test_a_generation_with_no_rationale_still_produces_a_readable_entry(
+    tmp_path: Path,
+) -> None:
+    """A small local model routinely returns an empty rationale field.
+
+    The entry still has to say what changed; an empty section would make the
+    backlog look broken rather than sparse.
+    """
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
+    generation = await evolver.create_candidate("do something")
+    await evolver.apply_mutation(
+        generation,
+        FileMutation(relative_path=Path("src/app.py"), content=MUTATED, rationale="  "),
+        "do something",
+    )
+
+    text = evolver.render_backlog(generation)
+
+    assert "src/app.py" in text
+    assert "the model gave no rationale" in text
+    assert "Validation did not run" in text
 
 
 # -- Telegram ------------------------------------------------------------
