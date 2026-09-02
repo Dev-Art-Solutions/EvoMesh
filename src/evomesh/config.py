@@ -98,6 +98,11 @@ class HarnessSettings(BaseModel):
     # several tools at once.
     max_steps: int = 24
     max_seconds: float = 300.0
+    # What the model may be sent in one turn. The tools cap their own output;
+    # this caps the pile of it, which is the part that grows without asking and
+    # is dropped by the model server from the oldest end -- where the objective
+    # lives -- when nobody caps it here.
+    transcript_chars: int = 12000
     # How much of a file may enter the transcript. Rule of the house: the trim
     # is ours, and the tool says what it withheld so the model can ask again.
     tool_result_chars: int = 4000

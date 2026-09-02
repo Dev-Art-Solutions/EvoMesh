@@ -400,6 +400,7 @@ class Environment:
             model=model,
             max_steps=settings.max_steps,
             max_seconds=settings.max_seconds,
+            transcript_chars=settings.transcript_chars,
             read_only=not job.allow_write,
             allow_write=job.allow_write,
         )

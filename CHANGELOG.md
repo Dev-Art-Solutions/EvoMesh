@@ -2,6 +2,32 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.3] - 2026-09-02
+
+### Added
+
+- The transcript has a budget. The tools already capped their own output; the
+  *pile* of it grew without asking, and a model server drops the oldest end of a
+  prompt -- which is where the objective lives -- without saying so.
+  - `harness.transcript_chars` (12000) bounds what the model is sent in one
+    turn. Over it, the **oldest tool results** are replaced by a marker naming
+    the tool and how much was dropped, so the model can tell "I have not read
+    that" from "I read it and it said nothing".
+  - The task and every assistant turn always survive. A turn is the model's own
+    reasoning and it is small; a tool result is a file, and the model can read it
+    again. Summarising dropped results with a second model call was considered
+    and rejected: it spends inference compressing something the tools reproduce
+    exactly.
+- The same tool call three times in a row ends the job as `capped`. The second
+  identical call is answered from the first result rather than run again -- it
+  would produce the same bytes and cost a step -- and the third stops the job,
+  because it is not going wrong, it has stopped making progress. `gemma:2b`
+  issued one identical `grep` three times in the first release's acceptance run,
+  and all three were executed.
+- A job reports what it cost: `tool_chars` (everything the tools produced) and
+  `prompt_chars` (the largest transcript the model was actually sent). The second
+  is what says whether a job would survive on a smaller model.
+
 ## [0.2.0-alpha.2] - 2026-09-02
 
 ### Fixed

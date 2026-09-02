@@ -193,7 +193,13 @@ Three properties of the loop are load-bearing and are the reasons it is shaped t
   tools, so this is not a nicety — it is what makes the harness run on this project's target
   hardware. Re-trying native tools each turn would spend a step budget rediscovering the refusal.
 - **The tool truncates, and says what it withheld** (rule 3 applied to tool output). A silent trim
-  makes the model believe it has seen a whole file.
+  makes the model believe it has seen a whole file. **The transcript is bounded the same way**
+  (`harness.transcript_chars`): past the budget the *oldest tool results* are replaced by a marker,
+  while the task and every assistant turn survive — a turn is small and is the model's reasoning, a
+  result is a file the model can read again.
+- **The same call three times running ends the job as `capped`.** The second identical call is
+  answered from the first result rather than executed. A model that repeats once and moves on is
+  common and harmless, which is why it is three and not two.
 - **A refusal is a tool result, never an exception.** Containment, grants, bad arguments and unknown
   tool names all come back as text the model can act on; only a host failure ends the job. A loop
   that dies on the first denied path cannot work under least privilege at all.

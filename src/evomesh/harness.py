@@ -115,6 +115,11 @@ class HarnessResult:
     reads: int = 0
     edits: int = 0
     writes: int = 0
+    # Everything the tools produced, and the largest transcript the model was
+    # actually sent. The second is what says whether this job would survive on a
+    # smaller model, and it is otherwise invisible.
+    tool_chars: int = 0
+    prompt_chars: int = 0
 
     @property
     def changed_files(self) -> int:
@@ -126,12 +131,48 @@ class HarnessResult:
         # worth seeing: a job that changed three files having read none is the
         # invented-module failure wearing a different hat.
         changes = f", {self.reads} read/{self.changed_files} changed" if self.changed_files else ""
+        cost = f", {self.prompt_chars} prompt chars" if self.prompt_chars else ""
         return (
             f"{self.steps} step{'s' if self.steps != 1 else ''}, "
             f"{self.seconds:.1f} s, {self.tool_calls} tool call"
-            f"{'s' if self.tool_calls != 1 else ''}{changes}, "
+            f"{'s' if self.tool_calls != 1 else ''}{changes}{cost}, "
             f"{self.used_tool_protocol}{where}"
         )
+
+
+def compact(messages: list[ChatMessage], limit: int) -> tuple[list[ChatMessage], int]:
+    """Drop the oldest tool results until the transcript fits, and say so.
+
+    Rule 3 applied to the loop rather than to one tool. The task and every
+    assistant turn survive: a turn is the model's own reasoning about what it is
+    doing and it is small, while a tool result is a file -- large, and something
+    the model can simply read again. What is dropped leaves a marker naming the
+    tool and the size, so the model can tell "I have not read that" from "I read
+    it and it said nothing".
+    """
+    total = sum(len(message.content) for message in messages)
+    if total <= limit:
+        return messages, total
+    kept = list(messages)
+    for index, message in enumerate(kept):
+        if total <= limit:
+            break
+        if index == 0 or message.role != "tool" or message.content.startswith("[dropped"):
+            continue
+        dropped = len(message.content)
+        kept[index] = ChatMessage(
+            role=message.role,
+            content=f"[dropped {dropped} characters of {message.name or 'tool'} output;"
+            " run it again if you still need it]",
+            tool_call_id=message.tool_call_id,
+            name=message.name,
+        )
+        total -= dropped - len(kept[index].content)
+    return kept, total
+
+
+def call_key(call: ToolCall) -> str:
+    return f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"
 
 
 @dataclass
@@ -143,7 +184,12 @@ class HarnessRunner:
     model: str | None = None
     max_steps: int = 24
     max_seconds: float = 300.0
+    # What the model may be sent in one turn. The tools cap their own output;
+    # this caps the pile of it, which is the part that grows without asking.
+    transcript_chars: int = 12000
     system: str = SYSTEM
+    tool_chars: int = 0
+    prompt_chars: int = 0
 
     async def run(self, task: str) -> HarnessResult:
         started = time.monotonic()
@@ -151,6 +197,11 @@ class HarnessRunner:
         native = True
         calls_made = 0
         corrected = False
+        last_call = ""
+        repeats = 0
+        seen: dict[str, str] = {}
+        self.tool_chars = 0
+        self.prompt_chars = 0
         self.session.record("job", task=task, root=str(self.context.root))
 
         for step in range(1, self.max_steps + 1):
@@ -160,6 +211,8 @@ class HarnessRunner:
                     "capped", started, step - 1, calls_made, native,
                     detail=f"the {self.max_seconds:.0f}s wall clock ran out",
                 )
+            messages, size = compact(messages, self.transcript_chars)
+            self.prompt_chars = max(self.prompt_chars, size)
             try:
                 turn, native = await self._ask(messages, native)
             except ModelUnavailableError as exc:
@@ -201,7 +254,27 @@ class HarnessRunner:
                 ChatMessage(role="assistant", content=turn.text, tool_calls=turn.tool_calls)
             )
             for call in turn.tool_calls:
-                result = await self._invoke(call)
+                key = call_key(call)
+                if key == last_call:
+                    repeats += 1
+                    if repeats >= 2:
+                        return self._end(
+                            "capped", started, step, calls_made, native,
+                            detail=f"the same {call.name} call three times in a row",
+                        )
+                    # Answered from the first result rather than run again: it
+                    # would produce the same bytes and cost a step.
+                    result = (
+                        f"{seen[key]}\n[this is the same {call.name} call as last "
+                        "time, and the same answer. Do something else.]"
+                    )
+                    self.session.record("repeat", name=call.name, args=call.arguments)
+                else:
+                    repeats = 0
+                    result = await self._invoke(call)
+                    seen[key] = result
+                    self.tool_chars += len(result)
+                last_call = key
                 calls_made += 1
                 messages.append(
                     ChatMessage(
@@ -303,6 +376,8 @@ class HarnessRunner:
             detail=detail,
             session_path=self.session.path,
             used_tool_protocol="native tools" if native else "text protocol",
+            tool_chars=self.tool_chars,
+            prompt_chars=self.prompt_chars,
             reads=tally.reads,
             edits=tally.edits,
             writes=tally.writes,
@@ -411,6 +486,7 @@ def build_runner(
     model: str | None = None,
     max_steps: int = 24,
     max_seconds: float = 300.0,
+    transcript_chars: int = 12000,
     read_only: bool = True,
     allow_write: bool = False,
 ) -> HarnessRunner:
@@ -437,5 +513,6 @@ def build_runner(
         model=model,
         max_steps=max_steps,
         max_seconds=max_seconds,
+        transcript_chars=transcript_chars,
         system=SYSTEM if read_only else WRITE_SYSTEM,
     )

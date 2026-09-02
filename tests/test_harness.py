@@ -17,7 +17,13 @@ from evomesh.agents import system_agent_definitions
 from evomesh.config import HarnessSettings, ProviderSettings, Settings
 from evomesh.contracts import AgentPhase
 from evomesh.environment import Environment
-from evomesh.harness import HarnessResult, HarnessRunner, build_runner, parse_text_call
+from evomesh.harness import (
+    HarnessResult,
+    HarnessRunner,
+    build_runner,
+    compact,
+    parse_text_call,
+)
 from evomesh.harness_queue import (
     HarnessJob,
     HarnessQueue,
@@ -33,7 +39,7 @@ from evomesh.harness_tools import (
     ToolRegistry,
     tool_read,
 )
-from evomesh.models import ChatTurn, MockProvider, ToolCall
+from evomesh.models import ChatMessage, ChatTurn, MockProvider, ToolCall
 
 
 @pytest.fixture
@@ -381,7 +387,11 @@ async def test_a_model_that_never_stops_is_capped_not_failed(project: Path) -> N
     two the same will discard work for the budget's fault.
     """
     provider = MockProvider(
-        turns=[ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})])]
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "src"})]),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+        ]
     )
     runner = build_runner(provider, project, max_steps=3)
 
@@ -390,6 +400,77 @@ async def test_a_model_that_never_stops_is_capped_not_failed(project: Path) -> N
     assert result.outcome == "capped"
     assert result.steps == 3
     assert "3-step budget" in result.detail
+
+
+async def test_the_same_call_three_times_running_ends_the_job(project: Path) -> None:
+    """What gemma:2b did in phase 1: one grep, three times, all of them run.
+
+    The second is answered from the first result rather than executed -- it
+    would produce the same bytes and cost a step -- and the third ends the job
+    as capped, because it stopped making progress rather than going wrong.
+    """
+    provider = MockProvider(
+        turns=[ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})])]
+    )
+    runner = build_runner(provider, project, max_steps=10)
+
+    result = await runner.run("look at the same thing over and over")
+
+    assert result.outcome == "capped"
+    assert "three times in a row" in result.detail
+    assert "repeat" in runner.session.kinds()
+    # Two calls recorded, one of them served from the first answer.
+    assert runner.session.kinds().count("tool") == 1
+
+
+async def test_a_repeat_that_stops_repeating_does_not_end_the_job(project: Path) -> None:
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(text="the note says nothing to see"),
+        ]
+    )
+    runner = build_runner(provider, project, max_steps=10)
+
+    result = await runner.run("look twice, then move on")
+
+    assert result.outcome == "answered"
+    assert result.answer == "the note says nothing to see"
+
+
+def test_compaction_drops_the_oldest_output_and_never_the_task() -> None:
+    """Rule 3 applied to the pile rather than to one tool.
+
+    A turn is the model's own reasoning and it is small; a tool result is a file
+    and can be read again. So results go first, the task never goes at all, and
+    what was dropped leaves a marker rather than a hole.
+    """
+    messages = [
+        ChatMessage(role="user", content="the objective, which must survive"),
+        ChatMessage(role="assistant", content="I will read it"),
+        ChatMessage(role="tool", content="x" * 5000, name="read"),
+        ChatMessage(role="assistant", content="and now the other one"),
+        ChatMessage(role="tool", content="y" * 5000, name="read"),
+    ]
+
+    kept, size = compact(messages, 6000)
+
+    assert kept[0].content == "the objective, which must survive"
+    assert [message.role for message in kept] == [message.role for message in messages]
+    assert kept[2].content.startswith("[dropped 5000 characters of read output")
+    assert kept[4].content == "y" * 5000, "the newest result is the one it still needs"
+    assert size <= 6000
+
+
+def test_compaction_leaves_a_transcript_that_already_fits_alone() -> None:
+    messages = [ChatMessage(role="user", content="short")]
+
+    kept, size = compact(messages, 100)
+
+    assert kept is messages
+    assert size == 5
 
 
 async def test_the_session_records_the_job_as_it_runs(project: Path, tmp_path: Path) -> None:

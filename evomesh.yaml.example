@@ -60,6 +60,10 @@ evolution:
 #   # that ends and says why.
 #   max_steps: 24
 #   max_seconds: 300
+#   # What the model may be sent in one turn. Over this, the oldest tool results
+#   # are dropped with a marker saying so -- because the alternative is the model
+#   # server dropping the oldest end of the prompt, where the objective lives.
+#   transcript_chars: 12000
 #   # How much of a file may enter the transcript. The tool truncates and says
 #   # what it withheld, so the model can ask for the rest -- rather than the
 #   # model server silently dropping the oldest end of the prompt.
