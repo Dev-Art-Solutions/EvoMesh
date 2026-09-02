@@ -26,7 +26,13 @@ from pathlib import Path
 
 from evomesh.cognition import strip_reasoning
 from evomesh.harness_session import HarnessSession
-from evomesh.harness_tools import ToolContext, ToolLimits, ToolRegistry
+from evomesh.harness_tools import (
+    ALL_TOOLS,
+    READ_ONLY_TOOLS,
+    ToolContext,
+    ToolLimits,
+    ToolRegistry,
+)
 from evomesh.models import (
     ChatMessage,
     ChatTurn,
@@ -44,6 +50,17 @@ SYSTEM = (
     "grep to find where something lives, then read only the part you need. When "
     "you know the answer, state it plainly and name the files it came from. Keep "
     "the answer short."
+)
+
+WRITE_SYSTEM = (
+    "You are a careful engineer working inside a real project, and your changes "
+    "are real. Read a file before you change it -- always. Use edit for a file "
+    "that exists and write only for one that does not.\n"
+    "edit replaces an exact piece of text and REFUSES unless that text appears "
+    "exactly once in the file, so include the surrounding lines that make it "
+    "unique. If it refuses, do not guess: read the file and widen your anchor.\n"
+    "Make the smallest change that does the job, then say what you changed and "
+    "why. Never rewrite a whole file to alter one line."
 )
 
 # The text front end has to teach the protocol as well as the task, because the
@@ -69,6 +86,14 @@ BROKEN_CALL_HINT = (
     "reply with plain text and no JSON at all."
 )
 
+# Observed on llama3.1:8B: told that its anchor was ambiguous, it worked out the
+# fix, wrote the corrected call as prose, and stopped. Text is not executed, and
+# a job that ends holding the answer to its own problem is the worst way to end.
+TEXT_CALL_HINT = (
+    "You wrote a call to {name} as text, and text is not run. Issue it as a real "
+    "tool call. If you are finished instead, answer in plain prose."
+)
+
 
 @dataclass
 class HarnessResult:
@@ -87,13 +112,25 @@ class HarnessResult:
     detail: str = ""
     session_path: Path | None = None
     used_tool_protocol: str = "none"
+    reads: int = 0
+    edits: int = 0
+    writes: int = 0
+
+    @property
+    def changed_files(self) -> int:
+        return self.edits + self.writes
 
     def summary(self) -> str:
         where = f", session: {self.session_path}" if self.session_path else ""
+        # Reads before changes, in that order, because the ratio is the number
+        # worth seeing: a job that changed three files having read none is the
+        # invented-module failure wearing a different hat.
+        changes = f", {self.reads} read/{self.changed_files} changed" if self.changed_files else ""
         return (
             f"{self.steps} step{'s' if self.steps != 1 else ''}, "
             f"{self.seconds:.1f} s, {self.tool_calls} tool call"
-            f"{'s' if self.tool_calls != 1 else ''}, {self.used_tool_protocol}{where}"
+            f"{'s' if self.tool_calls != 1 else ''}{changes}, "
+            f"{self.used_tool_protocol}{where}"
         )
 
 
@@ -141,11 +178,19 @@ class HarnessRunner:
                 # cannot produce the protocol after being shown it will not
                 # produce it on the third telling either, and the step budget is
                 # better spent letting the job end with what it has.
-                if looks_like_broken_call(turn.text) and not corrected:
+                unexecuted = self._unexecuted_call(turn.text) if native else ""
+                if (unexecuted or looks_like_broken_call(turn.text)) and not corrected:
                     corrected = True
                     self.session.record("malformed", text=turn.text[:400])
                     messages.append(ChatMessage(role="assistant", content=turn.text))
-                    messages.append(ChatMessage(role="user", content=BROKEN_CALL_HINT))
+                    messages.append(
+                        ChatMessage(
+                            role="user",
+                            content=TEXT_CALL_HINT.format(name=unexecuted)
+                            if unexecuted
+                            else BROKEN_CALL_HINT,
+                        )
+                    )
                     continue
                 return self._end(
                     "answered", started, step, calls_made, native, answer=turn.text
@@ -217,6 +262,19 @@ class HarnessRunner:
         lines.append("Reply with one tool call as JSON, or with the final answer as text.")
         return "\n\n".join(lines)
 
+    def _unexecuted_call(self, text: str) -> str:
+        """The name of a tool the model described instead of calling.
+
+        Only meaningful on the native front end, where an answer with no tool
+        calls is normally the end of the job. A model that has tools and still
+        writes one out in prose has not finished; it has misused the interface,
+        and one reminder is cheaper than losing the work.
+        """
+        attempted = parse_text_call(text)
+        if attempted.tool_calls and attempted.tool_calls[0].name in self.registry.tools:
+            return attempted.tool_calls[0].name
+        return ""
+
     async def _invoke(self, call: ToolCall) -> str:
         result = await self.registry.invoke(self.context, call.name, call.arguments)
         self.session.record(
@@ -235,6 +293,7 @@ class HarnessRunner:
         answer: str = "",
         detail: str = "",
     ) -> HarnessResult:
+        tally = self.context.tally
         result = HarnessResult(
             outcome=outcome,
             answer=answer,
@@ -244,6 +303,9 @@ class HarnessRunner:
             detail=detail,
             session_path=self.session.path,
             used_tool_protocol="native tools" if native else "text protocol",
+            reads=tally.reads,
+            edits=tally.edits,
+            writes=tally.writes,
         )
         self.session.record(
             "end",
@@ -252,6 +314,9 @@ class HarnessRunner:
             tool_calls=calls,
             seconds=round(result.seconds, 2),
             detail=detail,
+            reads=result.reads,
+            edits=result.edits,
+            writes=result.writes,
         )
         return result
 
@@ -321,7 +386,9 @@ def parse_text_call(raw: str) -> ChatTurn:
         name = payload.get("tool") or payload.get("name")
         if not isinstance(name, str) or not name:
             continue
-        args = payload.get("args") or payload.get("arguments") or {}
+        # Three spellings, because three model families use different ones and
+        # the arguments are the part a refusal cannot recover from.
+        args = payload.get("args") or payload.get("arguments") or payload.get("parameters") or {}
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -344,13 +411,31 @@ def build_runner(
     model: str | None = None,
     max_steps: int = 24,
     max_seconds: float = 300.0,
+    read_only: bool = True,
+    allow_write: bool = False,
 ) -> HarnessRunner:
-    context = ToolContext(root=root.resolve(strict=False), limits=limits or ToolLimits())
+    """Assemble a job. Read-only unless the caller asks for both halves.
+
+    Two arguments rather than one because they answer different questions:
+    ``read_only`` is what this job is for, and ``allow_write`` is whether the
+    configuration permits any job to change a file at all. A writing job on a
+    mesh that forbids writes gets the tools and a refusal that names the
+    setting -- which is a thing the model can report, rather than a capability
+    that silently is not there.
+    """
+    context = ToolContext(
+        root=root.resolve(strict=False),
+        limits=limits or ToolLimits(),
+        allow_write=allow_write,
+        session=session,
+    )
     return HarnessRunner(
         provider=provider,
         context=context,
+        registry=ToolRegistry(READ_ONLY_TOOLS if read_only else ALL_TOOLS),
         session=session or HarnessSession(None),
         model=model,
         max_steps=max_steps,
         max_seconds=max_seconds,
+        system=SYSTEM if read_only else WRITE_SYSTEM,
     )

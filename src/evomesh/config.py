@@ -82,13 +82,17 @@ class EvolutionSettings(BaseModel):
 class HarnessSettings(BaseModel):
     """A model that can look at the project before it answers.
 
-    Off by default, and read-only for now: the tools can read, search and list,
-    and nothing here can change a file. The caps are not tuning knobs -- they
-    are what turns a model that keeps asking for one more file into a job that
-    ends and says why.
+    Off by default. Its tools can read, search and list; with ``allow_write`` on
+    they can also edit and create files, inside the job's root and no further.
+    The caps are not tuning knobs -- they are what turns a model that keeps
+    asking for one more file into a job that ends and says why.
     """
 
     enabled: bool = False
+    # Whether any harness job may change a file. Off by default and separate
+    # from `enabled`, so turning the harness on to ask it questions never
+    # quietly grants it the ability to edit the checkout.
+    allow_write: bool = False
     # Steps, not tool calls: one step is one model turn, which may ask for
     # several tools at once.
     max_steps: int = 24

@@ -2,6 +2,39 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.1.0-alpha.3] - 2026-09-02
+
+### Added
+
+- The harness can change files. Two tools, both confined to the job root and both
+  behind `harness.allow_write` (default **false**), which is deliberately separate
+  from `harness.enabled`: turning the harness on to ask it questions should never
+  quietly grant it the ability to edit your checkout.
+  - **`edit` replaces an exact piece of text and refuses when that text is not
+    unique.** The refusal is the reason the tool exists. A replacement that
+    silently takes the first of three matches produces a change that passes ruff,
+    pyright and pytest and does the wrong thing — worse than the whole-file
+    rewrite it replaces, because that one fails loudly.
+  - The refusal carries the match count **and the lines around each match**, so
+    the model can widen its anchor without reading the file again. A stale anchor
+    that matches nothing is refused too, and says the file may have changed.
+  - `write` writes a whole file and refuses to replace an existing one unless
+    `overwrite` is passed. Creating and replacing are different intentions, not
+    the same call with different luck.
+  - Every change is written into the session as a unified diff **before** the file
+    is touched, so a process killed mid-write leaves a record of what it was about
+    to do rather than a changed file and no explanation.
+  - The result counts reads against changes. A job that changed three files having
+    read none is the invented-module failure in a new hat, and the number is what a
+    later phase will weigh before validating a generation.
+  - `/harness do "<objective>" [path]` in the console, printing each diff as it
+    lands. `/harness ask` is unchanged and is not even given the write tools.
+- A tool call the model writes as prose is no longer mistaken for its final
+  answer. On the native front end an answer with no tool calls normally ends the
+  job; a model that has tools and still describes one in text is now reminded
+  once, because a job that ends holding the answer to its own problem is the worst
+  way to end. Observed on llama3.1:8B.
+
 ## [0.1.0-alpha.2] - 2026-09-02
 
 ### Added

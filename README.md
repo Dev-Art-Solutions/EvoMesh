@@ -231,7 +231,7 @@ Direct and broadcast messages use per-agent asynchronous mailboxes, correlation/
 
 Everywhere else in EvoMesh a model is asked one question and whatever comes back is the answer. The harness is the other shape: it hands the model tools, runs what it asks for, gives it the results, and asks again — until it answers without calling a tool, or a cap ends the job.
 
-Today it can only look. Three tools — `read` (with line numbers and a window), `grep`, `ls` — all confined to the project root, and nothing that can change a file. Turn it on with `harness.enabled: true`:
+Three tools let it look — `read` (with line numbers and a window), `grep`, `ls` — and two let it act: `edit` and `write`. All five are confined to the job's root. Turn the harness on with `harness.enabled: true`; changing files additionally needs `harness.allow_write: true`, because turning it on to ask questions should never quietly grant it the ability to edit your checkout.
 
 ```text
 evomesh> /harness ask "which module decides when an agent reconsiders?"
@@ -240,6 +240,20 @@ evomesh> /harness ask "which module decides when an agent reconsiders?"
 bdi.py:reconsider() decides, and it never calls a model.
   3 steps, 11.2 s, 2 tool calls, native tools, session: .runtime/harness/000001.jsonl
 ```
+
+```text
+evomesh> /harness do "make second() add 2 instead of 1" 
+  read {"path": "src/evomesh/dup.py"}
+  edit src/evomesh/dup.py
+    @@ -10,4 +10,4 @@
+     def second() -> int:
+         total = 0
+    -    total += 1
+    +    total += 2
+  3 steps, 18.1 s, 2 tool calls, 1 read/1 changed, native tools
+```
+
+**`edit` refuses a target that is not unique.** If the text you asked to replace appears three times, the tool says so, shows the lines around each match, and changes nothing. That refusal is the reason the tool exists: a replacement that silently takes the first of three matches produces a change that passes every check and does the wrong thing, which is worse than the whole-file rewrite it replaces — that one at least fails loudly. `write` refuses to replace an existing file unless you pass `overwrite`, so creating and replacing stay different intentions.
 
 **Models that cannot call tools still get to use them.** Most models that fit on a small card have no tool calling in their chat template, so the harness falls back to a one-line JSON protocol in plain text and drives the same tools through it. A harness that only worked on tool-calling models would not work on the hardware this project is built for.
 

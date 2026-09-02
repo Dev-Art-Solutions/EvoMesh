@@ -15,6 +15,7 @@ import pytest
 from evomesh.harness import HarnessRunner, build_runner, parse_text_call
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
+    ALL_TOOLS,
     ToolContext,
     ToolLimits,
     ToolRegistry,
@@ -93,6 +94,137 @@ async def test_a_bad_regular_expression_comes_back_as_a_refusal(project: Path) -
     )
 
     assert result.startswith("DENIED:")
+
+
+# -- edit and write ------------------------------------------------------
+
+
+def writable(root: Path, session: HarnessSession | None = None) -> ToolContext:
+    return ToolContext(root=root, allow_write=True, session=session)
+
+
+async def test_a_unique_target_is_replaced(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {"path": "src/answer.py", "old": "return True", "new": "return False"},
+    )
+
+    assert "edited" in result
+    assert "return False" in (project / "src" / "answer.py").read_text(encoding="utf-8")
+
+
+async def test_two_matches_are_refused_with_the_count_and_the_lines(project: Path) -> None:
+    """The refusal is the tool's reason for existing.
+
+    Taking the first of three matches produces a candidate that passes every
+    check and does the wrong thing, which is worse than the whole-file rewrite
+    it replaces -- that one at least fails loudly.
+    """
+    path = project / "src" / "twice.py"
+    path.write_text("x = 1\ny = 2\nx = 1\n", encoding="utf-8")
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "edit", {"path": "src/twice.py", "old": "x = 1", "new": "x = 9"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert "2 matches" in result
+    # The refusal carries the neighbourhoods, so widening needs no second read.
+    assert "match at line 1" in result and "match at line 3" in result
+    assert "    1> x = 1" in result
+    assert path.read_text(encoding="utf-8") == "x = 1\ny = 2\nx = 1\n"
+
+
+async def test_a_stale_anchor_is_refused_and_says_to_read_again(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {"path": "src/answer.py", "old": "return None", "new": "return False"},
+    )
+
+    assert result.startswith("DENIED:")
+    assert "Read the file again" in result
+
+
+async def test_write_refuses_to_replace_an_existing_file_by_accident(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "write", {"path": "notes.md", "content": "gone"}
+    )
+
+    assert "already exists" in result
+    assert (project / "notes.md").read_text(encoding="utf-8") == "nothing to see\n"
+
+    allowed = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "write",
+        {"path": "notes.md", "content": "replaced\n", "overwrite": True},
+    )
+
+    assert allowed.startswith("replaced")
+    assert (project / "notes.md").read_text(encoding="utf-8") == "replaced\n"
+
+
+async def test_a_write_outside_the_root_never_reaches_the_disk(project: Path) -> None:
+    outside = project.parent / "escaped.py"
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project / "src"), "write", {"path": "../../escaped.py", "content": "x"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert not outside.exists()
+
+
+async def test_a_read_only_job_names_the_setting_that_would_allow_writing(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        ToolContext(root=project),
+        "edit",
+        {"path": "src/answer.py", "old": "return True", "new": "return False"},
+    )
+
+    assert "harness.allow_write" in result
+    assert "return True" in (project / "src" / "answer.py").read_text(encoding="utf-8")
+
+
+async def test_the_session_carries_the_diff_before_the_file_changes(
+    project: Path, tmp_path: Path
+) -> None:
+    """Recorded first, applied second, and the test proves the order.
+
+    A process killed between the two leaves a record of what it was about to
+    do. The other order leaves a changed file and no explanation.
+    """
+    session = HarnessSession(next_session_path(tmp_path / "harness"))
+    original = (project / "src" / "answer.py").read_text(encoding="utf-8")
+
+    class Watcher(HarnessSession):
+        def record(self, kind: str, **fields: object) -> dict[str, object]:
+            if kind == "edit":
+                # The file must still be untouched at the moment we are told.
+                assert (project / "src" / "answer.py").read_text(encoding="utf-8") == original
+            return super().record(kind, **fields)
+
+    watcher = Watcher(session.path)
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project, watcher),
+        "edit",
+        {"path": "src/answer.py", "old": "return True", "new": "return False"},
+    )
+
+    assert "edited" in result
+    assert watcher.kinds() == ["edit"]
+    assert "-    return True" in watcher.entries[0]["diff"]
+
+
+async def test_an_edit_that_changes_nothing_is_refused(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {"path": "src/answer.py", "old": "return True", "new": "return True"},
+    )
+
+    assert "identical" in result
 
 
 # -- the loop ------------------------------------------------------------
@@ -191,6 +323,45 @@ async def test_the_protocol_is_never_explained_twice_in_a_row(project: Path) -> 
     assert runner.session.kinds().count("malformed") == 1
 
 
+async def test_a_tool_call_written_as_prose_is_not_mistaken_for_an_answer(
+    project: Path,
+) -> None:
+    """What llama3.1:8B did when told its edit anchor was ambiguous.
+
+    It worked out the fix, wrote the corrected call in prose, and stopped. On
+    the native front end an answer with no tool calls normally ends the job, so
+    without this the run ends holding the solution to its own problem.
+    """
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                text='Here is the updated command:\n{"name": "ls", "parameters": {"path": "."}}'
+            ),
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(text="src and notes.md"),
+        ]
+    )
+    runner = build_runner(provider, project)
+
+    result = await runner.run("look around")
+
+    assert result.tool_calls == 1
+    assert "malformed" in runner.session.kinds()
+    assert result.answer == "src and notes.md"
+
+
+async def test_prose_that_names_no_real_tool_is_just_an_answer(project: Path) -> None:
+    provider = MockProvider(
+        turns=[ChatTurn(text='The config is {"tool": "screwdriver", "args": {}} shaped.')]
+    )
+    runner = build_runner(provider, project)
+
+    result = await runner.run("what shape is it?")
+
+    assert result.outcome == "answered"
+    assert "malformed" not in runner.session.kinds()
+
+
 async def test_a_model_that_never_stops_is_capped_not_failed(project: Path) -> None:
     """Capped is its own outcome for the reason a blocked validation is.
 
@@ -286,6 +457,79 @@ def test_arguments_sent_as_a_json_string_are_still_understood() -> None:
     turn = parse_text_call('{"tool": "grep", "arguments": "{\\"pattern\\": \\"x\\"}"}')
 
     assert turn.tool_calls[0].arguments == {"pattern": "x"}
+
+
+async def test_a_refused_edit_does_not_end_the_job_and_the_model_widens_its_anchor(
+    project: Path,
+) -> None:
+    """The whole point of refusing: the model gets a message it can act on."""
+    (project / "src" / "twice.py").write_text("x = 1\ny = 2\nx = 1\n", encoding="utf-8")
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={"path": "src/twice.py", "old": "x = 1", "new": "x = 9"},
+                    )
+                ]
+            ),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/twice.py",
+                            "old": "y = 2\nx = 1",
+                            "new": "y = 2\nx = 9",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="Changed the second assignment only."),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True)
+
+    result = await runner.run("change the second x")
+
+    assert result.outcome == "answered"
+    assert result.edits == 1
+    assert (project / "src" / "twice.py").read_text(encoding="utf-8") == "x = 1\ny = 2\nx = 9\n"
+
+
+async def test_the_result_counts_reads_against_changes(project: Path) -> None:
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "src/answer.py"})]),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "return True",
+                            "new": "return False",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="done"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True)
+
+    result = await runner.run("flip it")
+
+    assert (result.reads, result.edits, result.writes) == (1, 1, 0)
+    assert "1 read/1 changed" in result.summary()
+
+
+def test_a_read_only_runner_is_not_even_given_the_write_tools(project: Path) -> None:
+    runner = build_runner(MockProvider(responses=["done"]), project)
+
+    assert "edit" not in runner.registry.tools
+    assert "write" not in runner.registry.tools
 
 
 def test_a_runner_is_constructible_without_the_helper(project: Path) -> None:

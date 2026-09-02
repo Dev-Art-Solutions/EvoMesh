@@ -4,6 +4,7 @@ import asyncio
 import json
 import shlex
 import threading
+from pathlib import Path
 
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
@@ -39,12 +40,23 @@ HELP = """Commands:
   /evolution promote|discard [n]
   /evolution rollback           Return to the last known good generation
   /harness ask "<question>"     Let the model read the project before answering
+  /harness do "<objective>" [path]  Let it change files, if harness.allow_write
   /telegram status              Whether the bot is connected, and who may use it
   /telegram test                Ask Telegram whether the configured token works
   /telegram allow|revoke <id>   Manage which chats may talk to the mesh
   /restart                      Restart the mesh into the code now in the tree
   /exit                         Stop EvoMesh
 """
+
+
+def _directory(raw: str) -> Path | None:
+    """The job root a human typed, or None if it is not a directory.
+
+    Sync on purpose: touching the filesystem from inside the async command
+    handler is what ASYNC240 objects to, and the check is one stat call.
+    """
+    path = Path(raw).expanduser()
+    return path if path.is_dir() else None
 
 
 class ConsoleChannel:
@@ -332,15 +344,30 @@ class ConsoleChannel:
                 "and restart the mesh."
             )
         action = parts[1].lower() if len(parts) > 1 else ""
-        if action != "ask" or len(parts) < 3:
-            return 'Usage: /harness ask "<question>"'
+        if action not in ("ask", "do") or len(parts) < 3:
+            return 'Usage: /harness ask "<question>"  |  /harness do "<objective>" [path]'
+        if action == "do" and not settings.allow_write:
+            return (
+                "The harness may not change files. Set harness.allow_write: true "
+                "in evomesh.yaml and restart the mesh."
+            )
         provider_name = self.environment.settings.models.default_provider
         provider = self.environment.providers.get(provider_name)
         if provider is None:
             return f"Provider '{provider_name}' is not configured."
+        writing = action == "do"
+        root = self.environment.project_root
+        task = parts[2]
+        if writing and len(parts) > 3:
+            chosen = _directory(parts[3])
+            if chosen is None:
+                return f"{parts[3]} is not a directory."
+            root = chosen
+        elif not writing:
+            task = " ".join(parts[2:])
         runner = build_runner(
             provider,
-            self.environment.project_root,
+            root,
             session=HarnessSession(next_session_path(settings.session_path)),
             limits=ToolLimits(
                 result_chars=settings.tool_result_chars,
@@ -349,15 +376,20 @@ class ConsoleChannel:
             ),
             max_steps=settings.max_steps,
             max_seconds=settings.max_seconds,
+            read_only=not writing,
+            allow_write=writing,
         )
-        result = await runner.run(" ".join(parts[2:]))
+        result = await runner.run(task)
         # Every tool call is printed, not just the answer: the point of the
-        # first harness phase is watching what a small model actually does with
-        # the tools, and a summary line hides exactly that.
+        # harness phases is watching what a small model actually does with the
+        # tools, and a summary line hides exactly that. A change prints its
+        # diff, because that is the part a human has to check.
         trace = "\n".join(
             f"  {entry['name']} {json.dumps(entry['args'], ensure_ascii=False)}"
-            for entry in runner.session.entries
             if entry["kind"] == "tool"
+            else f"  {entry['kind']} {entry['path']}\n{entry['diff']}"
+            for entry in runner.session.entries
+            if entry["kind"] in ("tool", "edit", "write")
         )
         body = (
             result.answer

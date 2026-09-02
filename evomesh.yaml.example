@@ -46,11 +46,15 @@ evolution:
   objective: null
 
 # A model that can look at the project before it answers, instead of being handed
-# one prompt and asked to guess. Off by default, and read-only for now: its tools
-# can read, search and list files, and nothing here can change one.
+# one prompt and asked to guess. Off by default. Its tools read, search and list;
+# with allow_write on they also edit and create, inside the job root and no further.
 #
 # harness:
 #   enabled: false
+#   # Whether any harness job may change a file. Separate from enabled on
+#   # purpose: edit and write are confined to the job root, but the job root
+#   # for a console run is your checkout.
+#   allow_write: false
 #   # One step is one model turn, which may ask for several tools at once. The
 #   # caps are what turn a model that keeps asking for one more file into a job
 #   # that ends and says why.

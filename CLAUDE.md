@@ -183,6 +183,17 @@ reasons it is shaped this way:
 - **A refusal is a tool result, never an exception.** Containment, grants, bad arguments and unknown
   tool names all come back as text the model can act on; only a host failure ends the job. A loop
   that dies on the first denied path cannot work under least privilege at all.
+- **`edit` refuses a target that is not unique, and that refusal is the reason it exists.** A
+  replacement that silently takes the first of three matches produces a candidate that passes ruff,
+  pyright and pytest and does the wrong thing — strictly worse than the whole-file rewrite it
+  replaces, because that one fails loudly. The refusal carries the match count *and the lines around
+  each match*, so widening the anchor costs no second read. Do not add an `occurrence: 2` argument:
+  it lets a model that cannot widen an anchor guess an index instead, and every wrong guess is a
+  silent wrong edit.
+- **Writing is two gates, not one.** `harness.enabled` turns the harness on; `harness.allow_write`
+  decides whether any job may change a file. A read-only job is not given the write tools at all,
+  and a writing job on a mesh that forbids writes gets a refusal *naming the setting* — which the
+  model can report — rather than a capability that silently is not there.
 
 `plans/` is the maintainer's build briefs and is **gitignored in full**, so a fresh clone has none of
 it; a phase cited by number is a pointer into that working copy. The decisions those briefs settle

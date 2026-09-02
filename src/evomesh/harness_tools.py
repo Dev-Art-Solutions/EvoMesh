@@ -13,12 +13,14 @@ cannot work under least privilege at all.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from evomesh.harness_session import HarnessSession
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 
 # Directories no answer about this project ever comes out of, and which a
@@ -55,6 +57,20 @@ class ToolLimits:
 
 
 @dataclass
+class ToolTally:
+    """How the job spent itself.
+
+    Counted because a job that wrote four files having read none is the harness
+    equivalent of the invented-module failure ``codebase.py`` exists to stop, and
+    the number is what a later phase will weigh before validating a generation.
+    """
+
+    reads: int = 0
+    edits: int = 0
+    writes: int = 0
+
+
+@dataclass
 class ToolContext:
     root: Path
     limits: ToolLimits = field(default_factory=ToolLimits)
@@ -62,6 +78,12 @@ class ToolContext:
     # human at the console, who already has the filesystem this process has.
     policy: FilesystemPolicy | None = None
     agent_id: str = ""
+    # Two separate gates on purpose. A read-only job simply has no write tools
+    # registered; this flag is the configuration saying no even when they are,
+    # so a refusal can name the setting a human has to change.
+    allow_write: bool = False
+    session: HarnessSession | None = None
+    tally: ToolTally = field(default_factory=ToolTally)
 
 
 @dataclass
@@ -148,6 +170,7 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied(f"DENIED: {target} is a directory, use ls")
     if not target.is_file():
         raise ToolDenied(f"DENIED: {target} does not exist")
+    context.tally.reads += 1
     offset = max(1, int(args.get("offset", 1) or 1))
     limit = int(args.get("limit", 0) or 0)
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -170,6 +193,7 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied(f"DENIED: {pattern} is not a valid regular expression: {exc}") from exc
     target = _resolve(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
+    context.tally.reads += 1
     glob = str(args.get("glob", "*.py") or "*.py")
     files = [target] if target.is_file() else sorted(target.rglob(glob))
     matches: list[str] = []
@@ -203,6 +227,7 @@ async def tool_ls(context: ToolContext, args: dict[str, Any]) -> str:
     await _permit(context, target, "read")
     if not target.exists():
         raise ToolDenied(f"DENIED: {target} does not exist")
+    context.tally.reads += 1
     if target.is_file():
         return f"{target.name} ({target.stat().st_size} bytes)"
     entries: list[str] = []
@@ -211,6 +236,148 @@ async def tool_ls(context: ToolContext, args: dict[str, Any]) -> str:
             continue
         entries.append(f"{path.name}/" if path.is_dir() else f"{path.name}")
     return "\n".join(entries) if entries else f"{target} is empty"
+
+
+def _diff(context: ToolContext, target: Path, before: str, after: str) -> str:
+    where = "/".join(_inside(context.root, target))
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{where}",
+            tofile=f"b/{where}",
+            n=2,
+        )
+    ).rstrip()
+
+
+def _announce(context: ToolContext, target: Path, before: str, after: str, kind: str) -> str:
+    """Write the intention to the session, then let the caller apply it.
+
+    This order is the point. A process killed between the two leaves a record
+    saying what it was about to do; the other order leaves a changed file and no
+    explanation, which is the state that costs an hour to reconstruct.
+    """
+    diff = _diff(context, target, before, after)
+    if context.session is not None:
+        context.session.record(
+            kind,
+            path="/".join(_inside(context.root, target)),
+            diff=diff,
+            bytes_before=len(before),
+            bytes_after=len(after),
+        )
+    return diff
+
+
+def _writable(context: ToolContext) -> None:
+    if not context.allow_write:
+        raise ToolDenied(
+            "DENIED: this job may not change files. Set harness.allow_write: true "
+            "in evomesh.yaml to allow it."
+        )
+
+
+def _match_lines(content: str, needle: str) -> list[int]:
+    lines: list[int] = []
+    start = content.find(needle)
+    while start >= 0:
+        lines.append(content.count("\n", 0, start) + 1)
+        start = content.find(needle, start + 1)
+    return lines
+
+
+def _neighbourhoods(content: str, at: list[int], *, context_lines: int = 2) -> str:
+    """Each match with the lines around it, so the anchor can be widened here."""
+    lines = content.splitlines()
+    blocks: list[str] = []
+    for number in at[:4]:
+        start = max(1, number - context_lines)
+        end = min(len(lines), number + context_lines)
+        body = "\n".join(
+            f"{index:>5}{'>' if index == number else ' '} {lines[index - 1]}"
+            for index in range(start, end + 1)
+        )
+        blocks.append(f"-- match at line {number}\n{body}")
+    if len(at) > 4:
+        blocks.append(f"-- and {len(at) - 4} more")
+    return "\n".join(blocks)
+
+
+async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
+    """Replace an exact string, and refuse when it is not unique.
+
+    The refusal is the tool's reason for existing. A replacement that silently
+    takes the first of three matches produces a candidate that passes ruff,
+    pyright and pytest and does the wrong thing -- strictly worse than the
+    whole-file rewrite it replaces, because that one fails loudly.
+    """
+    _writable(context)
+    target = _resolve(context, str(args.get("path", "")))
+    await _permit(context, target, "write")
+    old = str(args.get("old") or args.get("old_string") or "")
+    new = str(args.get("new") or args.get("new_string") or "")
+    if not old:
+        raise ToolDenied("DENIED: edit needs 'old', the exact text to replace")
+    if not target.is_file():
+        raise ToolDenied(f"DENIED: {target} does not exist. Use write to create a file.")
+    if old == new:
+        raise ToolDenied("DENIED: 'old' and 'new' are identical, so this edit changes nothing")
+    content = target.read_text(encoding="utf-8")
+    found = _match_lines(content, old)
+    where = "/".join(_inside(context.root, target))
+    if not found:
+        raise ToolDenied(
+            f"DENIED: that text is not in {where}. Read the file again -- it may have "
+            "changed since you last saw it, or the indentation may differ."
+        )
+    if len(found) > 1:
+        # The refusal carries the surrounding lines, not just the count. A model
+        # told only "3 matches" has to go and read the file again to widen its
+        # anchor; one shown the three neighbourhoods can widen it immediately,
+        # which is the difference between a refusal that costs a step and one
+        # that costs a job. Observed on llama3.1:8B, which understood "add more
+        # surrounding lines" and then narrated its intention instead of reading.
+        raise ToolDenied(
+            f"DENIED: {len(found)} matches in {where}. Extend 'old' with the lines "
+            f"around the one you mean until it appears exactly once:\n"
+            + _neighbourhoods(content, found)
+        )
+    updated = content.replace(old, new, 1)
+    diff = _announce(context, target, content, updated, kind="edit")
+    target.write_text(updated, encoding="utf-8")
+    context.tally.edits += 1
+    return f"edited {where}\n{diff}" if diff else f"edited {where}"
+
+
+async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
+    """Write a whole file, refusing to overwrite one that is already there.
+
+    Creating and replacing are different intentions, so they are different
+    calls rather than the same call with different luck.
+    """
+    _writable(context)
+    target = _resolve(context, str(args.get("path", "")))
+    await _permit(context, target, "write")
+    content = str(args.get("content") or "")
+    overwrite = bool(args.get("overwrite"))
+    where = "/".join(_inside(context.root, target))
+    before = ""
+    if target.exists():
+        if target.is_dir():
+            raise ToolDenied(f"DENIED: {where} is a directory")
+        if not overwrite:
+            raise ToolDenied(
+                f"DENIED: {where} already exists. Use edit to change part of it, or "
+                'pass "overwrite": true to replace the whole file.'
+            )
+        before = target.read_text(encoding="utf-8")
+    diff = _announce(context, target, before, content, kind="write")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    context.tally.writes += 1
+    verb = "replaced" if before else "created"
+    return f"{verb} {where} ({len(content)} bytes)\n{diff}" if diff else f"{verb} {where}"
 
 
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
@@ -260,6 +427,51 @@ READ_ONLY_TOOLS: tuple[Tool, ...] = (
         run=tool_ls,
     ),
 )
+
+WRITE_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="edit",
+        description=(
+            "Replace an exact piece of text in a file. Fails unless 'old' appears "
+            "exactly once, so include enough surrounding lines to be unambiguous."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path relative to the job root."},
+                "old": {
+                    "type": "string",
+                    "description": "The exact text to replace, unique within the file.",
+                },
+                "new": {"type": "string", "description": "What to put in its place."},
+            },
+            "required": ["path", "old", "new"],
+        },
+        run=tool_edit,
+    ),
+    Tool(
+        name="write",
+        description=(
+            "Write a whole file. Refuses to replace an existing file unless "
+            "overwrite is true; prefer edit for a file that already exists."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path relative to the job root."},
+                "content": {"type": "string", "description": "The complete file."},
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Replace the file if it already exists.",
+                },
+            },
+            "required": ["path", "content"],
+        },
+        run=tool_write,
+    ),
+)
+
+ALL_TOOLS: tuple[Tool, ...] = READ_ONLY_TOOLS + WRITE_TOOLS
 
 
 class ToolRegistry:
