@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -1306,3 +1307,52 @@ async def test_a_discarded_generation_never_touches_the_tree(tmp_path: Path) -> 
     metadata = evolver.workspace.supervisor.metadata()
     assert metadata["active"] == 1
     assert not metadata.get("restart_required")
+
+
+async def test_every_pipeline_stage_leaves_a_line_in_the_log(
+    tmp_path: Path, project: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A pipeline that is not moving has to say so somewhere a human will look.
+
+    The stage lived only in the database and nothing was written down when it
+    changed, so a mesh that produced no generation for nine hours looked
+    exactly like one that was busy -- and when the database was wiped, the only
+    record of where the pipeline had got to went with it.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": FakeHarness([MUTATION])},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    with caplog.at_level(logging.INFO, logger="evomesh.behaviors"):
+        for _ in range(5):
+            await behavior.cycle(context)
+
+    lines = [record.getMessage() for record in caplog.records]
+    moves = [line.split(":")[0] for line in lines if line.startswith("Evolution stage ")]
+    assert moves == [
+        "Evolution stage plan -> propose",
+        "Evolution stage propose -> validate",
+        "Evolution stage validate -> report",
+        "Evolution stage report -> await-human",
+    ]
+    # The stall is the thing worth seeing, so the parked cycle is logged too.
+    assert any(line.startswith("Evolution is holding") for line in lines)

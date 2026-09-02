@@ -15,6 +15,7 @@ agent reconsider on its own rather than being told to.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -37,6 +38,8 @@ from evomesh.evolution import (
 )
 from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_KEY = "provider.ready"
 DEGRADED_KEY = "mesh.degraded"
@@ -379,10 +382,12 @@ class EvolverBehavior(BDIBehavior):
         state = await evolver.pipeline_state()
         stage = str(state.get("stage", STAGE_PLAN))
         if stage == STAGE_AWAIT_HUMAN:
-            return StepResult.waiting(
+            holding = StepResult.waiting(
                 f"generation {state.get('generation')} is waiting for a human to "
                 f"promote or discard it ({self._verdict(state)})"
             )
+            logger.info("Evolution is holding: %s", holding.summary)
+            return holding
         # The persisted stage is the single source of truth, so the plan cursor
         # is pinned to it and the checklist can never disagree with reality.
         stages = self._stages()
@@ -391,19 +396,38 @@ class EvolverBehavior(BDIBehavior):
         goal = context.goal
         objective = str(state.get("objective") or (goal.description if goal else ""))
         try:
-            if stage == STAGE_PLAN:
-                return await self._open(evolver, objective)
-            if stage == STAGE_PROPOSE:
-                return await self._propose(context, evolver, state)
-            if stage == STAGE_VALIDATE:
-                return await self._validate(evolver, state)
-            if stage == STAGE_REPAIR:
-                return await self._repair(context, evolver, state)
-            if stage == STAGE_REPORT:
-                return await self._report(evolver, state)
+            result = await self._run_stage(context, evolver, state, stage, objective)
         except (RuntimeError, ValueError, OSError) as exc:
             await evolver.set_pipeline_state({**state, "stage": STAGE_PLAN, "error": str(exc)})
+            logger.warning("Evolution stage %s failed, back to plan: %s", stage, exc)
             return StepResult(summary=f"stage '{stage}' failed: {exc}", failed=True)
+        # One line per stage the pipeline runs. Until this existed the pipeline
+        # was silent: the stage lived only in the database, nothing was written
+        # down when it moved, and a mesh that produced no generation for nine
+        # hours looked exactly like one that was busy. A stage that does not
+        # move is the thing worth seeing, so it is logged too.
+        moved = str((await evolver.pipeline_state()).get("stage", STAGE_PLAN))
+        logger.info("Evolution stage %s -> %s: %s", stage, moved, result.summary)
+        return result
+
+    async def _run_stage(
+        self,
+        context: CycleContext,
+        evolver: EnvironmentEvolver,
+        state: dict[str, Any],
+        stage: str,
+        objective: str,
+    ) -> StepResult:
+        if stage == STAGE_PLAN:
+            return await self._open(evolver, objective)
+        if stage == STAGE_PROPOSE:
+            return await self._propose(context, evolver, state)
+        if stage == STAGE_VALIDATE:
+            return await self._validate(evolver, state)
+        if stage == STAGE_REPAIR:
+            return await self._repair(context, evolver, state)
+        if stage == STAGE_REPORT:
+            return await self._report(evolver, state)
         return StepResult.blocked(f"unknown evolution stage '{stage}'")
 
     async def _open(self, evolver: EnvironmentEvolver, objective: str) -> StepResult:
