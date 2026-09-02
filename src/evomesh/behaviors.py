@@ -546,7 +546,18 @@ class EvolverBehavior(BDIBehavior):
         # A repair that leaves the failure byte-identical has not moved, and the
         # attempts left would go the same way. Stop and let the human see it.
         stalled = bool(digest) and digest == state.get("failure_digest")
-        exhausted = repairs >= self.max_repairs
+        # The budget bounds *model* repairs, because a model repair costs a
+        # generation's time and can make things worse. Ruff's own fixer costs
+        # nothing and cannot, so it is never refused for being over budget.
+        #
+        # Found the first time the whole loop ran: the model diagnosed the real
+        # failure and fixed it, ruff then objected to the import order it had
+        # produced, and the candidate went to a human over a finding the linter
+        # would have fixed for free.
+        # `max_repairs: 0` still means off. A human who turned self-repair off
+        # asked for one shot and a verdict, not for a cheaper kind of repair.
+        free = bool(self.max_repairs) and evolver.repairer.can_repair(result.failure())
+        exhausted = repairs >= self.max_repairs and not free
         blocker = result.environment_blocker()
         repairing = not result.passed and not blocker and not stalled and not exhausted
         await evolver.set_pipeline_state(
@@ -630,14 +641,19 @@ class EvolverBehavior(BDIBehavior):
                 status="repaired",
                 on_done=lambda changed: (STAGE_VALIDATE, {"repairs": attempt}),
             )
-        moved = {**state, "stage": STAGE_VALIDATE, "repairs": attempt}
+        # The linter's own fixer does not spend the budget. The budget exists to
+        # bound how often a *model* is allowed to rewrite the candidate; a
+        # mechanical fix costs nothing and cannot make the candidate worse, and
+        # a repair that leaves the failure byte-identical is already caught by
+        # the stall check rather than by the counter.
+        moved = {**state, "stage": STAGE_VALIDATE}
         outcome = await evolver.autofix(generation)
         how = f"ruff --fix: {excerpt(str(outcome.get('output', '')), 120)}"
         await evolver.set_pipeline_state(moved)
         return StepResult(
             summary=(
-                f"repair {attempt} of {self.max_repairs} for generation "
-                f"{generation.number} after `{failure.get('command')}` failed -- {how}"
+                f"free repair for generation {generation.number} after "
+                f"`{failure.get('command')}` failed -- {how}"
             ),
             fact=(
                 f"generation {generation.number} repaired itself after "

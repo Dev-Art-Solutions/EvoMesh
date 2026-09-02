@@ -30,6 +30,21 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **The linter's own fixer no longer spends the repair budget.** The budget
+  exists to bound how often a *model* may rewrite a candidate; ruff's `--fix`
+  costs nothing and cannot make the candidate worse, and a fix that changes
+  nothing is already caught by the stall check rather than by a counter.
+  Found the first time the whole loop ran: the model diagnosed the real failure
+  and fixed it, ruff then objected to the import order it had produced, and the
+  candidate went to a human over a finding the linter would have fixed for free.
+  `max_repairs: 0` still means off, because a human who turned self-repair off
+  asked for one shot and a verdict, not for a cheaper kind of repair.
+- **Every candidate was failing validation on our own import.** A test helper
+  was imported as `from tests.test_cycles import ...`, which resolves in the
+  checkout and nowhere else: inside a candidate pytest's rootdir is the
+  candidate and `tests` was not a package. Validation *is* this suite, so the
+  loop was failing candidates for a line we wrote. Shared doubles now live in
+  `tests/fakes.py`.
 - A writing job that is past halfway and has changed nothing is told so, once.
   Found by this release's acceptance run: a 27B model spent all twenty steps and
   thirty-two tool calls reading -- re-reading the same two files at different

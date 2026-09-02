@@ -915,14 +915,21 @@ async def test_a_fixable_lint_failure_is_repaired_without_the_model(
     # The linter fixed it, so no second harness job was ever asked for.
     assert len(harness.objectives) == 1
     assert "ruff --fix" in repaired.summary
+    # And it did not spend the budget: the budget bounds model repairs, and a
+    # mechanical fix costs nothing. Found the first time the loop ran end to
+    # end -- the model fixed the real failure, ruff objected to the import order
+    # it produced, and the candidate went to a human over a free finding.
+    assert "free repair" in repaired.summary
+    assert int((await evolver.pipeline_state()).get("repairs", 0)) == 0
 
     passed = await behavior.cycle(context)
-    assert "passed after 1 repair" in passed.summary
+    assert "validation passed" in passed.summary
     assert (await evolver.pipeline_state())["stage"] == "report"
 
     report = await behavior.cycle(context)
     assert report.phase is AgentPhase.WAITING_HUMAN
-    assert "validation passed after 1 repair attempt" in report.summary
+    # No repair attempt is counted: the linter fixed it for free.
+    assert "validation passed" in report.summary
     # A repaired candidate is promotable, not failed.
     assert evolver.candidate(2).status is not GenerationStatus.FAILED
 
@@ -974,22 +981,30 @@ async def test_a_repair_that_changes_nothing_stops_the_loop(
 
 
 async def test_repairs_are_bounded_by_max_repairs(tmp_path: Path, project: Path) -> None:
-    # A different failure each time, so the stall guard never fires.
+    """The budget bounds *model* repairs.
+
+    A different failure each time so the stall guard never fires, and not a
+    ruff-fixable one: the linter's own fixer is free and deliberately does not
+    spend the budget, which is what the next test covers.
+    """
     validator = ScriptedValidator(
         [
-            failing("uv run ruff check .", RUFF_FIXABLE),
-            failing("uv run ruff check .", RUFF_FIXABLE + "one\n"),
-            failing("uv run ruff check .", RUFF_FIXABLE + "two\n"),
+            failing("uv run pytest", PYTEST_OUTPUT),
+            failing("uv run pytest", PYTEST_OUTPUT + "one\n"),
+            failing("uv run pytest", PYTEST_OUTPUT + "two\n"),
         ]
     )
     repairer = StubRepairer()
-    evolver, context, _ = await evolving(tmp_path, project, [MUTATION], validator, repairer)
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION, REPAIR, REPAIR], validator, repairer
+    )
     behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
 
     for _ in range(7):  # plan, propose, (validate, repair) x 2, validate
         await behavior.cycle(context)
 
-    assert repairer.calls == 2
+    assert repairer.calls == 0, "no ruff-fixable finding here"
+    assert len(harness.objectives) == 3, "one mutation and two model repairs"
     assert (await evolver.pipeline_state())["stage"] == "report"
     report = await behavior.cycle(context)
     assert "validation failed after 2 repair attempts" in report.summary
