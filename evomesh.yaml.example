@@ -42,6 +42,11 @@ evolution:
   # Breathing room before the shutdown, so the cycle that promoted the
   # generation finishes writing its summary to every channel first.
   restart_delay_seconds: 5
+  # A validation run that outruns this is stopped and reported as blocked
+  # rather than failed: the candidate never got a verdict, and a suite this
+  # machine could not finish is not the candidate's fault. The suite runs off
+  # the agent's cycle, so the Evolver keeps answering while it works.
+  validate_seconds: 1800
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 

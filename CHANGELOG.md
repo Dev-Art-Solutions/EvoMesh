@@ -2,6 +2,41 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.6] - 2026-09-02
+
+### Fixed
+
+- **The claim this project has been making since the pipeline was written is now
+  true.** "One stage per cycle means a tick never becomes a ten-minute
+  validation run" -- except that the validate stage awaited the suite inline. An
+  agent's mailbox loop and its cycle loop share one lock, so for the whole of a
+  multi-minute run the Evolver answered no `/chat`, reported no `CURRENT WORK`,
+  and looked exactly like an agent that had hung.
+  - Validation now runs off the cycle in its own lane. The stage starts it,
+    holds, and consumes the verdict on a later tick -- the same shape the propose
+    stage already had since it moved onto the harness.
+  - A separate lane from the harness worker on purpose: a tool loop is the GPU
+    and a validation run is CPU and disk, so making one wait for the other would
+    be a queue whose only effect is to slow the machine down.
+  - `evolution.validate_seconds` (1800) bounds a run. Past it the suite is
+    stopped and reported as **blocked, not failed** -- the candidate never got a
+    verdict, and a suite this machine could not finish is not its fault.
+  - Stopping the mesh cancels the run and resumes nothing: a candidate is a copy
+    on disk, and re-running the suite costs time and nothing else.
+  - The agent's phase stays `acting` and the enum does not grow again. Validating
+    is the agent doing its own work, and `/evolution status` already names the
+    stage; a third phase member would be a second place for the same fact to be
+    wrong.
+
+### Added
+
+- A writing job that is past halfway and has changed nothing is told so, once.
+  Found by this release's acceptance run: a 27B model spent all twenty steps and
+  thirty-two tool calls reading -- re-reading the same two files at different
+  offsets, which the repeat guard cannot see because every call is different --
+  and the job ended having done nothing. A model cannot budget what it cannot
+  see. Said once, because twice is noise.
+
 ## [0.2.0-alpha.5] - 2026-09-02
 
 ### Added

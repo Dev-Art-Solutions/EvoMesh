@@ -69,6 +69,7 @@ class Environment:
             settings.evolution.max_repairs,
             settings.evolution.auto_promote,
             settings.evolution.auto_restart,
+            settings.evolution.validate_seconds,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(
@@ -271,6 +272,7 @@ class Environment:
         # Shutting the mesh down leaves every agent's desired status untouched,
         # so the next boot starts exactly what was running before.
         await self._stop_harness_workers()
+        await self.evolver.cancel_validation()
         for runtime in list(self.runtimes.values()):
             await runtime.stop(persist_status=False)
         self.runtimes.clear()

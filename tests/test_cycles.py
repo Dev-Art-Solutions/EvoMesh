@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,16 @@ from evomesh.evolution import (
     ValidationResult,
 )
 from evomesh.git import GitRepository
-from evomesh.harness import HarnessResult
-from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.models import MockProvider
+
+from .fakes import (
+    FakeHarness,
+    ScriptedValidator,
+    StubRepairer,
+    failing,
+    passing,
+)
 
 PLAN_REPLY = "1. read the index file\n2. summarise what it lists\n"
 CYCLE_REPLY = (
@@ -636,6 +643,100 @@ async def test_an_agent_answers_about_its_work_from_runtime_state(tmp_path: Path
     await environment.stop()
 
 
+async def test_a_cycle_during_validation_returns_at_once(
+    tmp_path: Path, project: Path
+) -> None:
+    """The claim the README had been making and the code had not kept.
+
+    The validate stage awaited the suite inline, and an agent's mailbox and
+    cycle share one lock -- so for the whole of a multi-minute run the Evolver
+    answered nothing and looked exactly like an agent that had hung.
+    """
+    import time
+
+    class SlowValidator:
+        def __init__(self) -> None:
+            self.started = 0
+
+        async def validate(self, generation: Generation) -> ValidationResult:
+            self.started += 1
+            await asyncio.sleep(3)
+            path = generation.path / "validation-result.json"
+            result = ValidationResult(
+                passed=True, commands=[{"command": "uv run pytest", "exit_code": 0}]
+            )
+            path.write_text(result.model_dump_json(), encoding="utf-8")
+            return result
+
+    validator = SlowValidator()
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()  # type: ignore[arg-type]
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)  # plan
+    await behavior.cycle(context)  # propose
+
+    began = time.monotonic()
+    waiting = await behavior.cycle(context)
+    elapsed = time.monotonic() - began
+
+    assert elapsed < 1.0, "the tick must not become the validation run"
+    assert "generation 2" in waiting.summary
+    assert validator.started == 1
+    assert (await evolver.pipeline_state())["stage"] == "validate"
+
+    # A later cycle takes the verdict, and the suite ran exactly once.
+    await asyncio.sleep(3.2)
+    verdict = await behavior.cycle(context)
+    assert "passed" in verdict.summary
+    assert validator.started == 1
+
+
+async def test_a_validation_that_outruns_its_budget_is_blocked_not_failed(
+    tmp_path: Path, project: Path
+) -> None:
+    class Endless:
+        async def validate(self, generation: Generation) -> ValidationResult:
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], Endless(), StubRepairer()  # type: ignore[arg-type]
+    )
+    behavior = EvolverBehavior(auto_validate=True, validate_seconds=0.2)
+
+    await behavior.cycle(context)  # plan
+    await behavior.cycle(context)  # propose
+    await behavior.cycle(context)  # start the suite
+    await asyncio.sleep(0.4)
+    blocked = await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert "blocked by this machine" in blocked.summary
+    assert state["passed"] is None, "a suite the host could not finish is not a verdict"
+    assert state["stage"] == "report"
+
+
+async def test_stopping_the_mesh_cancels_a_validation(tmp_path: Path) -> None:
+    class Endless:
+        async def validate(self, generation: Generation) -> ValidationResult:
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
+    environment.evolver.validator = Endless()  # type: ignore[assignment]
+    await environment.start()
+    generation = await environment.evolver.create_candidate("something slow")
+    run = environment.evolver.begin_validation(generation)
+    await asyncio.sleep(0.05)
+
+    await environment.stop()
+
+    assert run.task.cancelled() or run.task.done()
+    assert environment.evolver.validation is None
+
+
 async def test_a_missing_toolchain_is_blocked_not_failed(tmp_path: Path) -> None:
     """The case string-matching got wrong, and it cost a candidate its verdict.
 
@@ -757,95 +858,6 @@ PYTEST_OUTPUT = "E   assert ACTIVE is True\nE   AssertionError\n1 failed in 0.12
 MUTATION = [("src/app.py", "ACTIVE = False\n")]
 REPAIR = [("src/app.py", "ACTIVE = True\n")]
 NOTHING: list[tuple[str, str]] = []
-
-
-class FakeHarness(HarnessGateway):
-    """A harness whose jobs finish the moment they are asked.
-
-    The pipeline is what these tests are about, not the tool loop, and a
-    synchronous job keeps one stage to one cycle. The behavior falls through
-    when a job it just submitted is already done, so this shortcut exercises the
-    same code path a real worker reaches one cycle later.
-    """
-
-    def __init__(
-        self, batches: list[list[tuple[str, str]]], answer: str = "flip"
-    ) -> None:
-        super().__init__(HarnessQueue(), {})
-        self.batches = batches
-        self.answer = answer
-        self.objectives: list[str] = []
-        self.labels: list[str] = []
-
-    def submit(
-        self, objective: str, *, agent_id: str, root: Path, label: str = ""
-    ) -> HarnessJob:
-        self.objectives.append(objective)
-        self.labels.append(label)
-        job = self.queue.submit(
-            objective, root, agent_id=agent_id, allow_write=True, label=label
-        )
-        batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
-        entries: list[dict[str, object]] = []
-        for path, content in batch:
-            target = root / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            entries.append({"kind": "edit", "path": path, "diff": f"+{content.strip()}"})
-        self.sessions[job.number] = entries
-        self.queue.finish(
-            job,
-            HarnessResult(
-                outcome="answered", answer=self.answer, steps=3, edits=len(entries)
-            ),
-        )
-        return job
-
-
-def failing(command: str, output: str) -> ValidationResult:
-    return ValidationResult(
-        passed=False,
-        commands=[
-            {"command": "uv sync", "exit_code": 0, "output": ""},
-            {"command": command, "exit_code": 1, "output": output},
-        ],
-    )
-
-
-def passing() -> ValidationResult:
-    return ValidationResult(
-        passed=True, commands=[{"command": "uv run pytest", "exit_code": 0, "output": "ok"}]
-    )
-
-
-class ScriptedValidator:
-    """Writes a real validation-result.json: the repair stage reads it back."""
-
-    def __init__(self, results: list[ValidationResult]) -> None:
-        self.results = results
-        self.calls = 0
-
-    async def validate(self, generation: Generation) -> ValidationResult:
-        result = self.results[min(self.calls, len(self.results) - 1)]
-        self.calls += 1
-        path = generation.path / "validation-result.json"
-        path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
-        return result
-
-
-class StubRepairer(CandidateRepairer):
-    """The real predicate, a stubbed subprocess."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def autofix(self, generation: Generation) -> dict[str, object]:
-        self.calls += 1
-        return {
-            "command": " ".join(self.AUTOFIX),
-            "exit_code": 0,
-            "output": "Found 1 error (1 fixed, 0 remaining).\n",
-        }
 
 
 async def evolving(

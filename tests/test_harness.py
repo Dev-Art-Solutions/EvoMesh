@@ -443,6 +443,67 @@ async def test_a_repeat_that_stops_repeating_does_not_end_the_job(project: Path)
     assert result.answer == "the note says nothing to see"
 
 
+async def test_a_writing_job_is_told_once_that_it_has_changed_nothing(
+    project: Path,
+) -> None:
+    """A 27B model spent all 20 steps reading and never edited anything.
+
+    The repeat guard could not see it: it re-read the same two files at
+    different offsets, which is a different call every time. A model cannot
+    budget what it cannot see, so past halfway it is told where it stands --
+    once, because twice is noise.
+    """
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(name="read", arguments={"path": "notes.md", "offset": 1})
+                ]
+            ),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(name="read", arguments={"path": "notes.md", "offset": 2})
+                ]
+            ),
+            ChatTurn(text="I looked at everything."),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=4)
+
+    await runner.run("change something")
+
+    assert runner.session.kinds().count("budget") == 1
+    sent = provider.chats[-1]
+    assert any("have not changed a file yet" in message.content for message in sent)
+
+
+async def test_a_job_that_is_already_editing_is_not_nagged(project: Path) -> None:
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "return True",
+                            "new": "return False",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(text="done"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=4)
+
+    await runner.run("change something")
+
+    assert "budget" not in runner.session.kinds()
+
+
 def test_compaction_drops_the_oldest_output_and_never_the_task() -> None:
     """Rule 3 applied to the pile rather than to one tool.
 

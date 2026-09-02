@@ -103,8 +103,16 @@ regresses.
    A generic agent gets **one** planning call per goal, not per cycle. If the model is down or
    returns something that is not a plan, the agent commits to a single-step plan and carries on.
 7. **One cycle advances exactly one evolution stage** (`plan → propose → validate → repair →
-   report → await-human`). This is what keeps a tick from becoming a ten-minute validation run, and
-   what stops a second candidate being opened while one still waits for a human.
+   report → await-human`), and **no stage may do the long work itself**. This is what keeps a tick
+   from becoming a ten-minute validation run, and what stops a second candidate being opened while
+   one still waits for a human.
+
+   The second half of that sentence was a claim the code did not keep until the validation lane
+   existed: `_validate` awaited the suite inline, an agent's mailbox and cycle share one lock, and
+   the Evolver answered nothing for minutes at a time while looking exactly like an agent that had
+   hung. Long work now runs off the cycle in one of two lanes — the harness worker (GPU) and the
+   validation task (CPU and disk) — and the stage starts it, holds, and consumes the result on a
+   later tick. **Anything new that takes minutes belongs in a lane, not in a stage.**
 8. **Candidates are copies; supervisor metadata lives outside them.** `active`,
    `last_known_good`, `candidate` and `restart_required` are written atomically under
    `generations/`, never inside the candidate tree — the rollback path has to outlive a process that

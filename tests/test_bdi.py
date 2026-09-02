@@ -362,7 +362,8 @@ async def test_the_evolver_keeps_one_commitment_across_the_whole_pipeline(
     from evomesh.behaviors import EvolverBehavior
     from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver, ValidationResult
     from evomesh.storage import SQLiteRepository
-    from tests.test_cycles import FakeHarness
+
+    from .fakes import FakeHarness
 
     class StubValidator:
         async def validate(self, generation: object) -> ValidationResult:

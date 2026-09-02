@@ -77,6 +77,9 @@ class EvolutionSettings(BaseModel):
     # Breathing room between the decision and the shutdown, so the cycle that
     # promoted the generation finishes writing its summary to every channel.
     restart_delay_seconds: float = 5.0
+    # A validation that outruns this is stopped and reported as blocked rather
+    # than failed: the candidate never got a verdict.
+    validate_seconds: float = 1800.0
     objective: str | None = None
 
 

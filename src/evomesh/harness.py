@@ -78,6 +78,17 @@ TEXT_SYSTEM = (
 
 OUTCOMES = ("answered", "capped", "failed")
 
+# Said once, when a writing job is past halfway and has changed nothing. A 27B
+# model spent all twenty steps and thirty-two tool calls reading -- re-reading
+# the same two files at different offsets, which the repeat guard cannot see --
+# and the job ended having done nothing. A model cannot budget what it cannot
+# see, and this is the cheapest way to show it.
+BUDGET_NOTE = (
+    "You are on step {step} of {limit} and have not changed a file yet. Stop "
+    "surveying and make the smallest change that does the job now; you can "
+    "read more afterwards if the edit is refused."
+)
+
 # Said once, to a model whose tool call did not parse. Observed on gemma:2b: it
 # opens the object, forgets a brace, and the reply is neither a call nor an
 # answer -- accepting it as the answer ends a job that had not finished.
@@ -200,6 +211,7 @@ class HarnessRunner:
         corrected = False
         last_call = ""
         repeats = 0
+        nudged = False
         seen: dict[str, str] = {}
         self.tool_chars = 0
         self.prompt_chars = 0
@@ -211,6 +223,23 @@ class HarnessRunner:
                 return self._end(
                     "capped", started, step - 1, calls_made, native,
                     detail=f"the {self.max_seconds:.0f}s wall clock ran out",
+                )
+            # Half the budget spent with nothing changed is the shape of a job
+            # that will end having only read. Said once: twice is noise.
+            if (
+                not nudged
+                and self.context.allow_write
+                and step > self.max_steps // 2
+                and not self.context.tally.edits
+                and not self.context.tally.writes
+            ):
+                nudged = True
+                self.session.record("budget", step=step, limit=self.max_steps)
+                messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=BUDGET_NOTE.format(step=step, limit=self.max_steps),
+                    )
                 )
             messages, size = compact(messages, self.transcript_chars)
             self.prompt_chars = max(self.prompt_chars, size)

@@ -14,6 +14,7 @@ agent reconsider on its own rather than being told to.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -74,6 +75,9 @@ AWAITING_KEY = "evolution.awaiting_human"
 
 HEALTHY_PREFIXES = ("the model provider is ready", "all ")
 INVESTIGATE = "Investigate why "
+
+# How long the validate stage waits before deciding the suite is not instant.
+INSTANT_VALIDATION = 0.05
 
 
 class ArchitectBehavior(ReflectiveBehavior):
@@ -257,6 +261,7 @@ class EvolverBehavior(BDIBehavior):
         max_repairs: int = 2,
         auto_promote: bool = False,
         auto_restart: bool = True,
+        validate_seconds: float = 1800.0,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -269,6 +274,10 @@ class EvolverBehavior(BDIBehavior):
         # Only used to word the summary honestly: the restart itself is the
         # Environment's to ask for and the launcher's to perform.
         self.auto_restart = auto_restart
+        # A validation that never ends is a stage that never ends. Past this the
+        # run is stopped and reported as blocked -- the candidate got no verdict,
+        # and a suite this machine could not finish is not its fault.
+        self.validate_seconds = validate_seconds
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -512,7 +521,26 @@ class EvolverBehavior(BDIBehavior):
         self, evolver: EnvironmentEvolver, state: dict[str, Any]
     ) -> StepResult:
         generation = evolver.candidate(int(state["generation"]))
-        result = await evolver.validate(generation)
+        run = evolver.validation_run(generation.number)
+        if run is None:
+            # Started here and consumed on a later cycle, so the tick stays a
+            # tick. The mailbox and the cycle share one lock, so awaiting the
+            # suite inline is what made the Evolver stop answering for minutes.
+            run = evolver.begin_validation(generation, self.validate_seconds)
+            # A moment's grace, so a suite that finishes instantly is taken here
+            # rather than a cycle later. Never true of a real validation, which
+            # is minutes -- always true of a scripted one, which is what keeps
+            # the pipeline tests at one stage per cycle.
+            await asyncio.wait({run.task}, timeout=INSTANT_VALIDATION)
+            if run.running:
+                return StepResult(
+                    summary=f"started the suite on generation {generation.number}",
+                    phase=AgentPhase.ACTING,
+                    hold=True,
+                )
+        if run.running:
+            return StepResult(summary=run.describe(), phase=AgentPhase.ACTING, hold=True)
+        result = await evolver.take_validation(run)
         repairs = int(state.get("repairs", 0))
         digest = result.digest()
         # A repair that leaves the failure byte-identical has not moved, and the
@@ -709,6 +737,7 @@ def default_behaviors(
     max_repairs: int = 2,
     auto_promote: bool = False,
     auto_restart: bool = True,
+    validate_seconds: float = 1800.0,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),

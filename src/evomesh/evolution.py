@@ -6,7 +6,8 @@ import json
 import logging
 import shutil
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -502,6 +503,34 @@ class CandidateRepairer:
         }
 
 
+@dataclass
+class ValidationRun:
+    """One suite running against one candidate, off the agent's cycle.
+
+    The README has claimed since the pipeline was written that one stage per
+    cycle means a tick never becomes a ten-minute validation run. It did: the
+    stage awaited the suite inline, and an agent's mailbox and cycle share one
+    lock, so the Evolver stopped answering for the whole of it and looked
+    exactly like an agent that had hung.
+    """
+
+    generation: int
+    task: asyncio.Task[ValidationResult]
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def running(self) -> bool:
+        return not self.task.done()
+
+    @property
+    def seconds(self) -> float:
+        return (datetime.now(UTC) - self.started_at).total_seconds()
+
+    def describe(self) -> str:
+        state = "running" if self.running else "finished"
+        return f"validating generation {self.generation} ({state}, {self.seconds:.0f}s)"
+
+
 class EnvironmentEvolver:
     """Owns the candidate lifecycle. Driven one stage per cycle by EvolverBehavior."""
 
@@ -529,6 +558,10 @@ class EnvironmentEvolver:
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""
+        # The suite running against the open candidate, if one is. At most one:
+        # rule 7 means at most one candidate is open, so a second lane would be
+        # a lane with nothing in it.
+        self.validation: ValidationRun | None = None
 
     # -- pipeline state -------------------------------------------------
 
@@ -646,6 +679,69 @@ class EnvironmentEvolver:
             }
         )
         return result
+
+    def begin_validation(self, generation: Generation, timeout: float = 1800.0) -> ValidationRun:
+        """Start the suite off the caller's cycle, and hand back a handle.
+
+        A separate lane from the harness worker on purpose: a tool loop is the
+        GPU and a validation run is CPU and disk, so making one wait for the
+        other would be a queue whose only effect is to slow the machine down.
+        """
+        if self.validation is not None and self.validation.generation == generation.number:
+            return self.validation
+
+        async def run() -> ValidationResult:
+            return await asyncio.wait_for(self.validate(generation), timeout=timeout)
+
+        self.validation = ValidationRun(
+            generation=generation.number,
+            task=asyncio.create_task(run(), name=f"evomesh-validate-{generation.number}"),
+        )
+        return self.validation
+
+    def validation_run(self, number: int) -> ValidationRun | None:
+        run = self.validation
+        return run if run is not None and run.generation == number else None
+
+    async def take_validation(self, run: ValidationRun) -> ValidationResult:
+        """The verdict, and the lane is free again.
+
+        A timeout is reported as blocked rather than failed: the candidate never
+        got a verdict, and a suite the machine could not finish is not something
+        the candidate did wrong.
+        """
+        self.validation = None
+        try:
+            return run.task.result()
+        except TimeoutError:
+            return ValidationResult(
+                passed=False,
+                commands=[
+                    {
+                        "command": "uv run pytest",
+                        "exit_code": -1,
+                        "output": (
+                            f"validation of generation {run.generation} did not finish "
+                            f"in {run.seconds:.0f}s and was stopped"
+                        ),
+                        "blocked": True,
+                    }
+                ],
+            )
+
+    async def cancel_validation(self) -> None:
+        """Stop a run the mesh is not going to wait for.
+
+        Nothing is resumed: a candidate is a copy on disk, and re-running the
+        suite on it costs time and nothing else -- which is cheaper than a
+        pipeline waiting on a task that no longer exists.
+        """
+        run, self.validation = self.validation, None
+        if run is None:
+            return
+        run.task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await run.task
 
     async def finish_candidate(self, number: int, *, passed: bool) -> Generation:
         generation = self.candidate(number)

@@ -293,7 +293,7 @@ plan -> propose -> validate -> report -> await-human
                       `- repair <-'
 ```
 
-It opens a candidate generation on its first cycle after boot, so evolution actually starts rather than waiting to be asked. One stage per cycle means a tick never becomes a ten-minute validation run, and it never opens a second candidate while one is still waiting for you.
+It opens a candidate generation on its first cycle after boot, so evolution actually starts rather than waiting to be asked. One stage per cycle means a tick never becomes a ten-minute validation run — the suite runs off the cycle in its own lane and the stage takes the verdict on a later tick, so the Evolver keeps answering `/chat` and `/evolution status` throughout. It never opens a second candidate while one is still waiting for you.
 
 Candidates are copied into isolated generation directories and never overwrite the active tree. The supervisor tracks active, candidate, and last-known-good generations in atomic metadata. Validation runs `uv sync`, Ruff, Pyright, pytest, and the smoke check, and writes a result record; a candidate that was never validated is reported as `not validated`, not as failed. Promotion stays human-controlled, and promoting or discarding releases the pipeline for the next objective.
 
