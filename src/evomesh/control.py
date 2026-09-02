@@ -6,6 +6,7 @@ from typing import Any
 
 from evomesh.console import ConsoleChannel
 from evomesh.environment import Environment
+from evomesh.models import describe
 
 CONTROL_HOST = "127.0.0.1"
 CONTROL_PORT = 8765
@@ -59,8 +60,8 @@ class ControlServer:
             response = await channel.route(command)
             should_stop = command.lower() == "/exit"
             return {"output": response, "running": not should_stop, "shutdown": should_stop}
-        except (json.JSONDecodeError, KeyError, ValueError, RuntimeError) as exc:
-            return {"output": f"Error: {exc}", "running": True, "error": True}
+        except Exception as exc:  # noqa: BLE001 - a failed command never drops the connection
+            return {"output": f"Error: {describe(exc)}", "running": True, "error": True}
 
 
 async def wait_for_console_or_shutdown(

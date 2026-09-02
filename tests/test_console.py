@@ -55,3 +55,49 @@ async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> N
     await writer.wait_closed()
     await server.stop()
     await environment.stop()
+
+
+def _wipe_database(path: Path) -> None:
+    """Remove the database the way `git clean -xfd` does: WAL sidecars included."""
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(path) + suffix).unlink(missing_ok=True)
+
+
+async def test_control_server_reports_a_failed_command_and_keeps_the_connection(
+    tmp_path: Path,
+) -> None:
+    """A wiped database must reach the Control Center as text, not a dropped socket.
+
+    ``data/`` is gitignored, so a ``git clean -xfd`` removes the live database
+    out from under a running mesh. Every later query then raises
+    ``sqlite3.OperationalError``, which is not a RuntimeError -- it used to
+    escape the dispatcher, close the writer, and reach a human as "the mesh
+    control connection was lost" for every /evolution status they typed.
+    """
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    shutdown = asyncio.Event()
+    server = ControlServer(environment, shutdown, port=0)
+    await server.start()
+    assert server._server is not None
+    port = server._server.sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+    async def request(command: str) -> dict[str, object]:
+        writer.write((json.dumps({"command": command}) + "\n").encode())
+        await writer.drain()
+        return json.loads(await reader.readline())
+
+    await asyncio.to_thread(_wipe_database, settings.data_path)
+
+    response = await request("/evolution status")
+    assert response["error"] is True
+    assert "OperationalError: no such table" in str(response["output"])
+    # The point of the fix: the same connection still answers afterwards.
+    assert (await request("/ping"))["output"] == "EvoMesh control ready"
+
+    writer.close()
+    await writer.wait_closed()
+    await server.stop()
+    await environment.stop()

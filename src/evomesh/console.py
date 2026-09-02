@@ -13,6 +13,7 @@ from evomesh.environment import Environment
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits
+from evomesh.models import describe
 
 HELP = """Commands:
   /help                         Show this help
@@ -93,8 +94,8 @@ class ConsoleChannel:
             text = await inputs.get()
             try:
                 response = await self.route(text)
-            except (KeyError, ValueError, RuntimeError) as exc:
-                response = f"Error: {exc}"
+            except Exception as exc:  # noqa: BLE001 - a failed command never ends the console
+                response = f"Error: {describe(exc)}"
             if response:
                 self.output.write(response)
 
