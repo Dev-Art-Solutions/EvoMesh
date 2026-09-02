@@ -64,9 +64,11 @@ On Windows, double-click `start-evomesh.bat`. It synchronizes the Python environ
 - start or stop individual agents;
 - dynamically load installed Ollama models into dropdowns in both Agents and Settings, and assign a different provider/model to each agent;
 - inspect live agent phases, goals, memory, and the shared world context;
-- edit `evomesh.yaml` while the mesh is stopped.
+- edit `evomesh.yaml`, including the Telegram bot and the git identity a generation is committed under.
 
-Settings that require a restart are visible but disabled while EvoMesh is running. Per-agent model changes remain available at runtime and safely restart only the affected agent. For direct terminal use, run `start-evomesh-console.bat`.
+The header status is checked continuously, not once at startup: a mesh you started from the launcher script, or one that restarted itself into a new generation, is picked up on its own, and the timestamp next to `RUNNING`/`STOPPED` says when that was last verified.
+
+Settings are read when the mesh boots, so saving them while it runs offers to restart it for you. Per-agent model changes remain available at runtime and safely restart only the affected agent. For direct terminal use, run `start-evomesh-console.bat`, which also brings the mesh back up when it restarts into a new generation.
 
 Settings also exposes provider and model assignments for the four built-in agents: Agent Architect, Guardian, Evaluator, and Environment Evolver. These assignments are stored under `system_agents` in `evomesh.yaml` and are reconciled with persisted agent state on the next mesh start.
 
@@ -274,18 +276,66 @@ Promoting cherry-picks the candidate's commit onto the checkout the mesh runs fr
 
 Two refusals are deliberate. A generation is never applied over uncommitted changes in the checkout, so work in progress is never clobbered — under a promotion policy the candidate is parked for you instead of discarded, because the candidate is fine and the place it was going is not. And a change that does not cherry-pick cleanly aborts the pick rather than leaving the tree half-applied.
 
-**A restart is still yours to make.** The running process keeps executing the code it started with, so `/evolution status` says `RESTART REQUIRED` once the tree has moved ahead of it, and the flag clears when the mesh next starts. The restart is deliberately not automatic: a rollback path has to outlive a process that may not come back up, which means it cannot live inside that process.
+### Publishing a generation
+
+A landed generation is committed by the mesh, under its own identity, and pushed to the remote. Both halves matter: a history where the agent's commits are signed with whatever `git config` happens to hold is a history where nobody can tell the agent's work from their own, and a generation that never leaves the machine has not really shipped.
+
+```yaml
+git:
+  author_name: Mesh Evo Agent
+  author_email: mesh-evo-agent@evomesh.local
+  auto_push: true
+  remote: origin
+  branch: ""      # empty means the branch the checkout is already on
+```
+
+The identity is passed to git per invocation, so the mesh never edits your checkout's configuration and still signs its commits correctly on a machine that has no `user.name` set at all.
+
+The push is the last step, never a gate. A remote that is not configured, a detached HEAD, or credentials git cannot supply leaves the generation exactly where it was — in the tree, validated, promoted — and the reason is reported by `/evolution status` under `published:` rather than swallowed.
+
+### Restarting into it
+
+The running process executes the code it started with, so a landed generation does nothing until the process comes back up on it. With `evolution.auto_restart: true` (the default) it does:
+
+1. the generation lands and is pushed;
+2. `restart_required` is written to the supervisor metadata — a durable flag, because the rollback path has to outlive a process that may not come back;
+3. every channel is told what is about to happen, and after `evolution.restart_delay_seconds` the process exits with code **86**;
+4. whoever launched it — the Control Center, or `start-evomesh-console.bat` — brings it back up, and the flag clears on boot.
+
+Exit code 86 is the whole contract: it means *start me again*, and it is deliberately not 0, so a plain `/exit` is never mistaken for a restart request. `/restart` asks for the same thing by hand, which is also what the Control Center offers after you save settings.
+
+Set `evolution.auto_restart: false` to go back to being told rather than restarted; the flag is still raised and `/evolution status` still says `RESTART REQUIRED`.
 
 Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, `evolution.max_repairs` to bound how often it may fix its own candidate, or `evolution.auto_promote` to take yourself out of the loop.
 
+## Telegram
+
+Talk to the mesh from your phone. The bot is a second console onto the same running environment — every message goes through the same command router the Control Center uses, so `/status`, `/agents`, `/evolution status`, `/chat <agent>` and plain conversation all behave identically.
+
+1. Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token it gives you.
+2. Open the Control Center's **Settings** tab, paste it under **TELEGRAM**, tick **Enable the Telegram bot**, and save. Saving while the mesh runs offers the restart that picks it up.
+3. Send `/start` to your bot. With **Let the first chat claim the bot** on, that first chat is adopted and remembered; after that, strangers are turned away by chat id.
+
+```yaml
+telegram:
+  enabled: true
+  token: "123456789:AA..."
+  allowed_chat_ids: []      # empty + adopt_first_chat: the first /start claims it
+  adopt_first_chat: true
+  poll_timeout_seconds: 30
+  announcements: true       # say when a generation lands or the mesh restarts
+```
+
+Two things the bot deliberately will not do. It cannot stop the mesh — the control port only listens on localhost, so a shutdown from a phone would leave nothing running that could be asked to start again. And it remembers its update offset across restarts, so the command that triggered an automatic restart is not replayed by the process that comes back up.
+
 ## Git history
 
-Git is the intended evolutionary lineage. The initial substrate records mutation objectives/results and isolates code. Rich model-authored patches, structured mutation commits, generation tags, and promotion UX remain experimental follow-up work.
+Git is the evolutionary lineage. Each generation is one commit, authored by the mesh, cherry-picked onto the checkout and pushed to the remote. Generation tags and richer model-authored patches remain follow-up work.
 
 ## Project structure
 
 ```text
-src/evomesh/   runtime, contracts, bdi, cognition, memory, behaviors, storage, evolution
+src/evomesh/   runtime, contracts, bdi, cognition, memory, behaviors, storage, evolution, telegram
 desktop/       Windows Forms Control Center
 tests/         unit, integration, cycle, and restart scenario coverage
 data/          local SQLite state (ignored)

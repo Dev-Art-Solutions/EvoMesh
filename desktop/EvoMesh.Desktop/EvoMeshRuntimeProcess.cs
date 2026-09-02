@@ -9,17 +9,35 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 {
     private const string ControlHost = "127.0.0.1";
     private const int DefaultControlPort = 8765;
+
+    /// <summary>The mesh exits with this when it wants to come back up on new code.</summary>
+    private const int RestartExitCode = 86;
+
+    /// <summary>How often a connected mesh is asked whether it is still there.</summary>
+    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// How often a mesh that is *not* connected is looked for again. Without this
+    /// the Control Center answers the first probe at startup and then never asks
+    /// again, so it goes on reporting STOPPED at a mesh that is plainly running --
+    /// one started from the launcher script, or one that restarted itself into a
+    /// new generation.
+    /// </summary>
+    private static readonly TimeSpan ProbeInterval = TimeSpan.FromSeconds(5);
+
     private readonly string _requestedUvExecutable;
     private readonly SemaphoreSlim _requestLock = new(1, 1);
     private readonly object _logLock = new();
     private readonly string _logPath;
     private readonly int _controlPort;
+    private readonly CancellationTokenSource _healthCancellation = new();
     private Process? _process;
     private TcpClient? _client;
     private StreamReader? _reader;
     private StreamWriter? _writer;
-    private CancellationTokenSource? _monitorCancellation;
     private bool _isRunning;
+    private bool _restarting;
+    private bool _stopRequested;
 
     public EvoMeshRuntimeProcess(string rootPath, string uvExecutable, int controlPort = DefaultControlPort)
     {
@@ -32,9 +50,74 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     public string RootPath { get; }
     public string LogPath => _logPath;
     public bool IsRunning => _isRunning;
+    public DateTimeOffset? LastHealthCheck { get; private set; }
 
     public event Action<string>? OutputReceived;
     public event Action<bool>? RunningChanged;
+
+    /// <summary>Raised after every health check, connected or not, with when it ran.</summary>
+    public event Action<bool, DateTimeOffset>? HealthChecked;
+
+    /// <summary>
+    /// Begins the loop that keeps <see cref="IsRunning"/> true to reality. It runs
+    /// for the lifetime of the object rather than only while connected, which is
+    /// the whole point: a disconnected Control Center has to keep looking.
+    /// </summary>
+    public void StartHealthLoop()
+    {
+        var cancellationToken = _healthCancellation.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(IsRunning ? PingInterval : ProbeInterval, cancellationToken);
+                    await CheckHealthAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception exc)
+                {
+                    Log($"Health loop error: {exc.Message}");
+                }
+            }
+        }, cancellationToken);
+    }
+
+    private async Task CheckHealthAsync(CancellationToken cancellationToken)
+    {
+        if (IsRunning)
+        {
+            try
+            {
+                await RequestAsync("/ping", cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // The mesh went away. Drop the dead connection and let the next
+                // pass of this same loop start looking for it again.
+                Disconnect(notify: true);
+                Emit("[the mesh stopped answering; watching for it to come back]");
+            }
+        }
+        else if (!_stopRequested)
+        {
+            await TryAttachAsync(announce: false);
+            if (IsRunning)
+            {
+                Emit("[reconnected to the running mesh]");
+            }
+        }
+        LastHealthCheck = DateTimeOffset.Now;
+        HealthChecked?.Invoke(IsRunning, LastHealthCheck.Value);
+    }
 
     public async Task<bool> TryAttachAsync(bool announce = true)
     {
@@ -65,7 +148,6 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 Emit("[attached to the running mesh]");
             }
-            StartMonitor();
             return true;
         }
         catch
@@ -78,6 +160,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 
     public async Task StartAsync()
     {
+        _stopRequested = false;
         if (await TryAttachAsync())
         {
             return;
@@ -116,11 +199,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         _process.OutputDataReceived += (_, args) => EmitAndLog(args.Data);
         _process.ErrorDataReceived += (_, args) => EmitAndLog(args.Data);
-        _process.Exited += (_, _) =>
-        {
-            EmitAndLog($"[runtime process exited with code {_process?.ExitCode}]");
-            Disconnect(notify: true);
-        };
+        _process.Exited += (_, _) => OnProcessExited(_process?.ExitCode ?? -1);
 
         try
         {
@@ -179,6 +258,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 
     public async Task StopAsync()
     {
+        _stopRequested = true;
         if (!IsRunning)
         {
             return;
@@ -203,12 +283,61 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 
     public void Dispose()
     {
+        _healthCancellation.Cancel();
+        _healthCancellation.Dispose();
         Disconnect(notify: false);
         if (_process is null || _process.HasExited)
         {
             _process?.Dispose();
         }
         _requestLock.Dispose();
+    }
+
+    /// <summary>
+    /// Reacts to the runtime going away. Exit code 86 is the mesh asking to be
+    /// brought back up on the generation it just landed in the tree -- the whole
+    /// point of applying one -- so it is restarted here rather than reported as a
+    /// crash and left to a human.
+    /// </summary>
+    private void OnProcessExited(int exitCode)
+    {
+        Disconnect(notify: true);
+        if (exitCode == RestartExitCode && !_stopRequested)
+        {
+            EmitAndLog("[the mesh landed a new generation and is restarting into it]");
+            _ = RestartAsync();
+            return;
+        }
+        EmitAndLog($"[runtime process exited with code {exitCode}]");
+    }
+
+    private async Task RestartAsync()
+    {
+        if (_restarting)
+        {
+            return;
+        }
+        _restarting = true;
+        try
+        {
+            // The old process has to finish releasing the control port before the
+            // new one can bind it; without the pause the restart fails on a port
+            // that is still in TIME_WAIT and the mesh stays down.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var previous = _process;
+            _process = null;
+            previous?.Dispose();
+            await StartAsync();
+            Emit("[the mesh is back up on its new generation]");
+        }
+        catch (Exception exc)
+        {
+            EmitAndLog($"[the automatic restart failed: {exc.Message}]");
+        }
+        finally
+        {
+            _restarting = false;
+        }
     }
 
     private async Task<ControlResponse> RequestAsync(string command, CancellationToken cancellationToken)
@@ -234,29 +363,6 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         {
             _requestLock.Release();
         }
-    }
-
-    private void StartMonitor()
-    {
-        _monitorCancellation?.Cancel();
-        _monitorCancellation = new CancellationTokenSource();
-        var cancellationToken = _monitorCancellation.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (!cancellationToken.IsCancellationRequested && IsRunning)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
-                    await RequestAsync("/ping", cancellationToken);
-                }
-            }
-            catch (OperationCanceledException) { }
-            catch
-            {
-                Disconnect(notify: true);
-            }
-        }, cancellationToken);
     }
 
     private string ResolveUvExecutable()
@@ -300,9 +406,6 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 
     private void Disconnect(bool notify)
     {
-        _monitorCancellation?.Cancel();
-        _monitorCancellation?.Dispose();
-        _monitorCancellation = null;
         _writer?.Dispose();
         _reader?.Dispose();
         _client?.Dispose();

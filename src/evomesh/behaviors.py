@@ -255,6 +255,7 @@ class EvolverBehavior(BDIBehavior):
         auto_validate: bool = True,
         max_repairs: int = 2,
         auto_promote: bool = False,
+        auto_restart: bool = True,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -264,6 +265,9 @@ class EvolverBehavior(BDIBehavior):
         # Decide the candidate's fate from the verdict instead of parking on a
         # human. Only ever acts on a verdict validation actually produced.
         self.auto_promote = auto_promote
+        # Only used to word the summary honestly: the restart itself is the
+        # Environment's to ask for and the launcher's to perform.
+        self.auto_restart = auto_restart
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -605,7 +609,16 @@ class EvolverBehavior(BDIBehavior):
         # failure digest, so the next candidate starts from a clean slate.
         await evolver.reset_pipeline()
         action = "promoted" if passed else "discarded"
-        landed = f" as {commit[:8]}, restart the mesh to run it" if commit else ""
+        landed = (
+            f" as {commit[:8]} ({evolver.last_publish}), "
+            + (
+                "restarting the mesh into it"
+                if self.auto_restart
+                else "restart the mesh to run it"
+            )
+            if commit
+            else ""
+        )
         return StepResult(
             summary=(
                 f"{action} generation {number} on its own verdict ({self._verdict(state)})"
@@ -632,7 +645,10 @@ class EvolverBehavior(BDIBehavior):
 
 
 def default_behaviors(
-    auto_validate: bool = True, max_repairs: int = 2, auto_promote: bool = False
+    auto_validate: bool = True,
+    max_repairs: int = 2,
+    auto_promote: bool = False,
+    auto_restart: bool = True,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -642,6 +658,7 @@ def default_behaviors(
             auto_validate=auto_validate,
             max_repairs=max_repairs,
             auto_promote=auto_promote,
+            auto_restart=auto_restart,
         ),
     }
 

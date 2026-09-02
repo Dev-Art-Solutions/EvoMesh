@@ -1,6 +1,10 @@
 namespace EvoMesh.Desktop;
 
-internal sealed record ProviderEditorSettings(string BaseUrl, string Model, string ApiKey = "");
+internal sealed record ProviderEditorSettings(
+    string BaseUrl,
+    string Model,
+    string ApiKey = "",
+    double TimeoutSeconds = 600);
 internal sealed record AgentModelEditorSettings(string Provider, string Model);
 
 /// <summary>Runtime cadence and prompt budgets. Small local models need small budgets.</summary>
@@ -12,6 +16,7 @@ internal sealed class RuntimeEditorSettings
     public int MemoryChars { get; set; } = 3000;
     public int ContextChars { get; set; } = 1500;
     public int InboxChars { get; set; } = 1000;
+    public int BeliefsChars { get; set; } = 700;
 }
 
 internal sealed class EvolutionEditorSettings
@@ -19,7 +24,32 @@ internal sealed class EvolutionEditorSettings
     public bool Autonomous { get; set; } = true;
     public int CycleSeconds { get; set; } = 300;
     public bool AutoValidate { get; set; } = true;
+    public int MaxRepairs { get; set; } = 2;
+    public bool AutoPromote { get; set; }
+    public bool AutoRestart { get; set; } = true;
+    public double RestartDelaySeconds { get; set; } = 5;
     public string Objective { get; set; } = "";
+}
+
+/// <summary>Who signs a generation, and where it goes once it lands.</summary>
+internal sealed class GitEditorSettings
+{
+    public string AuthorName { get; set; } = "Mesh Evo Agent";
+    public string AuthorEmail { get; set; } = "mesh-evo-agent@evomesh.local";
+    public bool AutoPush { get; set; } = true;
+    public string Remote { get; set; } = "origin";
+    public string Branch { get; set; } = "";
+}
+
+/// <summary>The BotFather token and who is allowed to use it.</summary>
+internal sealed class TelegramEditorSettings
+{
+    public bool Enabled { get; set; }
+    public string Token { get; set; } = "";
+    public string AllowedChatIds { get; set; } = "";
+    public bool AdoptFirstChat { get; set; } = true;
+    public int PollTimeoutSeconds { get; set; } = 30;
+    public bool Announcements { get; set; } = true;
 }
 
 internal sealed class EvoMeshYamlSettings
@@ -32,6 +62,8 @@ internal sealed class EvoMeshYamlSettings
     public string DefaultProvider { get; set; } = "ollama";
     public RuntimeEditorSettings Runtime { get; } = new();
     public EvolutionEditorSettings Evolution { get; } = new();
+    public GitEditorSettings Git { get; } = new();
+    public TelegramEditorSettings Telegram { get; } = new();
     public Dictionary<string, ProviderEditorSettings> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AgentModelEditorSettings> SystemAgents { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -84,6 +116,7 @@ internal sealed class EvoMeshYamlSettings
                     case "memory_chars": result.Runtime.MemoryChars = ParseInt(value, result.Runtime.MemoryChars); break;
                     case "context_chars": result.Runtime.ContextChars = ParseInt(value, result.Runtime.ContextChars); break;
                     case "inbox_chars": result.Runtime.InboxChars = ParseInt(value, result.Runtime.InboxChars); break;
+                    case "beliefs_chars": result.Runtime.BeliefsChars = ParseInt(value, result.Runtime.BeliefsChars); break;
                 }
             }
             else if (section == "evolution" && indent >= 2)
@@ -93,9 +126,40 @@ internal sealed class EvoMeshYamlSettings
                     case "autonomous": result.Evolution.Autonomous = ParseBool(value, true); break;
                     case "cycle_seconds": result.Evolution.CycleSeconds = ParseInt(value, result.Evolution.CycleSeconds); break;
                     case "auto_validate": result.Evolution.AutoValidate = ParseBool(value, true); break;
+                    case "max_repairs": result.Evolution.MaxRepairs = ParseInt(value, result.Evolution.MaxRepairs); break;
+                    case "auto_promote": result.Evolution.AutoPromote = ParseBool(value, false); break;
+                    case "auto_restart": result.Evolution.AutoRestart = ParseBool(value, true); break;
+                    case "restart_delay_seconds":
+                        result.Evolution.RestartDelaySeconds = ParseDouble(value, result.Evolution.RestartDelaySeconds);
+                        break;
                     case "objective":
                         result.Evolution.Objective = value is "null" or "~" ? "" : value;
                         break;
+                }
+            }
+            else if (section == "git" && indent >= 2)
+            {
+                switch (key)
+                {
+                    case "author_name": result.Git.AuthorName = value; break;
+                    case "author_email": result.Git.AuthorEmail = value; break;
+                    case "auto_push": result.Git.AutoPush = ParseBool(value, true); break;
+                    case "remote": result.Git.Remote = value; break;
+                    case "branch": result.Git.Branch = value; break;
+                }
+            }
+            else if (section == "telegram" && indent >= 2)
+            {
+                switch (key)
+                {
+                    case "enabled": result.Telegram.Enabled = ParseBool(value, false); break;
+                    case "token": result.Telegram.Token = value; break;
+                    case "allowed_chat_ids": result.Telegram.AllowedChatIds = ParseIdList(value); break;
+                    case "adopt_first_chat": result.Telegram.AdoptFirstChat = ParseBool(value, true); break;
+                    case "poll_timeout_seconds":
+                        result.Telegram.PollTimeoutSeconds = ParseInt(value, result.Telegram.PollTimeoutSeconds);
+                        break;
+                    case "announcements": result.Telegram.Announcements = ParseBool(value, true); break;
                 }
             }
             else if (section == "models" && indent == 2 && key == "default_provider")
@@ -121,6 +185,7 @@ internal sealed class EvoMeshYamlSettings
                     "base_url" => current with { BaseUrl = value },
                     "model" => current with { Model = value },
                     "api_key" => current with { ApiKey = value },
+                    "timeout_seconds" => current with { TimeoutSeconds = ParseDouble(value, current.TimeoutSeconds) },
                     _ => current,
                 };
             }
@@ -161,11 +226,29 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  memory_chars: {Runtime.MemoryChars}");
         writer.WriteLine($"  context_chars: {Runtime.ContextChars}");
         writer.WriteLine($"  inbox_chars: {Runtime.InboxChars}");
+        writer.WriteLine($"  beliefs_chars: {Runtime.BeliefsChars}");
         writer.WriteLine("evolution:");
         writer.WriteLine($"  autonomous: {(Evolution.Autonomous ? "true" : "false")}");
         writer.WriteLine($"  cycle_seconds: {Evolution.CycleSeconds}");
         writer.WriteLine($"  auto_validate: {(Evolution.AutoValidate ? "true" : "false")}");
+        writer.WriteLine($"  max_repairs: {Evolution.MaxRepairs}");
+        writer.WriteLine($"  auto_promote: {(Evolution.AutoPromote ? "true" : "false")}");
+        writer.WriteLine($"  auto_restart: {(Evolution.AutoRestart ? "true" : "false")}");
+        writer.WriteLine($"  restart_delay_seconds: {Number(Evolution.RestartDelaySeconds)}");
         writer.WriteLine($"  objective: {(string.IsNullOrWhiteSpace(Evolution.Objective) ? "null" : Quote(Evolution.Objective))}");
+        writer.WriteLine("git:");
+        writer.WriteLine($"  author_name: {Quote(Git.AuthorName)}");
+        writer.WriteLine($"  author_email: {Quote(Git.AuthorEmail)}");
+        writer.WriteLine($"  auto_push: {(Git.AutoPush ? "true" : "false")}");
+        writer.WriteLine($"  remote: {Quote(Git.Remote)}");
+        writer.WriteLine($"  branch: {Quote(Git.Branch)}");
+        writer.WriteLine("telegram:");
+        writer.WriteLine($"  enabled: {(Telegram.Enabled ? "true" : "false")}");
+        writer.WriteLine($"  token: {Quote(Telegram.Token)}");
+        writer.WriteLine($"  allowed_chat_ids: [{FormatIdList(Telegram.AllowedChatIds)}]");
+        writer.WriteLine($"  adopt_first_chat: {(Telegram.AdoptFirstChat ? "true" : "false")}");
+        writer.WriteLine($"  poll_timeout_seconds: {Telegram.PollTimeoutSeconds}");
+        writer.WriteLine($"  announcements: {(Telegram.Announcements ? "true" : "false")}");
         writer.WriteLine("system_agents:");
         foreach (var (agentId, agent) in SystemAgents)
         {
@@ -181,12 +264,36 @@ internal sealed class EvoMeshYamlSettings
             writer.WriteLine($"    {name}:");
             writer.WriteLine($"      base_url: {Quote(provider.BaseUrl)}");
             writer.WriteLine($"      model: {Quote(provider.Model)}");
+            writer.WriteLine($"      timeout_seconds: {Number(provider.TimeoutSeconds)}");
             if (!string.IsNullOrEmpty(provider.ApiKey))
             {
                 writer.WriteLine($"      api_key: {Quote(provider.ApiKey)}");
             }
         }
     }
+
+    /// <summary>
+    /// Normalises "12, 34" and "[12,34]" alike into the comma-separated form the
+    /// editor shows, so a hand-written config and a saved one round-trip the same.
+    /// </summary>
+    private static string ParseIdList(string value)
+    {
+        var inner = value.Trim().Trim('[', ']');
+        var ids = inner
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => Unquote(item))
+            .Where(item => long.TryParse(item, out _));
+        return string.Join(", ", ids);
+    }
+
+    private static string FormatIdList(string value) =>
+        string.Join(
+            ", ",
+            value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(item => long.TryParse(item, out _)));
+
+    private static string Number(double value) =>
+        value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static int ParseInt(string value, int fallback) =>
         int.TryParse(value, System.Globalization.NumberStyles.Integer,

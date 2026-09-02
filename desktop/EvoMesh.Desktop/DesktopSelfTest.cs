@@ -29,7 +29,14 @@ internal static class DesktopSelfTest
             settings.Runtime.CycleSeconds = 45;
             settings.Runtime.MemoryChars = 2222;
             settings.Evolution.Autonomous = false;
+            settings.Evolution.AutoPromote = true;
+            settings.Evolution.AutoRestart = false;
             settings.Evolution.Objective = "tighten the console";
+            settings.Git.AuthorName = "Mesh Evo Agent";
+            settings.Git.Remote = "upstream";
+            settings.Telegram.Enabled = true;
+            settings.Telegram.Token = "123456:AAHtestTOKENvalue";
+            settings.Telegram.AllowedChatIds = "42, 77";
             settings.Save(temporary);
             var saved = EvoMeshYamlSettings.Load(temporary);
             if (saved.EnvironmentName != "desktop-self-test" ||
@@ -45,9 +52,21 @@ internal static class DesktopSelfTest
                 saved.Runtime.MemoryChars != 2222 ||
                 saved.Runtime.PromptChars != 6000 ||
                 saved.Evolution.Autonomous ||
+                !saved.Evolution.AutoPromote ||
+                saved.Evolution.AutoRestart ||
                 saved.Evolution.Objective != "tighten the console")
             {
                 throw new InvalidOperationException("Runtime or evolution settings were lost on save.");
+            }
+            // A token with a colon in it is the shape BotFather actually hands
+            // out, and it is the one shape a naive key/value parser truncates.
+            if (saved.Git.AuthorName != "Mesh Evo Agent" ||
+                saved.Git.Remote != "upstream" ||
+                !saved.Telegram.Enabled ||
+                saved.Telegram.Token != "123456:AAHtestTOKENvalue" ||
+                saved.Telegram.AllowedChatIds != "42, 77")
+            {
+                throw new InvalidOperationException("Git or Telegram settings were lost on save.");
             }
         }
         finally

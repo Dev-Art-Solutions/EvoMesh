@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
 
@@ -55,6 +57,7 @@ class Environment:
             settings.evolution.auto_validate,
             settings.evolution.max_repairs,
             settings.evolution.auto_promote,
+            settings.evolution.auto_restart,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(
@@ -64,7 +67,19 @@ class Environment:
                 exclude=(settings.data_path, settings.workspace_path),
             ),
             self.repository,
+            identity=settings.git.identity(),
+            publish=settings.git.publish_policy(),
         )
+        self.evolver.on_generation_landed = self._on_generation_landed
+        # Set when a generation has landed in the tree this process is not
+        # running. Whoever owns the process -- __main__, a test, a script --
+        # decides what to do about it; the environment only raises the flag.
+        self.restart_requested = asyncio.Event()
+        self.restart_reason = ""
+        # Channels that want to hear what the mesh did on its own, rather than
+        # only what it was asked. Telegram registers one; the console does not,
+        # because it is already printing the cycle summaries.
+        self.notifiers: list[Callable[[str], Awaitable[None]]] = []
         # Offline states for agents that never started, so status is always
         # explainable instead of a stale "active" left behind by a previous run.
         self._offline: dict[str, AgentRuntimeState] = {}
@@ -72,6 +87,34 @@ class Environment:
     @property
     def project_root(self) -> Path:
         return self.settings.generation_path.parent
+
+    # -- restarting into a landed generation ----------------------------
+
+    def _on_generation_landed(self, number: int, commit: str) -> None:
+        """A generation is now in the tree, and this process is not running it.
+
+        Restarting is the whole point of applying a generation: until the
+        process comes back up on the new commit, the mesh has evolved on disk
+        and nowhere else. The flag is always raised so ``/evolution status``
+        stays truthful even when the automatic restart is switched off.
+        """
+        self.restart_reason = (
+            f"generation {number} landed as {commit[:8]}"
+            f"{f' and was {self.evolver.last_publish}' if self.evolver.last_publish else ''}"
+        )
+        if not self.settings.evolution.auto_restart:
+            logger.info("%s; auto_restart is off, so a human has to restart", self.restart_reason)
+            return
+        logger.info("%s; restarting into it", self.restart_reason)
+        self.restart_requested.set()
+
+    async def announce(self, text: str) -> None:
+        """Tell every listening channel something the mesh did unprompted."""
+        for notify in list(self.notifiers):
+            try:
+                await notify(text)
+            except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
+                logger.exception("A notification channel failed")
 
     def _build_providers(self) -> dict[str, ModelProvider]:
         result: dict[str, ModelProvider] = {}

@@ -6,6 +6,12 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from evomesh.git import (
+    DEFAULT_AUTHOR_EMAIL,
+    DEFAULT_AUTHOR_NAME,
+    GitIdentity,
+    PublishPolicy,
+)
 from evomesh.memory import MemoryBudget
 
 
@@ -64,7 +70,52 @@ class EvolutionSettings(BaseModel):
     # Let the verdict decide: promote what validated, discard what did not, and
     # move on without asking. A run with no verdict still stops for a human.
     auto_promote: bool = False
+    # A landed generation is code this process is not running. Restart into it
+    # instead of leaving a human to notice the flag and do it by hand.
+    auto_restart: bool = True
+    # Breathing room between the decision and the shutdown, so the cycle that
+    # promoted the generation finishes writing its summary to every channel.
+    restart_delay_seconds: float = 5.0
     objective: str | None = None
+
+
+class GitSettings(BaseModel):
+    """Who signs a generation, and where it is published once it lands."""
+
+    author_name: str = DEFAULT_AUTHOR_NAME
+    author_email: str = DEFAULT_AUTHOR_EMAIL
+    # Push a landed generation to the remote. A failed push never undoes the
+    # commit: the generation is in the tree either way, only unpublished.
+    auto_push: bool = True
+    remote: str = "origin"
+    # Empty means the branch the checkout is already on.
+    branch: str = ""
+
+    def identity(self) -> GitIdentity:
+        return GitIdentity(name=self.author_name, email=self.author_email)
+
+    def publish_policy(self) -> PublishPolicy:
+        return PublishPolicy(enabled=self.auto_push, remote=self.remote, branch=self.branch)
+
+
+class TelegramSettings(BaseModel):
+    """A Telegram bot as a second console onto the same mesh.
+
+    ``token`` is the string BotFather hands back. ``allowed_chat_ids`` is the
+    allow-list; leaving it empty and keeping ``adopt_first_chat`` on lets the
+    first person who says /start claim the bot, which is the only way to learn
+    a chat id without asking a human to go find it.
+    """
+
+    enabled: bool = False
+    token: str = ""
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+    adopt_first_chat: bool = True
+    # Long-poll window. Telegram holds the request open this long when idle.
+    poll_timeout_seconds: int = 30
+    # Announce what the mesh does on its own -- promotions, restarts -- rather
+    # than only answering when spoken to.
+    announcements: bool = True
 
 
 class Settings(BaseModel):
@@ -77,6 +128,8 @@ class Settings(BaseModel):
     system_agents: dict[str, AgentModelSettings] = Field(default_factory=dict)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     evolution: EvolutionSettings = Field(default_factory=EvolutionSettings)
+    git: GitSettings = Field(default_factory=GitSettings)
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
     def resolve(self, root: Path) -> Settings:
         clone = self.model_copy(deep=True)

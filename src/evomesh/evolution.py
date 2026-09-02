@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import shutil
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,9 +15,11 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from evomesh.cognition import strip_reasoning
-from evomesh.git import GitError, GitRepository
+from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
 from evomesh.storage import SQLiteRepository
+
+logger = logging.getLogger(__name__)
 
 PIPELINE_STATE_KEY = "evolution.pipeline"
 
@@ -240,6 +243,19 @@ class GenerationSupervisor:
     def clear_restart_flag(self) -> None:
         metadata = self.metadata()
         metadata["restart_required"] = False
+        self._write(metadata)
+
+    def record_publish(self, *, commit: str, published: bool, detail: str) -> None:
+        """Remember whether the landed commit reached the remote, and why not.
+
+        A push that failed leaves a tree that is a commit ahead of the remote,
+        which is invisible until someone runs git themselves. Writing the reason
+        next to the commit means /evolution status can say it out loud.
+        """
+        metadata = self.metadata()
+        metadata["published_commit"] = commit if published else metadata.get("published_commit")
+        metadata["publish_ok"] = published
+        metadata["publish_detail"] = detail
         self._write(metadata)
 
     def _write(self, data: dict[str, Any]) -> None:
@@ -471,12 +487,23 @@ class EnvironmentEvolver:
         provider: ModelProvider | None = None,
         validator: CandidateValidator | None = None,
         repairer: CandidateRepairer | None = None,
+        identity: GitIdentity | None = None,
+        publish: PublishPolicy | None = None,
     ) -> None:
         self.workspace = workspace
         self.repository = repository
         self.provider = provider
         self.validator = validator or CandidateValidator()
         self.repairer = repairer or CandidateRepairer()
+        self.identity = identity or GitIdentity()
+        self.publish_policy = publish or PublishPolicy()
+        # Set by the Environment so a landed generation can ask the process to
+        # restart into it. The evolver never restarts anything itself: it does
+        # not own the process, and it must stay usable from a test and a script.
+        self.on_generation_landed: Callable[[int, str], None] | None = None
+        # What the last publish attempt did, so the cycle that applied the
+        # generation can put it in the sentence a human actually reads.
+        self.last_publish: str = ""
 
     # -- pipeline state -------------------------------------------------
 
@@ -637,7 +664,7 @@ class EnvironmentEvolver:
         commit to reset to when the generation turns out to be a mistake.
         """
         generation = self.candidate(number)
-        checkout = GitRepository(self.workspace.repository_root)
+        checkout = self.checkout()
         if not await checkout.is_clean():
             raise GitError(
                 "the working tree has uncommitted changes; a generation is never "
@@ -645,7 +672,7 @@ class EnvironmentEvolver:
             )
         commit = generation.git_commit
         if commit is None:
-            candidate = GitRepository(generation.path)
+            candidate = GitRepository(generation.path, self.identity)
             if not (await candidate.status()).strip():
                 raise GitError(f"generation {number} changed nothing to apply")
             commit = await candidate.commit_mutation(number, objective)
@@ -662,7 +689,49 @@ class EnvironmentEvolver:
                 "previous": previous,
             }
         )
+        # Publish before the restart is asked for: this process may not be here
+        # a moment from now, and an unpublished generation would then sit in a
+        # local tree with nothing left running to notice.
+        self.last_publish = await self.publish(applied)
+        if self.on_generation_landed is not None:
+            self.on_generation_landed(number, applied)
         return applied
+
+    def checkout(self) -> GitRepository:
+        return GitRepository(self.workspace.repository_root, self.identity)
+
+    async def publish(self, commit: str) -> str:
+        """Push the landed commit, and report the outcome as one plain sentence.
+
+        A push is the last step, never a gate: the generation is already in the
+        tree, so a remote that refuses it is news to report, not a reason to
+        unwind work that validated.
+        """
+        if not self.publish_policy.enabled:
+            self.workspace.supervisor.record_publish(
+                commit=commit, published=False, detail="auto_push is off"
+            )
+            return "not published (auto_push is off)"
+        checkout = self.checkout()
+        try:
+            await checkout.push(self.publish_policy.remote, self.publish_policy.branch)
+        except GitError as exc:
+            detail = excerpt(str(exc), 300)
+            logger.warning("Could not publish %s: %s", commit[:8], detail)
+            self.workspace.supervisor.record_publish(
+                commit=commit, published=False, detail=detail
+            )
+            await self.repository.record_mutation(
+                {"status": "publish-failed", "commit": commit, "detail": detail}
+            )
+            return f"not published: {detail}"
+        branch = self.publish_policy.branch or await checkout.current_branch()
+        where = f"{self.publish_policy.remote}/{branch}"
+        self.workspace.supervisor.record_publish(commit=commit, published=True, detail=where)
+        await self.repository.record_mutation(
+            {"status": "published", "commit": commit, "remote": where}
+        )
+        return f"published to {where}"
 
     async def revert_tree(self) -> str | None:
         """Put the checkout back on the commit the last promotion replaced."""
@@ -670,7 +739,7 @@ class EnvironmentEvolver:
         target = metadata.get("last_known_good_commit")
         if not target:
             return None
-        checkout = GitRepository(self.workspace.repository_root)
+        checkout = self.checkout()
         if not await checkout.is_clean():
             raise GitError(
                 "the working tree has uncommitted changes; refusing to reset over them"
@@ -701,7 +770,7 @@ class EnvironmentEvolver:
         return ""
 
     async def commit_candidate(self, generation: Generation, objective: str) -> str:
-        git = GitRepository(generation.path)
+        git = GitRepository(generation.path, self.identity)
         commit = await git.commit_mutation(generation.number, objective)
         generation.git_commit = commit
         self.workspace.supervisor.record_candidate(generation)

@@ -34,6 +34,7 @@ HELP = """Commands:
   /evolution start <objective>  Give the Evolver a new objective
   /evolution promote|discard [n]
   /evolution rollback           Return to the last known good generation
+  /restart                      Restart the mesh into the code now in the tree
   /exit                         Stop EvoMesh
 """
 
@@ -337,6 +338,7 @@ class ConsoleChannel:
                 f"active generation: {metadata['active']}"
                 f"{f' ({applied[:8]})' if applied else ''}\n"
                 f"last known good: {metadata['last_known_good']}\n"
+                f"published: {self._publish_state(metadata)}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
                 f"self-repairs on this candidate: {state.get('repairs', 0)}\n"
                 f"candidates:\n{candidates or '  none'}{restart}"
@@ -357,8 +359,9 @@ class ConsoleChannel:
                 commit = await evolver.promote_candidate(number)
                 await evolver.reset_pipeline()
                 return (
-                    f"Generation {number} promoted and applied as {commit[:8]}. "
-                    "Restart the mesh to run it. The pipeline is free for the next objective."
+                    f"Generation {number} promoted and applied as {commit[:8]}, "
+                    f"{evolver.last_publish}. {self._restart_note()} "
+                    "The pipeline is free for the next objective."
                 )
             supervisor.discard(number)
             await evolver.reset_pipeline()
@@ -373,7 +376,34 @@ class ConsoleChannel:
             )
         return "Usage: /evolution status|start <objective>|promote [n]|discard [n]|rollback"
 
+    def _command_restart(self, parts: list[str]) -> str:
+        """Ask whoever owns this process to bring it back on the current tree.
+
+        The mesh cannot restart itself -- a process that exits is not around to
+        start anything -- so this raises the same flag a landed generation does
+        and lets the Control Center or the launcher script act on it.
+        """
+        self.environment.restart_reason = "a restart was requested from the console"
+        self.environment.restart_requested.set()
+        return (
+            "Restarting EvoMesh into the code currently in the tree. "
+            "The Control Center reconnects on its own once it is back."
+        )
+
     # -- helpers --------------------------------------------------------
+
+    def _restart_note(self) -> str:
+        if self.environment.settings.evolution.auto_restart:
+            return "The mesh restarts into it now."
+        return "Restart the mesh to run it (auto_restart is off)."
+
+    @staticmethod
+    def _publish_state(metadata: dict[str, object]) -> str:
+        detail = str(metadata.get("publish_detail") or "")
+        if metadata.get("publish_ok"):
+            published = str(metadata.get("published_commit") or "")
+            return f"{published[:8]} to {detail}" if published else detail
+        return f"no ({detail})" if detail else "nothing published yet"
 
     def _default_model(self) -> tuple[str, str]:
         provider = self.environment.settings.models.default_provider

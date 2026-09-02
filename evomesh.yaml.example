@@ -35,6 +35,13 @@ evolution:
   # stops and waits for a human. Promotion moves supervisor metadata; it does
   # not swap the code the running mesh executes.
   auto_promote: false
+  # A landed generation is code this process is not running. Restart into it
+  # rather than leaving a human to notice the flag and do it by hand. The
+  # Control Center and start-evomesh-console.bat both bring the mesh back up.
+  auto_restart: true
+  # Breathing room before the shutdown, so the cycle that promoted the
+  # generation finishes writing its summary to every channel first.
+  restart_delay_seconds: 5
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 
@@ -67,3 +74,31 @@ models:
       base_url: http://127.0.0.1:8000/v1
       model: local-model
       api_key: ""
+
+git:
+  # Every generation the mesh commits is signed with this identity, so a human
+  # reading the history can tell the agent's work from their own at a glance.
+  author_name: Mesh Evo Agent
+  author_email: mesh-evo-agent@evomesh.local
+  # Push a landed generation to the remote. A push that fails never undoes the
+  # commit -- the generation is in the tree either way, only unpublished -- and
+  # the reason is reported by /evolution status.
+  auto_push: true
+  remote: origin
+  # Empty means whatever branch the checkout is already on.
+  branch: ""
+
+telegram:
+  # Talk to the mesh from your phone. Everything you send goes through the same
+  # command router the Control Center uses, so /status, /agents and /evolution
+  # all work exactly as they do on the desktop.
+  enabled: false
+  # The token BotFather gives you when you create the bot.
+  token: ""
+  # Chats allowed to talk to the mesh. Leave empty and keep adopt_first_chat on:
+  # the first person who sends /start claims the bot, and the id is remembered.
+  allowed_chat_ids: []
+  adopt_first_chat: true
+  poll_timeout_seconds: 30
+  # Say when a generation lands or the mesh restarts, not only when asked.
+  announcements: true

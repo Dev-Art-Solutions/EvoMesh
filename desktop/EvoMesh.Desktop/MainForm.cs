@@ -19,10 +19,11 @@ internal sealed class MainForm : Form
     private readonly Label _status = new();
     private readonly Button _start = new();
     private readonly Button _stop = new();
-    private readonly List<Control> _restartRequiredControls = [];
     private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key)> _providers = [];
     private readonly Dictionary<string, (ComboBox Provider, ComboBox Model)> _systemAgents = [];
     private bool _loadingSettings;
+    private bool _running;
+    private DateTimeOffset? _lastCheck;
     private TextBox _environmentName = null!;
     private TextBox _dataPath = null!;
     private TextBox _generationPath = null!;
@@ -33,6 +34,17 @@ internal sealed class MainForm : Form
     private Label _settingsNotice = null!;
     private ComboBox _agentProvider = null!;
     private ComboBox _agentModel = null!;
+    private CheckBox _autoRestart = null!;
+    private TextBox _gitAuthorName = null!;
+    private TextBox _gitAuthorEmail = null!;
+    private CheckBox _gitAutoPush = null!;
+    private TextBox _gitRemote = null!;
+    private TextBox _gitBranch = null!;
+    private CheckBox _telegramEnabled = null!;
+    private TextBox _telegramToken = null!;
+    private TextBox _telegramChats = null!;
+    private CheckBox _telegramAdoptFirst = null!;
+    private CheckBox _telegramAnnouncements = null!;
 
     public MainForm(string rootPath, string uvExecutable)
     {
@@ -49,6 +61,7 @@ internal sealed class MainForm : Form
         Controls.Add(BuildHeader());
         _runtime.OutputReceived += AppendOutput;
         _runtime.RunningChanged += UpdateRuntimeState;
+        _runtime.HealthChecked += ShowHealthCheck;
         EnsureConfiguration();
         LoadSettings();
         UpdateRuntimeState(false);
@@ -58,6 +71,10 @@ internal sealed class MainForm : Form
             {
                 AppendOutput("[Control Center connected automatically]");
             }
+            // From here the mesh is watched continuously. A mesh started from
+            // the launcher script, or one that restarted itself into a new
+            // generation, is picked up without anyone touching this window.
+            _runtime.StartHealthLoop();
             await RefreshOllamaModelsAsync(showErrors: false);
         };
     }
@@ -113,7 +130,7 @@ internal sealed class MainForm : Form
             BackColor = headerColor,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 235));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
 
@@ -167,7 +184,7 @@ internal sealed class MainForm : Form
         {
             ("Status", "/status"), ("Agents", "/agents"), ("Ollama models", "/models ollama"),
             ("Skills", "/skills"), ("Evolution", "/evolution status"),
-            ("World", "/context world"), ("Help", "/help")
+            ("World", "/context world"), ("Restart mesh", "/restart"), ("Help", "/help")
         })
         {
             var button = MakeButton(text, 120);
@@ -346,6 +363,41 @@ internal sealed class MainForm : Form
             row++;
         }
 
+        AddHeading(grid, "EVOLUTION & GIT", ref row);
+        AddHelp(
+            grid,
+            "A generation the mesh validates is committed, pushed to the remote, and the mesh " +
+            "restarts itself into it. Commits are authored by the identity below, so the agent's " +
+            "work is never mistaken for yours.",
+            ref row);
+        _autoRestart = AddCheck(grid, "Restart into a landed generation", 0, row);
+        _gitAutoPush = AddCheck(grid, "Push a landed generation to the remote", 2, row);
+        row++;
+        _gitAuthorName = AddField(grid, "Commit author name", 0, row);
+        _gitAuthorEmail = AddField(grid, "Commit author email", 2, row);
+        row++;
+        _gitRemote = AddField(grid, "Remote", 0, row);
+        _gitBranch = AddField(grid, "Branch (blank = current)", 2, row);
+        row++;
+
+        AddHeading(grid, "TELEGRAM", ref row);
+        AddHelp(
+            grid,
+            "Create a bot with @BotFather, paste the token it gives you, and enable it. Everything " +
+            "you send the bot goes through the same commands as this console. Leave the chat ids " +
+            "empty with adoption on and the first person to send /start claims the bot.",
+            ref row);
+        _telegramEnabled = AddCheck(grid, "Enable the Telegram bot", 0, row);
+        _telegramAdoptFirst = AddCheck(grid, "Let the first chat claim the bot", 2, row);
+        row++;
+        _telegramToken = AddField(grid, "Bot token (BotFather)", 0, row);
+        _telegramToken.UseSystemPasswordChar = true;
+        grid.SetColumnSpan(_telegramToken, 3);
+        row++;
+        _telegramChats = AddField(grid, "Allowed chat ids", 0, row);
+        _telegramAnnouncements = AddCheck(grid, "Announce promotions and restarts", 2, row);
+        row++;
+
         var systemHeading = new Label
         {
             Text = "CORE AGENT MODELS",
@@ -388,19 +440,13 @@ internal sealed class MainForm : Form
 
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(3, 18, 3, 3) };
         _saveSettings = MakeButton("Save settings", 145);
-        _saveSettings.Click += (_, _) => SaveSettings();
+        _saveSettings.Click += async (_, _) => await SaveSettingsAsync();
         _reloadSettings = MakeButton("Reload", 110);
         _reloadSettings.Click += (_, _) => LoadSettings();
         actions.Controls.AddRange([_saveSettings, _reloadSettings]);
         grid.Controls.Add(actions, 0, row);
         grid.SetColumnSpan(actions, 4);
 
-        _restartRequiredControls.AddRange([
-            _environmentName, _dataPath, _generationPath, _logLevel, _defaultProvider,
-            .. _providers.Values.SelectMany(item => new Control[] { item.Url, item.Model, item.Key }),
-            .. _systemAgents.Values.SelectMany(item => new Control[] { item.Provider, item.Model }),
-            _saveSettings, _reloadSettings
-        ]);
         page.Controls.Add(grid);
         return page;
     }
@@ -530,6 +576,17 @@ internal sealed class MainForm : Form
                     controls.Key.Text = provider.ApiKey;
                 }
             }
+            _autoRestart.Checked = settings.Evolution.AutoRestart;
+            _gitAuthorName.Text = settings.Git.AuthorName;
+            _gitAuthorEmail.Text = settings.Git.AuthorEmail;
+            _gitAutoPush.Checked = settings.Git.AutoPush;
+            _gitRemote.Text = settings.Git.Remote;
+            _gitBranch.Text = settings.Git.Branch;
+            _telegramEnabled.Checked = settings.Telegram.Enabled;
+            _telegramToken.Text = settings.Telegram.Token;
+            _telegramChats.Text = settings.Telegram.AllowedChatIds;
+            _telegramAdoptFirst.Checked = settings.Telegram.AdoptFirstChat;
+            _telegramAnnouncements.Checked = settings.Telegram.Announcements;
             foreach (var (agentId, controls) in _systemAgents)
             {
                 var configured = settings.SystemAgents.GetValueOrDefault(agentId);
@@ -550,25 +607,73 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void SaveSettings()
+    private async Task SaveSettingsAsync()
     {
         if (_runtime.IsRunning)
         {
-            MessageBox.Show(this, "Stop EvoMesh before changing restart-required settings.", "Restart required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            // Every setting on this tab is read once, at boot. Offering the
+            // restart here is the difference between a saved file and a mesh
+            // that is actually using it.
+            var choice = MessageBox.Show(
+                this,
+                "These settings are read when the mesh boots. Save them and restart the mesh now?",
+                "Restart required",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question);
+            if (choice == DialogResult.Cancel)
+            {
+                return;
+            }
+            WriteSettings();
+            if (choice == DialogResult.Yes)
+            {
+                await SendCommandAsync("/restart");
+            }
+            else
+            {
+                AppendOutput("[saved; the mesh keeps running on the settings it booted with]");
+            }
             return;
         }
-        var settings = new EvoMeshYamlSettings
-        {
-            EnvironmentName = _environmentName.Text.Trim(),
-            DataPath = _dataPath.Text.Trim(),
-            GenerationPath = _generationPath.Text.Trim(),
-            LogLevel = _logLevel.Text,
-            DefaultProvider = _defaultProvider.Text,
-        };
+        WriteSettings();
+    }
+
+    /// <summary>
+    /// Writes the editor's values over the file that is already there.
+    /// </summary>
+    /// <remarks>
+    /// Loading first is what keeps this honest: the tab does not show every
+    /// setting the mesh has, and building a fresh object would quietly reset
+    /// each one it does not show -- the evolution objective, the promotion
+    /// policy, the prompt budgets -- to a default nobody asked for.
+    /// </remarks>
+    private void WriteSettings()
+    {
+        var settings = EvoMeshYamlSettings.Load(_configPath);
+        settings.EnvironmentName = _environmentName.Text.Trim();
+        settings.DataPath = _dataPath.Text.Trim();
+        settings.GenerationPath = _generationPath.Text.Trim();
+        settings.LogLevel = _logLevel.Text;
+        settings.DefaultProvider = _defaultProvider.Text;
+        settings.Evolution.AutoRestart = _autoRestart.Checked;
+        settings.Git.AuthorName = _gitAuthorName.Text.Trim();
+        settings.Git.AuthorEmail = _gitAuthorEmail.Text.Trim();
+        settings.Git.AutoPush = _gitAutoPush.Checked;
+        settings.Git.Remote = _gitRemote.Text.Trim();
+        settings.Git.Branch = _gitBranch.Text.Trim();
+        settings.Telegram.Enabled = _telegramEnabled.Checked;
+        settings.Telegram.Token = _telegramToken.Text.Trim();
+        settings.Telegram.AllowedChatIds = _telegramChats.Text.Trim();
+        settings.Telegram.AdoptFirstChat = _telegramAdoptFirst.Checked;
+        settings.Telegram.Announcements = _telegramAnnouncements.Checked;
         foreach (var (name, controls) in _providers)
         {
+            var existing = settings.Providers.GetValueOrDefault(name);
             settings.Providers[name] = new ProviderEditorSettings(
-                controls.Url.Text.Trim(), controls.Model.Text.Trim(), controls.Key.Text);
+                controls.Url.Text.Trim(),
+                controls.Model.Text.Trim(),
+                controls.Key.Text,
+                existing?.TimeoutSeconds ?? 600);
         }
         foreach (var (agentId, controls) in _systemAgents)
         {
@@ -595,14 +700,40 @@ internal sealed class MainForm : Form
             BeginInvoke(() => UpdateRuntimeState(running));
             return;
         }
-        _status.Text = running ? "● RUNNING" : "● STOPPED";
-        _status.ForeColor = running ? Color.FromArgb(78, 220, 130) : Color.FromArgb(255, 170, 120);
+        _running = running;
+        RenderStatus();
         _start.Enabled = !running;
         _stop.Enabled = running;
-        foreach (var control in _restartRequiredControls) control.Enabled = !running;
+        // The settings stay editable while the mesh runs: saving now offers the
+        // restart that makes them take effect, which beats making a human stop
+        // the mesh by hand just to type a token into a box.
         _settingsNotice.Text = running
-            ? "Mesh is running. Restart-required settings are locked; stop the mesh to edit them."
+            ? "Mesh is running. Saving asks whether to restart it so the new settings take effect."
             : "Mesh is stopped. Settings can be edited and will apply on the next start.";
+    }
+
+    /// <summary>
+    /// Puts the time of the last check on screen next to the verdict. A status
+    /// with no timestamp cannot be told apart from one nobody has re-examined
+    /// since the window opened, which is exactly the confusion this fixes.
+    /// </summary>
+    private void ShowHealthCheck(bool running, DateTimeOffset when)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowHealthCheck(running, when));
+            return;
+        }
+        _running = running;
+        _lastCheck = when;
+        RenderStatus();
+    }
+
+    private void RenderStatus()
+    {
+        var checkedAt = _lastCheck is null ? "" : $"  checked {_lastCheck:HH:mm:ss}";
+        _status.Text = (_running ? "● RUNNING" : "● STOPPED") + checkedAt;
+        _status.ForeColor = _running ? Color.FromArgb(78, 220, 130) : Color.FromArgb(255, 170, 120);
     }
 
     private void AppendOutput(string text)
@@ -659,6 +790,49 @@ internal sealed class MainForm : Form
 
         button.EnabledChanged += (_, _) => ApplyColors();
         ApplyColors();
+    }
+
+    private void AddHeading(TableLayoutPanel grid, string text, ref int row)
+    {
+        var heading = new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Font = new Font(Font, FontStyle.Bold),
+            Margin = new Padding(3, 18, 3, 6),
+        };
+        grid.Controls.Add(heading, 0, row);
+        grid.SetColumnSpan(heading, 4);
+        row++;
+    }
+
+    private static void AddHelp(TableLayoutPanel grid, string text, ref int row)
+    {
+        var help = new Label
+        {
+            Text = text,
+            AutoSize = true,
+            MaximumSize = new Size(880, 0),
+            ForeColor = Color.DimGray,
+            Margin = new Padding(3, 0, 3, 8),
+        };
+        grid.Controls.Add(help, 0, row);
+        grid.SetColumnSpan(help, 4);
+        row++;
+    }
+
+    private static CheckBox AddCheck(TableLayoutPanel grid, string label, int column, int row)
+    {
+        var field = new CheckBox
+        {
+            Text = label,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 8, 8, 8),
+        };
+        grid.Controls.Add(field, column, row);
+        grid.SetColumnSpan(field, 2);
+        return field;
     }
 
     private static TextBox AddField(TableLayoutPanel grid, string label, int column, int row)

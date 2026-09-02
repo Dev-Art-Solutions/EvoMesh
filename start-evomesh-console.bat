@@ -19,6 +19,16 @@ if errorlevel 1 (
 if not exist "evomesh.yaml" copy /y "evomesh.yaml.example" "evomesh.yaml" >nul
 "%UV_EXE%" sync --locked --no-dev
 if errorlevel 1 exit /b 1
+
+REM Exit code 86 is EvoMesh asking to be brought back up on a generation it just
+REM landed in the tree. Anything else -- a clean /exit, a crash -- ends the run.
+:run
 "%UV_EXE%" run evomesh --config "%CD%\evomesh.yaml"
+if %errorlevel% equ 86 (
+    echo [EvoMesh] A new generation landed. Restarting into it...
+    REM The new code may need dependencies the old one did not have.
+    "%UV_EXE%" sync --locked --no-dev
+    goto run
+)
 
 endlocal

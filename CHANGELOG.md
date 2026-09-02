@@ -4,7 +4,55 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- A landed generation is now published. It is committed under the mesh's own identity
+  (`Mesh Evo Agent` by default, configurable as `git.author_name`/`author_email`) and
+  pushed to the remote, so the agent's work is distinguishable from a human's in the
+  history and does not stop at the local disk.
+  - The identity is passed to git per invocation: the mesh never edits your checkout's
+    configuration, and it signs correctly on a machine with no `user.name` at all.
+  - The push is the last step, never a gate. A missing remote, a detached HEAD, or
+    credentials git cannot supply leave the generation landed and report the reason
+    under `published:` in `/evolution status`.
+  - `git.auto_push: false` keeps generations local.
+- `evolution.auto_restart` (on by default) restarts the mesh into the generation it just
+  landed. Until this, promotion put new code in the tree and the process went on running
+  the old code until a human noticed the flag.
+  - The process exits with code **86**, which means *start me again*; both the Control
+    Center and `start-evomesh-console.bat` bring it back up, and the console launcher
+    re-syncs dependencies first.
+  - The durable `restart_required` flag is still written before the exit, so the rollback
+    path survives a process that does not come back.
+  - `evolution.restart_delay_seconds` (default 5) lets the cycle that promoted the
+    generation finish writing its summary to every channel first.
+  - `/restart` asks for the same thing by hand.
+- A Telegram bot as a second console. Messages route through the same command router the
+  Control Center uses, so `/status`, `/agents`, `/evolution status`, `/chat <agent>` and
+  plain conversation behave identically from a phone.
+  - Configured from the Control Center's Settings tab: paste the BotFather token, enable
+    it, save. Saving while the mesh runs offers the restart that picks it up.
+  - An empty `allowed_chat_ids` with `adopt_first_chat` on lets the first `/start` claim
+    the bot -- the only way to learn a chat id without sending a human hunting for it.
+    Every later stranger is turned away by id.
+  - The update offset is persisted, so the command that triggered an automatic restart is
+    not replayed by the process that comes back up.
+  - `announcements: true` reports promotions and restarts unprompted.
+  - `/exit` is refused from Telegram: the control port is localhost-only, so a shutdown
+    from a phone would leave nothing running that could be asked to start again.
+
 ### Fixed
+
+- The Control Center checks whether the mesh is alive continuously instead of once at
+  startup. It probed a single time on open, and any mesh that appeared later -- one
+  started from the launcher script, one that restarted itself -- was reported as STOPPED
+  indefinitely while plainly running. The status now carries the time it was last
+  verified.
+- Saving settings from the Control Center no longer resets the settings it does not show.
+  It built a fresh configuration object from the visible fields, so one save silently
+  reverted the evolution objective, `auto_promote`, `max_repairs`, the prompt budgets,
+  the runtime cadence and every provider timeout to their defaults. The editor now
+  writes over the file that is there.
 
 - SQLite runs in WAL with a 30s busy timeout. Every agent loop writes through its own
   connection, so the default rollback journal had writers taking exclusive locks on each
