@@ -393,6 +393,8 @@ class ConsoleChannel:
             max_steps=settings.max_steps,
             max_seconds=settings.max_seconds,
             transcript_chars=settings.transcript_chars,
+            shell_allow=settings.shell_programs(),
+            shell_seconds=settings.shell_seconds,
             read_only=not writing,
             allow_write=writing,
         )

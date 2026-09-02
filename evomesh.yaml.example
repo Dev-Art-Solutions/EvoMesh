@@ -64,6 +64,12 @@ evolution:
 #   # are dropped with a marker saying so -- because the alternative is the model
 #   # server dropping the oldest end of the prompt, where the objective lives.
 #   transcript_chars: 12000
+#   # Programs the harness may run, by bare name. Empty -- the default -- means
+#   # the shell tool is not offered at all. There is no shell interpreter, so
+#   # pipes and redirects are arguments rather than operators, and this is an
+#   # allow-list because a deny-list is a promise nobody can keep.
+#   shell_allow: []          # e.g. [python, git, ruff]
+#   shell_seconds: 60
 #   # How much of a file may enter the transcript. The tool truncates and says
 #   # what it withheld, so the model can ask for the rest -- rather than the
 #   # model server silently dropping the oldest end of the prompt.

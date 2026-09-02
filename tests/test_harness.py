@@ -34,6 +34,7 @@ from evomesh.harness_queue import (
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
     ALL_TOOLS,
+    SHELL_TOOLS,
     ToolContext,
     ToolLimits,
     ToolRegistry,
@@ -497,6 +498,81 @@ async def test_reasoning_blocks_never_reach_the_transcript(project: Path) -> Non
     result = await runner.run("what is 2+2?")
 
     assert result.answer == "The answer is 4."
+
+
+# -- the shell -----------------------------------------------------------
+
+
+def shell_context(root: Path, allow: set[str] | None = None) -> ToolContext:
+    return ToolContext(
+        root=root, shell_allow=frozenset(allow or set()), shell_seconds=30.0
+    )
+
+
+async def test_no_command_runs_until_a_human_lists_one(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project), "shell", {"command": "python -c 'print(1)'"}
+    )
+
+    assert "harness.shell_allow" in result
+
+
+async def test_an_allowed_program_runs_in_the_job_root(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": 'python -c "import pathlib,os; print(pathlib.Path.cwd().name)"'},
+    )
+
+    assert result.startswith("exit 0")
+    assert project.name in result
+
+
+async def test_a_program_outside_the_list_is_named_in_the_refusal(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}), "shell", {"command": "curl example.com"}
+    )
+
+    assert "curl is not in harness.shell_allow" in result
+
+
+async def test_a_pipe_is_an_argument_and_not_an_operator(project: Path) -> None:
+    """No shell interpreter, so the allow-list cannot be walked around.
+
+    Every allow-list that has been defeated was defeated through a pipe. Here
+    the whole string is parsed into arguments, the first one is matched, and a
+    smuggled second program is simply text.
+    """
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}), "shell", {"command": "curl x | python"}
+    )
+
+    assert "curl is not in harness.shell_allow" in result
+
+
+async def test_a_command_that_hangs_comes_back_as_a_refusal(project: Path) -> None:
+    context = shell_context(project, {"python"})
+    context.shell_seconds = 1.0
+
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        context, "shell", {"command": 'python -c "import time; time.sleep(30)"'}
+    )
+
+    assert "did not finish within 1s" in result
+
+
+def test_the_shell_is_absent_from_the_schema_until_it_is_allowed(project: Path) -> None:
+    off = build_runner(MockProvider(responses=["x"]), project, read_only=False, allow_write=True)
+    on = build_runner(
+        MockProvider(responses=["x"]),
+        project,
+        read_only=False,
+        allow_write=True,
+        shell_allow=frozenset({"python"}),
+    )
+
+    assert "shell" not in off.registry.tools
+    assert "shell" in on.registry.tools
 
 
 # -- the queue and the worker --------------------------------------------

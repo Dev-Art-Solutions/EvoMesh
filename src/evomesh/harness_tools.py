@@ -13,8 +13,10 @@ cannot work under least privilege at all.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import re
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,7 @@ from typing import Any
 
 from evomesh.harness_session import HarnessSession
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
+from evomesh.processes import run_command
 
 # Directories no answer about this project ever comes out of, and which a
 # recursive grep would otherwise spend its whole match budget inside.
@@ -82,6 +85,10 @@ class ToolContext:
     # registered; this flag is the configuration saying no even when they are,
     # so a refusal can name the setting a human has to change.
     allow_write: bool = False
+    # Programs the shell tool may run, by bare name. Empty refuses everything,
+    # which is why the tool is not even registered until a human fills this in.
+    shell_allow: frozenset[str] = frozenset()
+    shell_seconds: float = 60.0
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -383,6 +390,62 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
     return f"{verb} {where} ({len(content)} bytes)\n{diff}" if diff else f"{verb} {where}"
 
 
+async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
+    """Run one allowed program in the job root. The only tool that can do harm.
+
+    Sixth of six, and off unless a human lists the programs it may run. No shell
+    interpreter is involved: the command is split with shlex and executed
+    directly, so ``&&``, ``|`` and ``$(...)`` are arguments rather than
+    operators -- every allow-list that has been defeated was defeated through a
+    pipe. The first argument is matched *after* parsing, because matching the
+    raw string would let `python;curl` through wherever it is re-split later.
+    """
+    raw = str(args.get("command") or "").strip()
+    if not raw:
+        raise ToolDenied("DENIED: shell needs a command")
+    if not context.shell_allow:
+        raise ToolDenied(
+            "DENIED: no command may be run. List the programs you trust in "
+            "harness.shell_allow in evomesh.yaml."
+        )
+    try:
+        # POSIX rules even on Windows, deliberately. In non-POSIX mode shlex
+        # keeps the quotes, so `python -c "print(1)"` reaches python as a string
+        # literal: it runs, prints nothing, and exits 0 -- a command that looks
+        # like it worked and did nothing, which is the worst possible result.
+        # The cost is that an unquoted Windows path loses its backslashes, so
+        # the tool description tells the model to quote paths or use slashes.
+        parts = shlex.split(raw, posix=True)
+    except ValueError as exc:
+        raise ToolDenied(f"DENIED: {raw} could not be parsed as a command: {exc}") from exc
+    if not parts:
+        raise ToolDenied("DENIED: shell needs a command")
+    program = Path(parts[0]).name.lower()
+    program = program[:-4] if program.endswith(".exe") else program
+    if program not in context.shell_allow:
+        allowed = ", ".join(sorted(context.shell_allow))
+        raise ToolDenied(
+            f"DENIED: {program} is not in harness.shell_allow (allowed: {allowed})"
+        )
+    try:
+        result = await asyncio.wait_for(
+            run_command(parts[0], *parts[1:], cwd=context.root),
+            timeout=context.shell_seconds,
+        )
+    except TimeoutError:
+        # A result, not an exception: a command that ran too long is something
+        # the model can work around, and a tool that can hang is a worker that
+        # never comes back and a queue that never drains.
+        raise ToolDenied(
+            f"DENIED: {program} did not finish within {context.shell_seconds:.0f}s"
+        ) from None
+    except OSError as exc:
+        raise ToolDenied(f"DENIED: {program} could not be started: {exc}") from exc
+    context.tally.reads += 1
+    body = _clip(result.output.rstrip(), context.limits, unit="lines")
+    return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
+
+
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
@@ -473,6 +536,29 @@ WRITE_TOOLS: tuple[Tool, ...] = (
             "required": ["path", "content"],
         },
         run=tool_write,
+    ),
+)
+
+SHELL_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="shell",
+        description=(
+            "Run one allowed program in the job root and return its exit code "
+            "and output. No shell interpreter: pipes, redirects and && are "
+            "arguments, not operators, and only allowed programs run. Quote any "
+            "path containing backslashes, or write it with forward slashes."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The program and its arguments, e.g. python -c 'import x'.",
+                }
+            },
+            "required": ["command"],
+        },
+        run=tool_shell,
     ),
 )
 

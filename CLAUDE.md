@@ -220,6 +220,10 @@ Three properties of the loop are load-bearing and are the reasons it is shaped t
   cycle would otherwise fill the queue with copies that all edit the same files. The queue is
   **not durable** and stopping the mesh cancels what is in it — reported to the submitter as a
   message, because the only thing worse than a cancelled job is a plan step no event will finish.
+- **The shell is an allow-list of program names, matched after parsing, and there is no shell
+  interpreter.** Pipes and redirects are arguments, so a smuggled second program is text. It is not
+  registered at all while `harness.shell_allow` is empty. Do not add a deny-list, do not add
+  `shell=True`, and do not add a `cwd` argument — the job root is the only place a command runs.
 - **Writing is two gates, not one.** `harness.enabled` turns the harness on; `harness.allow_write`
   decides whether any job may change a file. A read-only job is not given the write tools at all,
   and a writing job on a mesh that forbids writes gets a refusal *naming the setting* — which the

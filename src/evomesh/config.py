@@ -103,6 +103,15 @@ class HarnessSettings(BaseModel):
     # is dropped by the model server from the oldest end -- where the objective
     # lives -- when nobody caps it here.
     transcript_chars: int = 12000
+    # Programs the shell tool may run, by bare name. Empty -- the default --
+    # means the tool is not offered at all. This is an allow-list rather than a
+    # deny-list because a deny-list is a promise that every dangerous command
+    # has been thought of, and it is wrong the first time a tool is installed.
+    shell_allow: list[str] = Field(default_factory=list)
+    shell_seconds: float = 60.0
+
+    def shell_programs(self) -> frozenset[str]:
+        return frozenset(name.strip().lower() for name in self.shell_allow if name.strip())
     # How much of a file may enter the transcript. Rule of the house: the trim
     # is ours, and the tool says what it withheld so the model can ask again.
     tool_result_chars: int = 4000

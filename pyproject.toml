@@ -1,6 +1,6 @@
 [project]
 name = "evomesh"
-version = "0.2.0a3"
+version = "0.2.0a4"
 description = "Local-first, self-evolving multi-agent environment"
 readme = "README.md"
 requires-python = ">=3.13"

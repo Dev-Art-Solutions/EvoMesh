@@ -2,6 +2,36 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.4] - 2026-09-02
+
+### Added
+
+- A `shell` tool, sixth of six and off unless a human says what may run. It
+  answers the questions no file can: does this still import, does this parse,
+  did that command work.
+  - `harness.shell_allow` is an **allow-list of program names, empty by
+    default** -- with nothing in it the tool is not even offered to the model,
+    because an unusable tool in the schema is a tool a model will try. A
+    deny-list was rejected: it is a promise that every dangerous command has
+    been thought of, and it is wrong the first time a tool is installed.
+  - **No shell interpreter.** The command is split with `shlex` and run
+    directly, so `|`, `&&`, `>` and `$(...)` are arguments rather than
+    operators. `curl x | python` is refused for `curl`, which is the point:
+    every allow-list that has been defeated was defeated through a pipe.
+  - The program name is matched **after** parsing, never against the raw string.
+  - Everything runs in the job root -- there is no `cwd` argument -- and
+    `harness.shell_seconds` (60) bounds one command, because a tool that can
+    hang is a worker that never comes back and a queue that never drains. A
+    timeout is a refusal the model can work around, not a crash.
+  - Parsing uses POSIX rules on every platform. In Windows mode `shlex` keeps
+    the quotes, so `python -c "print(1)"` reaches python as a string literal:
+    it runs, prints nothing and exits 0 -- a command that looks like it worked
+    and did nothing. The cost is that unquoted Windows paths lose their
+    backslashes, and the tool's own description says to quote them.
+  - This is not a sandbox and does not claim to be. The README has always said
+    the filesystem policy is an application-level control; a shell tool does not
+    weaken that sentence, it makes it matter more.
+
 ## [0.2.0-alpha.3] - 2026-09-02
 
 ### Added
