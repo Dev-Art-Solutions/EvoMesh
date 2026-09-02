@@ -108,3 +108,15 @@ class StubRepairer(CandidateRepairer):
             "exit_code": 0,
             "output": "Found 1 error (1 fixed, 0 remaining).\n",
         }
+
+
+def wipe_database(path: Path) -> None:
+    """Delete a database the way `git clean -xfd` does, WAL sidecars included.
+
+    `data/` is gitignored, so a clean removes the live database out from under
+    a running mesh. That is the failure the storage and control tests
+    reproduce, and SQLite reports the result as an empty database rather than
+    a missing one.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(path) + suffix).unlink(missing_ok=True)

@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -21,6 +24,7 @@ from evomesh.messaging import MessageBus
 from evomesh.models import MockProvider, OllamaProvider, describe
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.storage import SQLiteRepository
+from tests.fakes import wipe_database
 
 
 @pytest.fixture
@@ -347,3 +351,41 @@ def test_provider_timeout_comes_from_configuration(tmp_path: Path) -> None:
 
     assert isinstance(provider, OllamaProvider)
     assert provider.timeout_seconds == 42
+
+
+async def test_a_wiped_database_heals_on_the_next_write(
+    repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A clean sweep of data/ must cost the rows, not the running mesh."""
+    agent = AgentDefinition(name="Trader", purpose="Trade", model_name="mock-model")
+    await repository.save_agent(agent)
+    await asyncio.to_thread(wipe_database, repository.path)
+
+    with caplog.at_level(logging.WARNING, logger="evomesh.storage"):
+        await repository.save_agent(agent)
+
+    assert [item.name for item in await repository.load_agents()] == ["Trader"]
+    assert "has no schema" in caplog.text
+
+
+async def test_a_wiped_database_heals_on_the_next_read(repository: SQLiteRepository) -> None:
+    await asyncio.to_thread(wipe_database, repository.path)
+    # The rows are gone, but the query answers instead of raising.
+    assert await repository.load_agents() == []
+    assert await repository.load_state("stage") is None
+
+
+async def test_one_wipe_rebuilds_once_however_many_agents_notice(
+    repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every agent loop has its own connection, so they all fail together."""
+    await asyncio.to_thread(wipe_database, repository.path)
+    with caplog.at_level(logging.WARNING, logger="evomesh.storage"):
+        await asyncio.gather(*(repository.load_agents() for _ in range(8)))
+    assert caplog.text.count("has no schema") == 1
+
+
+async def test_a_failure_that_is_not_a_wipe_still_raises(repository: SQLiteRepository) -> None:
+    """Rebuilding fixes a missing schema and nothing else, so nothing else is swallowed."""
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        await repository._all("SELECT nope FROM agents")

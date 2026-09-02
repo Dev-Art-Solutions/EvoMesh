@@ -1,7 +1,11 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
+import pytest
+
+import evomesh.control
 from evomesh.config import Settings
 from evomesh.console import ConsoleChannel
 from evomesh.contracts import AgentDefinition
@@ -57,27 +61,32 @@ async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> N
     await environment.stop()
 
 
-def _wipe_database(path: Path) -> None:
-    """Remove the database the way `git clean -xfd` does: WAL sidecars included."""
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(path) + suffix).unlink(missing_ok=True)
+class ExplodingChannel(ConsoleChannel):
+    """A handler that raises exactly what the old dispatcher tuple did not list."""
+
+    async def _command_boom(self, parts: list[str]) -> str:
+        raise sqlite3.OperationalError("no such table: state")
 
 
 async def test_control_server_reports_a_failed_command_and_keeps_the_connection(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A wiped database must reach the Control Center as text, not a dropped socket.
+    """A failing command must reach the Control Center as text, not a dropped socket.
 
-    ``data/`` is gitignored, so a ``git clean -xfd`` removes the live database
-    out from under a running mesh. Every later query then raises
-    ``sqlite3.OperationalError``, which is not a RuntimeError -- it used to
-    escape the dispatcher, close the writer, and reach a human as "the mesh
-    control connection was lost" for every /evolution status they typed.
+    The dispatcher used to catch a hand-listed tuple of exceptions. A wiped
+    database raised sqlite3.OperationalError, which is not a RuntimeError, so
+    it escaped, closed the writer, and reached a human as "the mesh control
+    connection was lost" for every /evolution status they typed.
+
+    The handler raises here rather than the storage layer: a repository heals a
+    wiped database on its own now, and this is a claim about the dispatcher,
+    which owes the same answer for whatever any handler raises.
     """
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})
     await environment.start()
     shutdown = asyncio.Event()
+    monkeypatch.setattr(evomesh.control, "ConsoleChannel", ExplodingChannel)
     server = ControlServer(environment, shutdown, port=0)
     await server.start()
     assert server._server is not None
@@ -89,11 +98,9 @@ async def test_control_server_reports_a_failed_command_and_keeps_the_connection(
         await writer.drain()
         return json.loads(await reader.readline())
 
-    await asyncio.to_thread(_wipe_database, settings.data_path)
-
-    response = await request("/evolution status")
+    response = await request("/boom")
     assert response["error"] is True
-    assert "OperationalError: no such table" in str(response["output"])
+    assert response["output"] == "Error: OperationalError: no such table: state"
     # The point of the fix: the same connection still answers afterwards.
     assert (await request("/ping"))["output"] == "EvoMesh control ready"
 
