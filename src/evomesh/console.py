@@ -42,6 +42,8 @@ HELP = """Commands:
   /harness ask "<question>"     Let the model read the project before answering
   /harness do "<objective>" [path]  Let it change files, if harness.allow_write
   /harness status               Queue, workers, and what the last jobs did
+  /harness grant <agent> [path] Let an agent use the harness in a directory
+  /harness revoke <agent>       Take it away
   /telegram status              Whether the bot is connected, and who may use it
   /telegram test                Ask Telegram whether the configured token works
   /telegram allow|revoke <id>   Manage which chats may talk to the mesh
@@ -354,6 +356,26 @@ class ConsoleChannel:
                 + ("\n".join(f"  {row}" for row in rows) if rows else "  no jobs yet")
                 + "\nThe queue is not durable: stopping the mesh cancels what is in it."
             )
+        if action in ("grant", "revoke") and len(parts) > 2:
+            agent = self.environment.registry.get(parts[2])
+            if action == "revoke":
+                agent.harness_root = ""
+                await self.environment.repository.save_agent(agent)
+                return f"{agent.name} may no longer submit harness jobs."
+            root = _directory(parts[3]) if len(parts) > 3 else self.environment.project_root
+            if root is None:
+                return f"{parts[3]} is not a directory."
+            agent.harness_root = str(root)
+            await self.environment.repository.save_agent(agent)
+            await self.environment.grant_access(
+                FilesystemGrant(
+                    agent_id=agent.id,
+                    path=str(root),
+                    read=True,
+                    write=settings.allow_write,
+                )
+            )
+            return f"{agent.name} may now submit harness jobs in {root}."
         if action == "job" and len(parts) > 2 and parts[2].isdigit():
             job = self.environment.harness_queue.jobs.get(int(parts[2]))
             return job.describe() if job else f"There is no job {parts[2]}."

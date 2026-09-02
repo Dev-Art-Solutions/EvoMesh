@@ -14,8 +14,10 @@ from pathlib import Path
 import pytest
 
 from evomesh.agents import system_agent_definitions
+from evomesh.bdi import ReflectiveBehavior
+from evomesh.cognition import CycleContext
 from evomesh.config import HarnessSettings, ProviderSettings, Settings
-from evomesh.contracts import AgentPhase
+from evomesh.contracts import AgentDefinition, AgentPhase
 from evomesh.environment import Environment
 from evomesh.harness import (
     HarnessResult,
@@ -764,6 +766,75 @@ async def test_no_worker_runs_when_the_harness_is_off(tmp_path: Path) -> None:
         assert environment.harness_workers == []
         with pytest.raises(RuntimeError, match="harness is off"):
             environment.submit_harness_job("anything")
+    finally:
+        await environment.stop()
+
+
+# -- the harness for an ordinary agent ------------------------------------
+
+
+async def granted_agent(tmp_path: Path) -> tuple[Environment, AgentDefinition]:
+    environment = Environment(
+        mesh_settings(tmp_path),
+        providers={"ollama": MockProvider(["1. investigate the notes\n", "found it"])},
+    )
+    await environment.start()
+    agent = AgentDefinition(name="Scout", purpose="Look into things")
+    agent.harness_root = str(tmp_path)
+    agent.mind.add_goal("Work out why the importer fails")
+    await environment.register_agent(agent)
+    return environment, agent
+
+
+async def test_a_granted_agent_takes_a_looking_step_with_tools(tmp_path: Path) -> None:
+    """The verb decides, not a second model call.
+
+    Rule 6 again: asking the model whether it wants tools is one extra
+    inference per cycle to answer what a prefix answers for free, and on a 4B
+    model the answer would be noise.
+    """
+    environment, agent = await granted_agent(tmp_path)
+    behavior = ReflectiveBehavior()
+    memory = environment.memory_for(agent)
+    await memory.ensure()
+    context = CycleContext(
+        definition=agent,
+        provider=environment.providers["ollama"],
+        memory=memory,
+        budget=environment.budget,
+        services=environment._services(),  # noqa: SLF001 - the environment's own wiring
+    )
+    try:
+        first = await behavior.cycle(context)  # plans, then takes step one
+        job = environment.harness_queue.open_jobs()
+        assert job, "a looking step became a job"
+        assert first.phase is AgentPhase.AWAITING_HARNESS
+        assert environment.runtime_states()  # the roster still answers
+        # The step is not consumed while the job runs, so the agent keeps one
+        # commitment instead of re-adopting a plan every tick.
+        intention = agent.mind.current_intention()
+        assert intention is not None and intention.cursor == 0
+        assert intention.steps[0].job == job[0].number
+    finally:
+        await environment.stop()
+
+
+async def test_an_agent_without_a_grant_still_just_prompts(tmp_path: Path) -> None:
+    environment, agent = await granted_agent(tmp_path)
+    agent.harness_root = ""
+    behavior = ReflectiveBehavior()
+    memory = environment.memory_for(agent)
+    await memory.ensure()
+    context = CycleContext(
+        definition=agent,
+        provider=environment.providers["ollama"],
+        memory=memory,
+        budget=environment.budget,
+        services=environment._services(),  # noqa: SLF001
+    )
+    try:
+        await behavior.cycle(context)
+        assert not environment.harness_queue.jobs
     finally:
         await environment.stop()
 

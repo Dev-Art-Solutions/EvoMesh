@@ -204,6 +204,14 @@ class HarnessGateway:
     def job(self, number: int) -> HarnessJob | None:
         return self.queue.jobs.get(number)
 
+    def open_job_for(self, agent_id: str) -> HarnessJob | None:
+        """The job this agent already has in flight, if any.
+
+        A behavior that re-reaches its own step every cycle must find the job it
+        submitted rather than queue another copy of it.
+        """
+        return self.queue.open_job_for(agent_id)
+
     def changes(self, job: HarnessJob) -> list[dict[str, Any]]:
         """Every edit and write the job actually applied, with its diff."""
         return [

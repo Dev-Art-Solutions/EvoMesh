@@ -52,7 +52,7 @@ wheels = [
 
 [[package]]
 name = "evomesh"
-version = "0.2.0a2"
+version = "0.2.0a5"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

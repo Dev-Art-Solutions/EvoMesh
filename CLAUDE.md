@@ -210,6 +210,11 @@ Three properties of the loop are load-bearing and are the reasons it is shaped t
   each match*, so widening the anchor costs no second read. Do not add an `occurrence: 2` argument:
   it lets a model that cannot widen an anchor guess an index instead, and every wrong guess is a
   silent wrong edit.
+- **The harness is a capability an agent is granted, not one the mesh has.** `harness_root` on the
+  agent plus the matching filesystem grant; a step is taken with tools when it starts with a looking
+  verb (`HARNESS_VERBS`), and the job number is remembered **on the step** so a finished job is not
+  mistaken for "no job yet". Do not ask the model whether it wants tools — that is one inference per
+  cycle to answer what a prefix answers for free (rule 6).
 - **A harness job is asked for, not done.** An agent submits to `HarnessQueue` and keeps cycling;
   the worker runs the tool loop and the result comes back as an **ordinary inbound message**
   (rule 2), with the audit record every message gets. This is what keeps rule 7 true — the run

@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from evomesh.cognition import (
     CycleContext,
@@ -46,6 +47,7 @@ from evomesh.contracts import (
     MindState,
     PlanStep,
 )
+from evomesh.harness_queue import HarnessGateway
 from evomesh.memory import clip
 from evomesh.models import ModelUnavailableError
 
@@ -62,6 +64,24 @@ PLAN_FORMAT = (
 STEP_LINE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*(.+?)\s*$")
 # A "WORD:" opener is a reply field, never a plan step.
 FIELD_LINE = re.compile(r"^[A-Za-z][A-Za-z ]{0,14}:")
+
+# A plan step that starts with one of these is a step that needs to look at
+# something, so a granted agent takes it with tools instead of with a prompt.
+# Decided by a prefix rather than by asking the model: that would be one extra
+# inference per cycle to answer a question this list answers for free.
+HARNESS_VERBS = (
+    "investigate",
+    "read ",
+    "find ",
+    "search",
+    "check ",
+    "look ",
+    "inspect",
+    "review",
+    "identify",
+    "locate",
+    "diagnose",
+)
 
 RECONSIDER_NO_INTENTION = "nothing committed yet"
 RECONSIDER_PLAN_DONE = "the plan finished"
@@ -358,6 +378,8 @@ class BDIBehavior:
     async def execute(
         self, context: CycleContext, intention: Intention, step: PlanStep
     ) -> StepResult:
+        if (harness_step := await self.through_harness(context, step)) is not None:
+            return harness_step
         instruction = (
             f"Your current plan is:\n{intention.render()}\n\n"
             f"Do only this step now: {step.description}\n\n"
@@ -373,6 +395,57 @@ class BDIBehavior:
         return StepResult(
             summary=reply.result or reply.step or step.description,
             fact=reply.fact,
+            phase=AgentPhase.IDLE,
+        )
+
+    async def through_harness(
+        self, context: CycleContext, step: PlanStep
+    ) -> StepResult | None:
+        """Take this step with tools, if the agent was granted them and it looks
+        like a step that needs to look at something.
+
+        Deliberately decided by a verb rather than by asking the model. That
+        would be one extra inference per cycle to answer a question a prefix
+        answers for free, and on a 4B model the answer would be noise -- rule 6
+        again: the model is the fallback, not the router.
+        """
+        root = context.definition.harness_root
+        harness = context.service("harness")
+        if not root or harness is None or not isinstance(harness, HarnessGateway):
+            return None
+        wanted = step.description.strip().lower()
+        if not wanted.startswith(HARNESS_VERBS):
+            return None
+        # The job is remembered on the *step*, not on the agent: when it
+        # finishes, the step that asked for it is the one that consumes the
+        # answer, and a finished job must not be mistaken for "no job yet".
+        job = harness.job(step.job) if step.job else None
+        if job is None:
+            job = harness.submit(
+                f"{step.description}\n\nWork inside this directory and report what you found.",
+                agent_id=context.definition.id,
+                root=Path(root),
+                label=step.description,
+            )
+            step.job = job.number
+            if job.open:
+                return StepResult(
+                    summary=f"harness job {job.number} is looking into: {step.description}",
+                    phase=AgentPhase.AWAITING_HARNESS,
+                    hold=True,
+                )
+        if job.open:
+            return StepResult(
+                summary=f"harness job {job.number} is still working",
+                phase=AgentPhase.AWAITING_HARNESS,
+                hold=True,
+            )
+        answer = job.result.answer.strip() if job.result else job.detail
+        # The finding goes into memory as the step's own outcome. An agent that
+        # investigated something and did not remember it has investigated nothing.
+        return StepResult(
+            summary=answer or f"harness job {job.number} found nothing to report",
+            fact=answer.splitlines()[0] if answer else "",
             phase=AgentPhase.IDLE,
         )
 

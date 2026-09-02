@@ -2,6 +2,31 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.2.0-alpha.5] - 2026-09-02
+
+### Added
+
+- The harness stopped being only the Evolver's. Any agent can be granted it,
+  the way filesystem access is granted:
+  `/harness grant "Notes Summarizer" D:/notes`, and `/harness revoke` to take it
+  back. The grant records the root on the agent and issues the matching
+  filesystem grant, so "what may this agent do" still has one answer in one
+  place.
+  - A granted agent takes a plan step **with tools instead of with a prompt**
+    when the step starts with a looking verb -- investigate, find, search,
+    check, inspect, review, diagnose. Decided by a prefix rather than by asking
+    the model, because that would be one extra inference per cycle to answer
+    what a list answers for free, and on a 4B model the answer would be noise.
+  - The step is not consumed while the job runs, so the agent keeps one
+    commitment instead of completing and re-adopting a plan every tick, and its
+    phase reads `awaiting-harness`. The job number is remembered **on the step**:
+    when it finishes, the step that asked for it consumes the answer, and a
+    finished job is never mistaken for "no job yet".
+  - The finding is written into the agent's memory as the step's own outcome. An
+    agent that investigated something and did not remember it has investigated
+    nothing.
+  - An agent with no grant behaves exactly as before, prompt for prompt.
+
 ## [0.2.0-alpha.4] - 2026-09-02
 
 ### Added

@@ -134,6 +134,10 @@ class PlanStep(BaseModel):
     action: str = "think"
     status: StepStatus = StepStatus.PENDING
     result: str = ""
+    # The harness job taking this step, if one is. Held on the step rather than
+    # on the agent because the step is what the job is for: when the job
+    # finishes, the step that asked for it is the one that consumes the answer.
+    job: int = 0
 
     def render(self) -> str:
         mark = {StepStatus.DONE: "x", StepStatus.FAILED: "!", StepStatus.PENDING: " "}
@@ -347,6 +351,10 @@ class AgentDefinition(BaseModel):
     memory_enabled: bool = True
     memory_strategy: str = "persistent"
     autonomy: Autonomy = Autonomy.CYCLIC
+    # Where this agent may run harness jobs. Empty means it may not: the harness
+    # is a capability an agent is given, like a filesystem grant, rather than
+    # something every agent has because the mesh has it.
+    harness_root: str = ""
     cycle_seconds: int | None = None
     status: AgentStatus = AgentStatus.CANDIDATE
     created_at: datetime = Field(default_factory=now_utc)

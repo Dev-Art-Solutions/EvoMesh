@@ -263,6 +263,10 @@ Two things are deliberate. Tool output is truncated **by the tool**, which says 
 
 Every job writes one JSONL file under `.runtime/harness/`, flushed as it runs, so a job that hangs still leaves the whole story up to that moment.
 
+### Any agent can be given the harness
+
+`/harness grant "Notes Summarizer" D:/notes` lets an ordinary agent use the tools inside one directory, and `/harness revoke` takes it back. A granted agent takes a plan step with tools rather than with a prompt when the step starts with a looking verb — *investigate*, *find*, *search*, *check*, *inspect*, *review*, *diagnose* — and everything else stays a plain model call. The finding is written into the agent's memory as that step's outcome.
+
 ### An agent asks for a job rather than stopping to do one
 
 A tool loop takes minutes; a cycle has to stay a tick. So an agent submits a job to a queue and keeps running — it still answers `/chat`, still reports what it is working on, still appears in `/agents` — and simply commits to nothing new while a job of its own is open. Its phase reads `awaiting-harness`, which is deliberately not `waiting-human`: one is blocked on a person who may never come back, the other on a worker that certainly will.
