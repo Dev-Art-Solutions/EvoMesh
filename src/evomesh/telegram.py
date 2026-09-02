@@ -68,10 +68,59 @@ class TelegramChannel:
         self._allowed: set[int] = {int(item) for item in settings.allowed_chat_ids}
         self._offset = 0
         self._running = False
+        self.identity = ""
 
     @property
     def configured(self) -> bool:
         return self.settings.enabled and bool(self.settings.token.strip())
+
+    @property
+    def running(self) -> bool:
+        """Whether the poller is actually connected, not merely configured."""
+        return self._running
+
+    @property
+    def allowed_chats(self) -> list[int]:
+        """Every chat that may talk to the mesh, adopted ones included."""
+        return sorted(self._allowed)
+
+    async def allow(self, chat_id: int) -> bool:
+        """Let a chat in, and remember it across restarts.
+
+        Persisted rather than written back into evomesh.yaml: a chat adopted at
+        runtime is live state, and rewriting a human's config file from inside
+        the mesh would be a surprise nobody asked for.
+        """
+        if chat_id in self._allowed:
+            return False
+        self._allowed.add(chat_id)
+        await self._persist_allowed()
+        return True
+
+    async def revoke(self, chat_id: int) -> bool:
+        if chat_id not in self._allowed:
+            return False
+        self._allowed.discard(chat_id)
+        self._consoles.pop(chat_id, None)
+        await self._persist_allowed()
+        return True
+
+    async def check(self) -> tuple[bool, str]:
+        """Ask Telegram who this token belongs to. Used by /telegram test."""
+        if not self.settings.token.strip():
+            return False, "no bot token is configured"
+        opened = self._client is None
+        if opened:
+            self._client = httpx.AsyncClient(timeout=10)
+        try:
+            me = await self._call("getMe", {})
+            return True, f"@{me.get('username', '?')}"
+        except (httpx.HTTPError, TelegramError) as exc:
+            return False, str(exc)
+        finally:
+            if opened and self._client is not None:
+                await self._client.aclose()
+                self._client = None
 
     def stop(self) -> None:
         self._running = False
@@ -90,7 +139,8 @@ class TelegramChannel:
         self._running = True
         try:
             me = await self._call("getMe", {})
-            logger.info("Telegram connected as @%s", me.get("username", "?"))
+            self.identity = f"@{me.get('username', '?')}"
+            logger.info("Telegram connected as %s", self.identity)
             await self._restore()
             if self.settings.announcements:
                 self.environment.notifiers.append(self.announce)
@@ -184,9 +234,8 @@ class TelegramChannel:
             return True
         if self._allowed or not self.settings.adopt_first_chat:
             return False
-        self._allowed.add(chat_id)
+        await self.allow(chat_id)
         logger.info("Telegram chat %s adopted this bot", chat_id)
-        await self._persist_allowed()
         return True
 
     async def _persist_allowed(self) -> None:

@@ -365,6 +365,23 @@ telegram:
   announcements: true       # say when a generation lands or the mesh restarts
 ```
 
+Everything about the bot is driven from the Control Center's **Settings** tab, and
+two buttons there answer the questions the settings file cannot:
+
+- **Test token** asks Telegram directly, with the token in the box. It needs
+  neither a save nor a running mesh, so a typo, a revoked bot or a missing
+  network is reported before you commit to a restart. On success it names the
+  bot: `@your_bot`.
+- **Live status** asks the running mesh (`/telegram status`), and is the only
+  place a chat that claimed the bot at runtime appears. Adopted chats are kept
+  in the database rather than written back into `evomesh.yaml`, because the mesh
+  editing a human's config file from the inside would be a surprise nobody asked
+  for.
+
+**Allow chat id** and **Revoke chat id** act on the running mesh through
+`/telegram allow <id>` and `/telegram revoke <id>`, taking the last id in the
+box. All four commands work from the console too.
+
 Two things the bot deliberately will not do. It cannot stop the mesh — the control port only listens on localhost, so a shutdown from a phone would leave nothing running that could be asked to start again. And it remembers its update offset across restarts, so the command that triggered an automatic restart is not replayed by the process that comes back up.
 
 ## Git history

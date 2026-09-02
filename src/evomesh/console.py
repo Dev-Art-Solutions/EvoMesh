@@ -34,6 +34,9 @@ HELP = """Commands:
   /evolution start <objective>  Give the Evolver a new objective
   /evolution promote|discard [n]
   /evolution rollback           Return to the last known good generation
+  /telegram status              Whether the bot is connected, and who may use it
+  /telegram test                Ask Telegram whether the configured token works
+  /telegram allow|revoke <id>   Manage which chats may talk to the mesh
   /restart                      Restart the mesh into the code now in the tree
   /exit                         Stop EvoMesh
 """
@@ -375,6 +378,65 @@ class ConsoleChannel:
                 "Restart the mesh to run it."
             )
         return "Usage: /evolution status|start <objective>|promote [n]|discard [n]|rollback"
+
+    async def _command_telegram(self, parts: list[str]) -> str:
+        """Report and manage the Telegram bot without opening a config file.
+
+        The Control Center drives this, because the two questions a human
+        actually has -- is my token any good, and who can talk to the mesh --
+        cannot be answered by the settings file. A chat adopted at runtime is
+        stored in the database, and a token is only good if Telegram says so.
+        """
+        settings = self.environment.settings.telegram
+        channel = self.environment.channels.get("telegram")
+        action = parts[1].lower() if len(parts) > 1 else "status"
+
+        if action == "status":
+            if not settings.enabled:
+                return "Telegram is switched off. Enable it in the Control Center."
+            if not settings.token.strip():
+                return "Telegram is enabled but has no bot token yet."
+            connected = bool(getattr(channel, "running", False))
+            identity = str(getattr(channel, "identity", "") or "not connected yet")
+            chats = list(getattr(channel, "allowed_chats", settings.allowed_chat_ids))
+            return (
+                f"bot: {identity}\n"
+                f"polling: {'yes' if connected else 'no'}\n"
+                f"announcements: {'on' if settings.announcements else 'off'}\n"
+                f"first chat may claim it: {'yes' if settings.adopt_first_chat else 'no'}\n"
+                f"allowed chats: {', '.join(str(item) for item in chats) or 'none yet'}"
+            )
+
+        if action == "test":
+            if channel is None:
+                return "Telegram is not running in this process."
+            ok, detail = await channel.check()
+            if ok:
+                return f"Telegram accepted the token: {detail}"
+            return f"Telegram refused it: {detail}"
+
+        if action in {"allow", "revoke"} and len(parts) > 2:
+            if channel is None:
+                return "Telegram is not running in this process."
+            try:
+                chat_id = int(parts[2])
+            except ValueError:
+                return f"'{parts[2]}' is not a chat id."
+            if action == "allow":
+                added = await channel.allow(chat_id)
+                return (
+                    f"Chat {chat_id} may now talk to the mesh."
+                    if added
+                    else f"Chat {chat_id} was already allowed."
+                )
+            removed = await channel.revoke(chat_id)
+            return (
+                f"Chat {chat_id} can no longer talk to the mesh."
+                if removed
+                else f"Chat {chat_id} was not on the list."
+            )
+
+        return "Usage: /telegram status|test|allow <chat-id>|revoke <chat-id>"
 
     def _command_restart(self, parts: list[str]) -> str:
         """Ask whoever owns this process to bring it back on the current tree.

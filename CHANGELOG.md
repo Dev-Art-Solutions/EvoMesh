@@ -63,6 +63,15 @@ All notable changes to EvoMesh are documented in this file.
   - `/exit` is refused from Telegram: the control port is localhost-only, so a shutdown
     from a phone would leave nothing running that could be asked to start again.
 
+- Telegram is managed from the Control Center rather than only configured there.
+  - **Test token** asks Telegram itself with the token in the box, needing neither a
+    save nor a running mesh, so a bad token is caught before a restart is spent on it.
+  - **Live status**, **Allow chat id** and **Revoke chat id** drive the new
+    `/telegram status|test|allow|revoke` console commands against the running mesh.
+  - A chat that claimed the bot at runtime is stored in the database, not the config
+    file, so the settings tab could never show it. `/telegram status` lists every
+    allowed chat, adopted ones included, and says whether the poller is connected.
+
 ### Fixed
 
 - The Control Center checks whether the mesh is alive continuously instead of once at

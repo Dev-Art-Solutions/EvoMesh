@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import ReflectiveBehavior
@@ -80,6 +81,12 @@ class Environment:
         # only what it was asked. Telegram registers one; the console does not,
         # because it is already printing the cycle summaries.
         self.notifiers: list[Callable[[str], Awaitable[None]]] = []
+        # Long-lived channels the process owns, registered by whoever started
+        # them. Held as plain objects rather than imported types: the console
+        # only has to ask them about themselves, and importing the Telegram
+        # channel here would make the environment depend on something that
+        # already depends on it.
+        self.channels: dict[str, Any] = {}
         # Offline states for agents that never started, so status is always
         # explainable instead of a stale "active" left behind by a previous run.
         self._offline: dict[str, AgentRuntimeState] = {}

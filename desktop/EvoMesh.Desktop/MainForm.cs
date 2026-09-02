@@ -45,6 +45,7 @@ internal sealed class MainForm : Form
     private TextBox _telegramChats = null!;
     private CheckBox _telegramAdoptFirst = null!;
     private CheckBox _telegramAnnouncements = null!;
+    private Label _telegramNotice = null!;
 
     public MainForm(string rootPath, string uvExecutable)
     {
@@ -398,6 +399,34 @@ internal sealed class MainForm : Form
         _telegramAnnouncements = AddCheck(grid, "Announce promotions and restarts", 2, row);
         row++;
 
+        var telegramActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var testToken = MakeButton("Test token", 130);
+        testToken.Click += async (_, _) => await TestTelegramTokenAsync();
+        var liveStatus = MakeButton("Live status", 130);
+        liveStatus.Click += async (_, _) => await SendCommandAsync("/telegram status");
+        var allowChat = MakeButton("Allow chat id", 145);
+        allowChat.Click += async (_, _) => await ManageTelegramChatAsync("allow");
+        var revokeChat = MakeButton("Revoke chat id", 150);
+        revokeChat.Click += async (_, _) => await ManageTelegramChatAsync("revoke");
+        telegramActions.Controls.AddRange([testToken, liveStatus, allowChat, revokeChat]);
+        grid.Controls.Add(telegramActions, 0, row);
+        grid.SetColumnSpan(telegramActions, 4);
+        row++;
+        _telegramNotice = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(880, 0),
+            ForeColor = Color.DimGray,
+            Margin = new Padding(3, 0, 3, 8),
+            Text = "\"Test token\" asks Telegram directly and needs neither a save nor a "
+                 + "running mesh. \"Live status\" asks the running mesh, and is the only "
+                 + "place a chat that claimed the bot at runtime shows up — those are kept "
+                 + "in the database, not in this file.",
+        };
+        grid.Controls.Add(_telegramNotice, 0, row);
+        grid.SetColumnSpan(_telegramNotice, 4);
+        row++;
+
         var systemHeading = new Label
         {
             Text = "CORE AGENT MODELS",
@@ -449,6 +478,72 @@ internal sealed class MainForm : Form
 
         page.Controls.Add(grid);
         return page;
+    }
+
+    /// <summary>
+    /// Asks Telegram itself whether the token in the box is real.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately independent of the mesh and of saving. A human who has just
+    /// pasted a token wants to know it is right before committing to a restart,
+    /// and the failure they need to see -- a typo, a revoked bot, no network --
+    /// is one only Telegram can report.
+    /// </remarks>
+    private async Task TestTelegramTokenAsync()
+    {
+        var token = _telegramToken.Text.Trim();
+        if (token.Length == 0)
+        {
+            MessageBox.Show(this, "Paste the token BotFather gave you first.", "Telegram",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var response = await client.GetAsync($"https://api.telegram.org/bot{token}/getMe");
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync());
+            var root = document.RootElement;
+            if (!response.IsSuccessStatusCode || !root.GetProperty("ok").GetBoolean())
+            {
+                var reason = root.TryGetProperty("description", out var description)
+                    ? description.GetString()
+                    : $"HTTP {(int)response.StatusCode}";
+                AppendOutput($"[Telegram refused the token] {reason}");
+                MessageBox.Show(this, $"Telegram refused the token:{Environment.NewLine}{Environment.NewLine}{reason}", "Telegram",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            var bot = root.GetProperty("result");
+            var name = bot.TryGetProperty("username", out var username) ? username.GetString() : "?";
+            AppendOutput($"[Telegram accepted the token] the bot is @{name}");
+            var newline = Environment.NewLine;
+            MessageBox.Show(this,
+                $"Telegram accepted the token.{newline}{newline}The bot is @{name}.{newline}{newline}" +
+                "Save the settings and restart the mesh, then send it /start from Telegram.",
+                "Telegram", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception exc)
+        {
+            AppendOutput($"[Telegram could not be reached] {exc.Message}");
+            MessageBox.Show(this, exc.Message, "Telegram is unreachable",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>Adds or removes one chat id on the running mesh.</summary>
+    private async Task ManageTelegramChatAsync(string action)
+    {
+        var id = _telegramChats.Text.Split(',').LastOrDefault()?.Trim() ?? "";
+        if (!long.TryParse(id, out _))
+        {
+            MessageBox.Show(this,
+                $"Put the chat id to {action} last in the \"Allowed chat ids\" box, " +
+                "then press this again.",
+                "Telegram", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        await SendCommandAsync($"/telegram {action} {id}");
     }
 
     private async Task SendCurrentAsync()

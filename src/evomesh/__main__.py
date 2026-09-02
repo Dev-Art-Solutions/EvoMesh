@@ -60,6 +60,7 @@ async def application(
     shutdown = asyncio.Event()
     control = ControlServer(environment, shutdown, control_host, control_port)
     telegram = TelegramChannel(environment, settings.telegram)
+    environment.channels["telegram"] = telegram
     restart_watch = asyncio.create_task(_restart_when_asked(environment, shutdown))
     telegram_task = asyncio.create_task(telegram.run()) if telegram.configured else None
     try:

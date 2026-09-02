@@ -21,6 +21,7 @@ from evomesh.config import (
     Settings,
     TelegramSettings,
 )
+from evomesh.console import ConsoleChannel
 from evomesh.environment import Environment
 from evomesh.evolution import (
     CandidateWorkspace,
@@ -497,6 +498,71 @@ async def test_an_answer_past_the_telegram_limit_arrives_in_pieces(tmp_path: Pat
     assert all(len(item["text"]) <= 3800 for item in fake.sent)
     # Nothing is dropped between the pieces.
     assert "line 999" in fake.sent[-1]["text"]
+
+
+async def test_the_console_reports_who_may_use_the_bot(tmp_path: Path) -> None:
+    """The Control Center's 'Live status' button runs exactly this."""
+    environment = await telegram_environment(tmp_path)
+    environment.settings.telegram = TelegramSettings(
+        enabled=True, token="1:abc", allowed_chat_ids=[4242]
+    )
+    fake = FakeTelegram([])
+    channel = TelegramChannel(environment, environment.settings.telegram, fake.client())
+    environment.channels["telegram"] = channel
+    # A chat that claimed the bot at runtime is in the database, not in the
+    # config file, so the settings tab alone can never show it.
+    await channel.allow(777)
+
+    answer = await ConsoleChannel(environment).route("/telegram status")
+
+    assert "4242" in answer
+    assert "777" in answer
+    assert "polling: no" in answer
+
+
+async def test_the_console_can_add_and_remove_a_chat(tmp_path: Path) -> None:
+    environment = await telegram_environment(tmp_path)
+    settings = TelegramSettings(enabled=True, token="1:abc")
+    fake = FakeTelegram([])
+    channel = TelegramChannel(environment, settings, fake.client())
+    environment.settings.telegram = settings
+    environment.channels["telegram"] = channel
+    console = ConsoleChannel(environment)
+
+    assert "may now talk" in await console.route("/telegram allow 5150")
+    assert channel.allowed_chats == [5150]
+    assert "already allowed" in await console.route("/telegram allow 5150")
+    assert "no longer" in await console.route("/telegram revoke 5150")
+    assert channel.allowed_chats == []
+    assert "not a chat id" in await console.route("/telegram allow banana")
+
+    # Survives a restart, because it is written to the database.
+    assert await environment.repository.load_state("telegram.allowed_chats") == []
+
+
+async def test_the_console_reports_a_token_telegram_refuses(tmp_path: Path) -> None:
+    environment = await telegram_environment(tmp_path)
+    settings = TelegramSettings(enabled=True, token="1:wrong")
+    environment.settings.telegram = settings
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
+
+    channel = TelegramChannel(
+        environment, settings, httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+    )
+    environment.channels["telegram"] = channel
+
+    answer = await ConsoleChannel(environment).route("/telegram test")
+
+    assert "refused" in answer
+    assert "401" in answer
+
+
+async def test_the_console_says_so_when_telegram_is_switched_off(tmp_path: Path) -> None:
+    environment = await telegram_environment(tmp_path)
+
+    assert "switched off" in await ConsoleChannel(environment).route("/telegram status")
 
 
 async def test_telegram_stays_off_until_it_is_configured(tmp_path: Path) -> None:
