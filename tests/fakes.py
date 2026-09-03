@@ -110,6 +110,30 @@ class StubRepairer(CandidateRepairer):
         }
 
 
+class UndoingRepairer(CandidateRepairer):
+    """A free fix that happens to remove exactly what the propose stage added.
+
+    What `ruff --fix` actually is on a real candidate: a subprocess edit
+    invisible to `record_harness_changes`, which can leave the tree identical
+    to its parent commit rather than merely fixing the lint finding it was
+    asked about.
+    """
+
+    def __init__(self, path: str, original: str) -> None:
+        self.path = path
+        self.original = original
+        self.calls = 0
+
+    async def autofix(self, generation: Generation) -> dict[str, object]:
+        self.calls += 1
+        (generation.path / self.path).write_text(self.original, encoding="utf-8")
+        return {
+            "command": " ".join(self.AUTOFIX),
+            "exit_code": 0,
+            "output": "Found 1 error (1 fixed, 0 remaining).\n",
+        }
+
+
 def wipe_database(path: Path) -> None:
     """Delete a database the way `git clean -xfd` does, WAL sidecars included.
 

@@ -623,6 +623,32 @@ class EnvironmentEvolver:
         )
         return outcome
 
+    async def candidate_changed_nothing(self, generation: Generation) -> bool:
+        """Whether the candidate's working tree is, right now, identical to its
+        parent commit -- the ground truth `apply_generation` checks before
+        committing, asked earlier so a generation the free repair fixed back
+        into nothing does not spend a validation run first.
+
+        `ruff --fix` runs outside `record_harness_changes` (it is a subprocess,
+        not a harness edit), so `generation.changes` still lists the propose
+        stage's edit even after the fix undoes it byte-for-byte. The list is
+        a record of what was written, not of what is still there -- only git
+        status answers "is there still a diff" honestly.
+
+        A candidate is ordinarily a `git worktree`, sharing the checkout's own
+        history; a host where `git worktree add` itself failed falls back to a
+        plain directory copy with no `.git` at all (see `CandidateWorkspace.
+        create`), where `status` cannot answer the question. That is an
+        environment limit, not evidence of a clean tree, so it reads as "no"
+        here rather than short-circuiting a repair that may have real work
+        left to validate.
+        """
+        candidate = GitRepository(generation.path, self.identity)
+        try:
+            return await candidate.is_clean()
+        except GitError:
+            return False
+
     async def record_harness_changes(
         self,
         generation: Generation,

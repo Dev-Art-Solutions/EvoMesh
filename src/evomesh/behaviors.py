@@ -670,10 +670,25 @@ class EvolverBehavior(BDIBehavior):
         # mechanical fix costs nothing and cannot make the candidate worse, and
         # a repair that leaves the failure byte-identical is already caught by
         # the stall check rather than by the counter.
-        moved = {**state, "stage": STAGE_VALIDATE}
         outcome = await evolver.autofix(generation)
         how = f"ruff --fix: {excerpt(str(outcome.get('output', '')), 120)}"
-        await evolver.set_pipeline_state(moved)
+        if await evolver.candidate_changed_nothing(generation):
+            # D5 again, one stage later: the propose stage's edit was real, but
+            # the fixer just deleted exactly what it added. Validating a
+            # candidate identical to the parent it was copied from would
+            # "pass" for the same reason nothing failed for it in the first
+            # place, and a generation that passes while changing nothing is
+            # the dead-module failure wearing a verdict, however it got there.
+            await evolver.set_pipeline_state({**state, "stage": STAGE_REPORT, "passed": None})
+            return StepResult(
+                summary=(
+                    f"generation {generation.number} has nothing left to validate -- "
+                    f"the free repair undid the only change it had ({how})"
+                ),
+                fact=f"generation {generation.number} was repaired down to no change at all",
+                phase=AgentPhase.ACTING,
+            )
+        await evolver.set_pipeline_state({**state, "stage": STAGE_VALIDATE})
         return StepResult(
             summary=(
                 f"free repair for generation {generation.number} after "

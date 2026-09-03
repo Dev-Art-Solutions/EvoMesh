@@ -138,7 +138,13 @@ regresses.
 10. **Repair is cheapest-first and bounded.** `ruff check --fix` before the model; then one file at
     a time with the exact command, its real output and the file the last change wrote. It stops on
     a pass, on a byte-identical failure (proof the repair changed nothing), or at
-    `evolution.max_repairs`.
+    `evolution.max_repairs`. The free fix runs as a subprocess outside `record_harness_changes`, so
+    it can undo the propose stage's only edit byte-for-byte without that ever showing up as "no
+    files touched" the way an empty harness job does. `EnvironmentEvolver.candidate_changed_nothing`
+    checks the candidate's actual git status (not the changes list, which only records what was
+    *written*, never what a later step erased) right after the free fix and before re-validating —
+    found live, on a candidate that validated clean because it was, byte for byte, the parent it was
+    copied from.
 11. **Git is the lineage.** Promotion cherry-picks the candidate's commit onto the checkout and
     moves the metadata — one canonical tree, one commit to reset to. Two refusals are deliberate and
     must stay: a generation is **never** applied over uncommitted changes (the candidate is parked,

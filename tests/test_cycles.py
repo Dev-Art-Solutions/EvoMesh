@@ -29,6 +29,7 @@ from .fakes import (
     FakeHarness,
     ScriptedValidator,
     StubRepairer,
+    UndoingRepairer,
     failing,
     passing,
 )
@@ -940,6 +941,48 @@ async def test_a_fixable_lint_failure_is_repaired_without_the_model(
     assert "validation passed" in report.summary
     # A repaired candidate is promotable, not failed.
     assert evolver.candidate(2).status is not GenerationStatus.FAILED
+
+
+async def test_a_free_repair_that_undoes_everything_skips_validation(tmp_path: Path) -> None:
+    """`ruff --fix` deleting exactly the line the propose stage added is not a
+    fixed candidate -- it is the empty candidate from D5, one stage later, and
+    reachable only through a real git tree: this is what caught it live."""
+    project = await git_project(tmp_path / "project")
+    # MUTATION_OBJECTIVE.md and validation-result.json are real content every
+    # candidate gets -- gitignored in the actual repo (see .gitignore)
+    # precisely so neither makes an otherwise byte-identical candidate look
+    # dirty.
+    repo = GitRepository(project)
+    (project / ".gitignore").write_text(
+        "MUTATION_OBJECTIVE.md\nvalidation-result*.json\n", encoding="utf-8"
+    )
+    await repo.run("add", "-A")
+    await repo.run("commit", "-m", "gitignore")
+    validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE)])
+    repairer = UndoingRepairer("src/app.py", "ACTIVE = True\n")
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION], validator, repairer
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    for _ in range(3):  # plan, propose, validate (fails)
+        await behavior.cycle(context)
+    assert (await evolver.pipeline_state())["stage"] == "repair"
+
+    repaired = await behavior.cycle(context)
+
+    assert repairer.calls == 1
+    assert "nothing left to validate" in repaired.summary
+    assert (await evolver.pipeline_state())["stage"] == "report"
+    assert (await evolver.pipeline_state()).get("passed") is None
+    # Not a second harness job: the free fix undid it, not the model.
+    assert len(harness.objectives) == 1
+
+    report = await behavior.cycle(context)
+    assert report.phase is AgentPhase.WAITING_HUMAN
+    # passed=None reads as "not validated", not as a false "validation passed"
+    # for a candidate that was never actually run through the suite this time.
+    assert "not validated" in report.summary
 
 
 async def test_a_failure_the_linter_cannot_fix_goes_to_the_model(
