@@ -8,7 +8,13 @@ import pytest
 
 from evomesh.agents import AgentRegistry
 from evomesh.architect import ArchitectInterview
-from evomesh.config import AgentModelSettings, ModelSettings, ProviderSettings, Settings
+from evomesh.config import (
+    AgentModelSettings,
+    ModelSettings,
+    ProviderSettings,
+    ScrapingSettings,
+    Settings,
+)
 from evomesh.contracts import AgentDefinition, AgentStatus, FilesystemGrant, Message
 from evomesh.environment import Environment, HealthState
 from evomesh.evolution import (
@@ -23,6 +29,8 @@ from evomesh.harness_tools import ALL_TOOLS, ToolContext, ToolRegistry
 from evomesh.messaging import MessageBus
 from evomesh.models import MockProvider, OllamaProvider, describe
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
+from evomesh.processes import CommandResult
+from evomesh.skills import SkillRegistry
 from evomesh.storage import SQLiteRepository
 from tests.fakes import wipe_database
 
@@ -69,6 +77,76 @@ async def test_permission_matching_and_traversal(
         await policy.require("a", root.parent / "outside.txt", "read")
     with pytest.raises(PermissionDeniedError):
         await policy.require("a", root / "child.txt", "write")
+
+
+async def test_web_fetch_is_unregistered_until_scraping_is_configured(
+    repository: SQLiteRepository,
+) -> None:
+    """Off by default, same as the harness -- and, unlike the harness, an
+    empty executable path leaves it unregistered even with enabled: true,
+    rather than trying whatever `scrapling` happens to resolve to on PATH."""
+    policy = FilesystemPolicy(repository)
+    registry = SkillRegistry(repository, policy)
+    await registry.register_builtins()
+    assert registry.discover("Web.Fetch") == []
+
+    half_configured = SkillRegistry(repository, policy, ScrapingSettings(enabled=True))
+    await half_configured.register_builtins()
+    assert half_configured.discover("Web.Fetch") == []
+
+
+async def test_web_fetch_shells_out_and_clips_the_result(
+    repository: SQLiteRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def fake_run_command(
+        program: str, *arguments: str, cwd: Path | None = None
+    ) -> CommandResult:
+        calls.append((program, arguments))
+        output_path = Path(arguments[3])
+        await asyncio.to_thread(output_path.write_text, "A" * 50, encoding="utf-8")
+        return CommandResult(exit_code=0, output="")
+
+    monkeypatch.setattr("evomesh.skills.run_command", fake_run_command)
+    policy = FilesystemPolicy(repository)
+    settings = ScrapingSettings(
+        enabled=True, executable="fake-scrapling", timeout_seconds=15, max_content_chars=20
+    )
+    registry = SkillRegistry(repository, policy, settings)
+    await registry.register_builtins()
+    assert "Web.Fetch" in {skill.name for skill in registry.discover("Web.Fetch")}
+
+    result = await registry.invoke(
+        "agent-1", "Web.Fetch", {"url": "https://example.com", "css_selector": "article"}
+    )
+
+    program, arguments = calls[0]
+    assert program == "fake-scrapling"
+    assert arguments[:3] == ("extract", "get", "https://example.com")
+    assert "--css-selector" in arguments and "article" in arguments
+    assert "--timeout" in arguments and "15" in arguments
+    # Clipped to budget, and the clip says what it withheld -- not a silent cut.
+    assert result["content"].startswith("A" * 20)
+    assert "30 more characters withheld" in result["content"]
+
+
+async def test_web_fetch_reports_a_failed_command_instead_of_an_empty_page(
+    repository: SQLiteRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_run_command(
+        program: str, *arguments: str, cwd: Path | None = None
+    ) -> CommandResult:
+        return CommandResult(exit_code=1, output="ConnectionError: name resolution failed")
+
+    monkeypatch.setattr("evomesh.skills.run_command", failing_run_command)
+    policy = FilesystemPolicy(repository)
+    settings = ScrapingSettings(enabled=True, executable="fake-scrapling")
+    registry = SkillRegistry(repository, policy, settings)
+    await registry.register_builtins()
+
+    with pytest.raises(RuntimeError, match="name resolution failed"):
+        await registry.invoke("agent-1", "Web.Fetch", {"url": "https://nowhere.invalid"})
 
 
 def test_architect_drafts_a_candidate_without_asking_questions() -> None:

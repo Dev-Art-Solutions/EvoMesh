@@ -30,6 +30,7 @@ from evomesh.harness_tools import (
     ALL_TOOLS,
     READ_ONLY_TOOLS,
     SHELL_TOOLS,
+    WEB_TOOLS,
     ToolContext,
     ToolLimits,
     ToolRegistry,
@@ -525,6 +526,8 @@ def build_runner(
     allow_write: bool = False,
     shell_allow: frozenset[str] = frozenset(),
     shell_seconds: float = 60.0,
+    scraping_executable: str = "",
+    scraping_timeout: float = 30.0,
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -541,13 +544,17 @@ def build_runner(
         allow_write=allow_write,
         shell_allow=shell_allow,
         shell_seconds=shell_seconds,
+        scraping_executable=scraping_executable,
+        scraping_timeout=scraping_timeout,
         session=session,
     )
-    # The shell joins the registry only when somebody has said which programs it
-    # may run. An unusable tool in the schema is a tool a model will try.
+    # Each optional tool joins the registry only when a human has actually
+    # configured it. An unusable tool in the schema is a tool a model will try.
     tools = READ_ONLY_TOOLS if read_only else ALL_TOOLS
     if shell_allow:
         tools = tools + SHELL_TOOLS
+    if scraping_executable:
+        tools = tools + WEB_TOOLS
     return HarnessRunner(
         provider=provider,
         context=context,

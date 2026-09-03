@@ -37,12 +37,14 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
     ALL_TOOLS,
     SHELL_TOOLS,
+    WEB_TOOLS,
     ToolContext,
     ToolLimits,
     ToolRegistry,
     tool_read,
 )
 from evomesh.models import ChatMessage, ChatTurn, MockProvider, ToolCall
+from evomesh.processes import CommandResult
 
 
 @pytest.fixture
@@ -636,6 +638,73 @@ def test_the_shell_is_absent_from_the_schema_until_it_is_allowed(project: Path) 
 
     assert "shell" not in off.registry.tools
     assert "shell" in on.registry.tools
+
+
+# -- fetching a URL --------------------------------------------------------
+
+
+async def test_no_url_is_fetched_until_a_human_configures_the_fetcher(project: Path) -> None:
+    context = ToolContext(root=project)
+
+    result = await ToolRegistry(WEB_TOOLS).invoke(context, "fetch", {"url": "https://example.com"})
+
+    assert "scraping.executable" in result
+
+
+async def test_a_configured_fetcher_returns_its_output(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_command(program: str, *arguments: str, cwd: Path | None = None):
+        calls.append((program, *arguments))
+        await asyncio.to_thread(
+            Path(arguments[3]).write_text, "# Example\n\nHello.\n", encoding="utf-8"
+        )
+        return CommandResult(exit_code=0, output="")
+
+    monkeypatch.setattr("evomesh.harness_tools.run_command", fake_run_command)
+    context = ToolContext(
+        root=project, scraping_executable="fake-scrapling", scraping_timeout=15.0
+    )
+
+    result = await ToolRegistry(WEB_TOOLS).invoke(
+        context, "fetch", {"url": "https://example.com", "css_selector": "article"}
+    )
+
+    assert result == "# Example\n\nHello."
+    program, *arguments = calls[0]
+    assert program == "fake-scrapling"
+    assert arguments[:3] == ["extract", "get", "https://example.com"]
+    assert "--css-selector" in arguments and "article" in arguments
+    assert context.tally.reads == 1
+
+
+async def test_a_failed_fetch_is_named_in_the_refusal(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_run_command(program: str, *arguments: str, cwd: Path | None = None):
+        return CommandResult(exit_code=1, output="ConnectionError: name resolution failed")
+
+    monkeypatch.setattr("evomesh.harness_tools.run_command", failing_run_command)
+    context = ToolContext(root=project, scraping_executable="fake-scrapling")
+
+    result = await ToolRegistry(WEB_TOOLS).invoke(
+        context, "fetch", {"url": "https://nowhere.invalid"}
+    )
+
+    assert "DENIED" in result
+    assert "name resolution failed" in result
+
+
+def test_fetch_is_absent_from_the_schema_until_it_is_configured(project: Path) -> None:
+    off = build_runner(MockProvider(responses=["x"]), project)
+    on = build_runner(
+        MockProvider(responses=["x"]), project, scraping_executable="fake-scrapling"
+    )
+
+    assert "fetch" not in off.registry.tools
+    assert "fetch" in on.registry.tools
 
 
 # -- the queue and the worker --------------------------------------------

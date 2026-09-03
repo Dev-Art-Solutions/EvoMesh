@@ -23,7 +23,8 @@ src/evomesh/     the whole runtime (see the module map below)
 desktop/         EvoMesh.Desktop — WinForms Control Center (net8.0-windows)
 tests/           unit, cycle, reachability, publishing and restart-scenario coverage
 docs/evolution/  one entry per generation, written by the mesh into its own commit
-scripts/         run-dev.ps1 / run-dev.sh / run-supervised.ps1 / package-windows.ps1
+scripts/         run-dev.ps1 / run-dev.sh / run-supervised.ps1 / package-windows.ps1 /
+                 install-scrapling.ps1 / .sh
 *.bat            start-evomesh.bat (Control Center), start-evomesh-console.bat (terminal)
 data/            SQLite state (ignored)
 workspace/       per-agent memory.md / context.md + shared world context (ignored)
@@ -41,13 +42,13 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `memory.py` | `memory.md` append + compaction, `context.md` rewrite |
 | `evolution.py` | the whole generational pipeline: supervisor metadata, candidates, validation, repair, promotion, publishing, backlog |
 | `codebase.py` | `project_map()` — surveys `src/evomesh/`, resolves the import graph, marks load-bearing vs dead |
-| `harness.py`, `harness_tools.py`, `harness_session.py`, `harness_queue.py` | the tool loop, its tools, its JSONL record, and the job queue an agent submits work to. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
+| `harness.py`, `harness_tools.py`, `harness_session.py`, `harness_queue.py` | the tool loop, its tools (`read`/`grep`/`ls`/`edit`/`write`/`shell`/`fetch`), its JSONL record, and the job queue an agent submits work to. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
 | `git.py` | `GitRepository`, `GitIdentity`, `PublishPolicy` — per-invocation identity, never `git config` |
 | `storage.py` | SQLite behind a repository; nothing else opens the database |
 | `models.py` | Ollama / OpenAI-compatible providers, per-request model, `timeout_seconds` |
 | `console.py`, `control.py`, `telegram.py` | the three channels onto the same command router |
 | `architect.py` | the one-shot Agent Architect |
-| `skills.py`, `permissions.py` | skill registry and path grants (application-level, not an OS sandbox) |
+| `skills.py`, `permissions.py` | skill registry and path grants (application-level, not an OS sandbox). Nothing in the agent's own deliberation loop calls `SkillRegistry.invoke` yet — a skill is reachable today by name, from console/control, or from a human's own code; `Web.Fetch` is also, separately, the harness's `fetch` tool, which *is* reachable from a model |
 
 ## Build / test / run
 
@@ -177,7 +178,12 @@ regresses.
     an `offline` agent stays offline: a queued job cannot revive an agent with no loop.
 16. **Runtime dependencies stay at five** — `aiosqlite`, `httpx`, `pydantic`, `pydantic-settings`,
     `pyyaml`. A local-first runtime that drags in a framework has stopped being the thing. Add one
-    only with an argument recorded here.
+    only with an argument recorded here. This is why Scrapling (github.com/D4Vinci/Scrapling, the
+    harness's `fetch` tool and the `Web.Fetch` skill) is never `import`ed: its fetchers extra alone
+    pulls in a dozen packages, a browser automation stack among them.
+    `scripts/install-scrapling.ps1` / `.sh` provisions it into its own venv under `.runtime/`, and
+    `scraping.executable` in `evomesh.yaml` is a path to a subprocess, the same relationship this
+    project already has with `git`, `ruff`, and `uv`.
 17. **The control port binds `127.0.0.1:8765` only.** This is why the Telegram bot cannot stop the
     mesh: a shutdown from a phone would leave nothing running that could be asked to start again.
     Adopted Telegram chat ids are kept in the database, **not** written back into `evomesh.yaml` —

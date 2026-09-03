@@ -88,6 +88,24 @@ evolution:
 #   workers: 1
 #   max_queue: 8
 
+# The Web.Fetch skill: an agent asks for a URL, gets back its main content as
+# Markdown. Off by default. Scrapling (github.com/D4Vinci/Scrapling) is not a
+# runtime dependency of this project -- its fetchers extra alone pulls in a
+# dozen packages, a browser automation stack among them, and rule 16 in
+# CLAUDE.md keeps this project's own list at five. Run
+# scripts/install-scrapling.ps1 / .sh once to provision it into its own venv
+# under .runtime/, then point executable at the scrapling binary that produces.
+#
+# scraping:
+#   enabled: false
+#   executable: ""
+#   # Passed to scrapling as --timeout; a hung fetch should not hang the agent.
+#   timeout_seconds: 30
+#   # A fetched page can be any size, and it is about to sit in a model's
+#   # prompt -- same character-budget discipline as everything else here
+#   # (rule 3). The trim is ours, and the skill says what it withheld.
+#   max_content_chars: 20000
+
 system_agents:
   architect:
     provider: ollama

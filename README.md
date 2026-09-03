@@ -219,6 +219,8 @@ Means-ends reasoning is a library lookup first and a model call only as a fallba
 
 The shared registry supports discovery, attachment, and invocation. Built-ins are `Filesystem.Read`, `Filesystem.Write`, `Markdown.Read`, `Markdown.Write`, `Git.Status`, and `Git.Diff`. A skill never grants path access by itself.
 
+`Web.Fetch` joins that list once `scraping.enabled` and `scraping.executable` are set in `evomesh.yaml` (see [scripts/install-scrapling.ps1](scripts/install-scrapling.ps1) / `.sh`) — it fetches a URL and returns its main content as Markdown, via [Scrapling](https://github.com/D4Vinci/Scrapling). The same capability is also, separately, the harness's `fetch` tool below, which is the one a model actually reaches for during a job.
+
 ## Filesystem access grants
 
 Use `/grant <agent> <path> read|write` and `/revoke <agent> <path>`. Paths are resolved before comparison, descendants inherit only the granted operation, and denials are structured exceptions. These are application-level controls, not an OS security sandbox.
@@ -256,6 +258,8 @@ evomesh> /harness do "make second() add 2 instead of 1"
 **`edit` refuses a target that is not unique.** If the text you asked to replace appears three times, the tool says so, shows the lines around each match, and changes nothing. That refusal is the reason the tool exists: a replacement that silently takes the first of three matches produces a change that passes every check and does the wrong thing, which is worse than the whole-file rewrite it replaces — that one at least fails loudly. `write` refuses to replace an existing file unless you pass `overwrite`, so creating and replacing stay different intentions.
 
 **A `shell` tool exists, and it is off.** `harness.shell_allow` is an allow-list of program names; with nothing in it the tool is not offered to the model at all. There is no shell interpreter behind it — the command is split and run directly, so `|`, `&&` and `$(...)` are arguments rather than operators, and `curl x | python` is refused for `curl`. Everything runs in the job root, one command is bounded by `harness.shell_seconds`, and none of this is a sandbox: EvoMesh's filesystem policy is an application-level control, and a shell tool makes that sentence matter more rather than less.
+
+**A `fetch` tool exists too, and it needs a companion install.** It fetches a URL and returns its main content as Markdown — via [Scrapling](https://github.com/D4Vinci/Scrapling), which is not a dependency of this project (see [scripts/install-scrapling.ps1](scripts/install-scrapling.ps1) / `.sh`) and is not offered to the model at all until `scraping.executable` in `evomesh.yaml` points at it. It fetches static HTML only; a page whose content is rendered by client-side JavaScript will come back empty.
 
 **Models that cannot call tools still get to use them.** Most models that fit on a small card have no tool calling in their chat template, so the harness falls back to a one-line JSON protocol in plain text and drives the same tools through it. A harness that only worked on tool-calling models would not work on the hardware this project is built for.
 

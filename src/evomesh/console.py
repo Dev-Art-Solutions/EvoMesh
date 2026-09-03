@@ -441,6 +441,12 @@ class ConsoleChannel:
             read_only=not writing,
             allow_write=writing,
             num_ctx=num_ctx,
+            scraping_executable=(
+                self.environment.settings.scraping.executable
+                if self.environment.settings.scraping.enabled
+                else ""
+            ),
+            scraping_timeout=self.environment.settings.scraping.timeout_seconds,
         )
         result = await runner.run(task)
         # Every tool call is printed, not just the answer: the point of the

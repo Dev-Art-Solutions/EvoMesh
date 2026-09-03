@@ -17,6 +17,7 @@ import asyncio
 import difflib
 import re
 import shlex
+import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,6 +90,11 @@ class ToolContext:
     # which is why the tool is not even registered until a human fills this in.
     shell_allow: frozenset[str] = frozenset()
     shell_seconds: float = 60.0
+    # Absolute path to the Scrapling executable in its own environment (see
+    # scripts/install-scrapling.ps1). Empty is why the fetch tool is not even
+    # registered, same reasoning as shell_allow above.
+    scraping_executable: str = ""
+    scraping_timeout: float = 30.0
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -446,6 +452,53 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
 
 
+async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
+    """Fetch one URL and return its main content as Markdown, via Scrapling.
+
+    Seventh, and off unless a human has provisioned Scrapling into its own
+    environment (scripts/install-scrapling.ps1) and pointed scraping.executable
+    at it -- it is not a runtime dependency of this project (CLAUDE.md rule
+    16), so there is nothing to fall back to.
+    """
+    url = str(args.get("url") or "").strip()
+    if not url:
+        raise ToolDenied("DENIED: fetch needs a url")
+    if not context.scraping_executable:
+        raise ToolDenied(
+            "DENIED: no fetcher is configured. Run scripts/install-scrapling.ps1 "
+            "and set scraping.enabled and scraping.executable in evomesh.yaml."
+        )
+    css_selector = str(args.get("css_selector") or "").strip()
+    with tempfile.TemporaryDirectory(prefix="evomesh-fetch-") as scratch:
+        output_path = Path(scratch) / "page.md"
+        arguments = [
+            "extract",
+            "get",
+            url,
+            str(output_path),
+            "--ai-targeted",
+            "--timeout",
+            str(int(context.scraping_timeout)),
+        ]
+        if css_selector:
+            arguments += ["--css-selector", css_selector]
+        try:
+            result = await asyncio.wait_for(
+                run_command(context.scraping_executable, *arguments),
+                timeout=context.scraping_timeout + 5,
+            )
+        except TimeoutError:
+            raise ToolDenied(f"DENIED: fetching {url} did not finish in time") from None
+        except OSError as exc:
+            raise ToolDenied(f"DENIED: the fetcher could not be started: {exc}") from exc
+        if result.exit_code != 0 or not output_path.exists():
+            detail = result.output.strip() or "no output"
+            raise ToolDenied(f"DENIED: could not fetch {url}: {detail}")
+        content = await asyncio.to_thread(output_path.read_text, encoding="utf-8")
+    context.tally.reads += 1
+    return _clip(content, context.limits, unit="lines")
+
+
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
@@ -559,6 +612,29 @@ SHELL_TOOLS: tuple[Tool, ...] = (
             "required": ["command"],
         },
         run=tool_shell,
+    ),
+)
+
+WEB_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="fetch",
+        description=(
+            "Fetch a URL and return its main content as Markdown -- navigation, "
+            "ads and scripts stripped. Static pages only: JavaScript that renders "
+            "content client-side will not appear."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The page to fetch."},
+                "css_selector": {
+                    "type": "string",
+                    "description": "Optional CSS selector to return only matching content.",
+                },
+            },
+            "required": ["url"],
+        },
+        run=tool_fetch,
     ),
 )
 

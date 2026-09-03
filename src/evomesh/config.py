@@ -159,6 +159,29 @@ class HarnessSettings(BaseModel):
         )
 
 
+class ScrapingSettings(BaseModel):
+    """The Web.Fetch skill: an agent asks for a URL, gets back readable text.
+
+    Off by default, same as the harness. Scrapling itself is not a runtime
+    dependency -- rule 16 in CLAUDE.md keeps that list at five, and Scrapling's
+    fetchers extra alone pulls in a dozen more, several of them a browser
+    automation stack. It runs from its own isolated environment instead,
+    provisioned once by scripts/install-scrapling.ps1 / .sh, and this only
+    points at the executable that produces -- an empty path leaves the skill
+    unregistered even when `enabled` is true, rather than silently trying
+    whatever `scrapling` happens to resolve to on PATH.
+    """
+
+    enabled: bool = False
+    executable: str = ""
+    timeout_seconds: float = 30
+    # A fetched page can be any size, and it is about to sit in a model's
+    # prompt -- the same character-budget discipline as everything else this
+    # project hands a model (rule 3). The trim is ours, and the skill says
+    # what it withheld, same as the harness's own tools.
+    max_content_chars: int = 20000
+
+
 class GitSettings(BaseModel):
     """Who signs a generation, and where it is published once it lands."""
 
@@ -209,6 +232,7 @@ class Settings(BaseModel):
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     evolution: EvolutionSettings = Field(default_factory=EvolutionSettings)
     harness: HarnessSettings = Field(default_factory=HarnessSettings)
+    scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 

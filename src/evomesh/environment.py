@@ -50,7 +50,7 @@ class Environment:
         self.registry = AgentRegistry()
         self.bus = MessageBus(self.repository)
         self.permissions = FilesystemPolicy(self.repository)
-        self.skills = SkillRegistry(self.repository, self.permissions)
+        self.skills = SkillRegistry(self.repository, self.permissions, settings.scraping)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
@@ -437,6 +437,10 @@ class Environment:
             read_only=not job.allow_write,
             allow_write=job.allow_write,
             num_ctx=self.resolve_num_ctx(provider_name, model, num_ctx_override),
+            scraping_executable=(
+                self.settings.scraping.executable if self.settings.scraping.enabled else ""
+            ),
+            scraping_timeout=self.settings.scraping.timeout_seconds,
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.
