@@ -39,6 +39,15 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     private bool _restarting;
     private bool _stopRequested;
 
+    /// <summary>
+    /// Cursor into the mesh's announcement log (goal progress, promotions,
+    /// restarts). The control connection is request-response only -- one
+    /// client's /restart reply must never carry another client's
+    /// announcement -- so this is polled with /notifications instead of
+    /// being pushed to, the same way Telegram is pushed to on the mesh side.
+    /// </summary>
+    private long _lastNotificationId;
+
     public EvoMeshRuntimeProcess(string rootPath, string uvExecutable, int controlPort = DefaultControlPort)
     {
         RootPath = rootPath;
@@ -94,6 +103,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             try
             {
                 await RequestAsync("/ping", cancellationToken);
+                await PollNotificationsAsync(cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -117,6 +127,31 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         }
         LastHealthCheck = DateTimeOffset.Now;
         HealthChecked?.Invoke(IsRunning, LastHealthCheck.Value);
+    }
+
+    /// <summary>
+    /// Pulls whatever the mesh has announced on its own since the last poll --
+    /// a notified goal's progress, a promotion, a restart notice -- and
+    /// prints each line. /notifications returns "id\tISO-timestamp\ttext" per
+    /// line and nothing at all when there is nothing new past the cursor.
+    /// </summary>
+    private async Task PollNotificationsAsync(CancellationToken cancellationToken)
+    {
+        var response = await RequestAsync($"/notifications {_lastNotificationId}", cancellationToken);
+        if (response.Output.StartsWith("No new notifications", StringComparison.Ordinal))
+        {
+            return;
+        }
+        foreach (var line in response.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = line.Split('\t', 3);
+            if (parts.Length != 3 || !long.TryParse(parts[0], out var id))
+            {
+                continue;
+            }
+            _lastNotificationId = Math.Max(_lastNotificationId, id);
+            Emit($"[notice] {parts[2]}");
+        }
     }
 
     public async Task<bool> TryAttachAsync(bool announce = true)
@@ -143,6 +178,11 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 throw new InvalidOperationException("The local control port belongs to another application.");
             }
+            // A fresh attach is a fresh session with whatever mesh process is
+            // on the other end -- its own announcement ids start at 1, so a
+            // cursor left over from a previous process would skip everything
+            // until ids caught back up past it.
+            _lastNotificationId = 0;
             SetRunning(true);
             if (announce)
             {

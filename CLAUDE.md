@@ -263,8 +263,12 @@ regresses.
     a push subscriber) without a second channel. A request-response connection like the control port
     cannot be pushed to, though — one client's `/restart` reply must never carry another client's
     announcement — so `announce()` also appends to `Environment.announcement_log`, a bounded
-    `deque`, and `/notifications [since-id]` lets a client with no push of its own (the desktop
-    Control Center) poll it by cursor instead. `AgentRuntime._apply` reports three shapes, not one:
+    `deque`, and `/notifications [since-id]` lets a client with no push of its own poll it by cursor
+    instead. `EvoMeshRuntimeProcess.PollNotificationsAsync` in the desktop app is exactly that: it
+    rides the same timer that already pings the mesh every `PingInterval`, resets its cursor to zero
+    on every fresh attach (a new process means a new mesh whose own ids started back at 1, so a
+    stale cursor from before would skip everything until ids caught back up past it), and needs no
+    change to the request-response protocol itself. `AgentRuntime._apply` reports three shapes, not one:
     a genuine finish (`outcome.goal_done` and, for a one-shot goal, past its first-cycle rubber
     stamp — see rule 15's neighbor above), an error, or — the actual point, not an afterthought —
     ordinary step-by-step progress whenever neither of the other two applies. Silence the instant a
