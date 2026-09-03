@@ -231,6 +231,20 @@ regresses.
     `recurring=True` whenever an interval is given, since a standing check that permanently fails
     after `max_attempts` and never runs again defeats the reason it was given an interval at all.
 
+    **Amended with cron: a fixed schedule, not just a fixed offset.** `Goal.cron` holds a standard
+    5-field expression (`minute hour day month weekday`), matched by `evomesh/cron.py` — a
+    self-contained parser and `next_after()` search, not a dependency (rule 16 already made this
+    call for Scrapling; the same reasoning applies here, and cron matching is small enough to own
+    outright). It reuses every part of the interval mechanism above — the same `next_attempt_at`
+    field, the same `is_open` check, the same skip in `next_goal()` — `AgentRuntime._apply` just
+    computes the next fire time with `cron.next_after` instead of `now + interval_seconds` when the
+    goal carries a `cron` expression. The one real difference: a cron goal's *first* `next_attempt_at`
+    is set at creation time in `MindState.add_goal`, not left open until the first cycle finishes,
+    because a schedule is an appointment — adding it must not make it due immediately the way a
+    fresh `interval_seconds` goal is. `/goal add <agent> "<text>" [priority] "<cron expression>"`
+    detects which of the two a human meant (`isdigit()` for an interval, otherwise parsed as cron)
+    and rejects a malformed expression before a goal is ever created.
+
 ## How a generation is authored
 
 **A generation is a harness job in the candidate workspace.** The propose stage builds an objective

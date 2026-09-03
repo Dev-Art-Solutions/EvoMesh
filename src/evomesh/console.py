@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from evomesh import cron
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
 from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
@@ -34,7 +35,7 @@ HELP = """Commands:
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
   /intentions <agent>           What it committed to, and the plan it is running
-  /goal add <agent> "<text>" [priority] [interval_seconds]
+  /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]
   /goal done|drop <agent> <goal-id>
   /memory <agent>               Show the agent's memory.md
   /context <agent>|world        Show context.md
@@ -309,26 +310,48 @@ class ConsoleChannel:
     async def _command_goal(self, parts: list[str]) -> str:
         if len(parts) < 4:
             return (
-                'Usage: /goal add <agent> "<text>" [priority] [interval_seconds]'
+                'Usage: /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]'
                 "  |  /goal done|drop <agent> <id>"
             )
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
         if action == "add":
             priority = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 5
-            interval = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None
-            # An interval implies recurring: a standing check that permanently
-            # gives up after max_attempts failures (hours or days apart, at a
-            # real interval) defeats the reason it was given one in the first
-            # place. Drop it by hand with /goal drop if it should stop.
+            interval: int | None = None
+            cron_expression: str | None = None
+            if len(parts) > 5:
+                schedule = parts[5]
+                if schedule.isdigit():
+                    interval = int(schedule)
+                else:
+                    try:
+                        cron.parse(schedule)
+                    except cron.InvalidCronError as error:
+                        return f"Bad schedule: {error}"
+                    cron_expression = schedule
+            # An interval or a cron schedule implies recurring: a standing
+            # check that permanently gives up after max_attempts failures
+            # defeats the reason it was given a schedule in the first place.
+            # Drop it by hand with /goal drop if it should stop.
             goal = definition.mind.add_goal(
-                parts[3], priority=priority, interval_seconds=interval, recurring=bool(interval)
+                parts[3],
+                priority=priority,
+                interval_seconds=interval,
+                cron_expression=cron_expression,
+                recurring=bool(interval or cron_expression),
             )
             message = f"Added goal {goal.id} to {definition.name}."
             if interval:
                 message += (
                     f" Re-checked every {interval}s, independent of the agent's own "
                     f"cycle_seconds -- everything else it does keeps its normal pace."
+                )
+            elif cron_expression:
+                next_at = goal.next_attempt_at
+                when = f"{next_at:%Y-%m-%d %H:%M} UTC" if next_at else "unknown"
+                message += (
+                    f" Triggers on schedule '{cron_expression}', next at {when} -- "
+                    f"independent of the agent's own cycle_seconds."
                 )
         elif action in {"done", "drop"}:
             goal = definition.mind.goal(parts[3])

@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from evomesh import cron
+
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
@@ -79,6 +81,12 @@ class Goal(BaseModel):
     # would starve all the rest. This lets next_goal() skip a goal that is
     # not due yet instead, so the agent's own heartbeat never has to change.
     interval_seconds: int | None = None
+    # A fixed schedule ("every day at 09:00", "every Monday") instead of a
+    # fixed offset from last completion. Mutually exclusive with
+    # interval_seconds in practice -- add_goal() only ever sets one -- and
+    # takes priority if both are somehow set, since a wall-clock appointment
+    # is a stronger statement than "some time after it last ran".
+    cron: str | None = None
     next_attempt_at: datetime | None = None
     notes: list[str] = Field(default_factory=list)
     last_error: str | None = None
@@ -259,13 +267,20 @@ class MindState(BaseModel):
         priority: int = 5,
         recurring: bool = False,
         interval_seconds: int | None = None,
+        cron_expression: str | None = None,
     ) -> Goal:
         goal = Goal(
             description=description.strip(),
             priority=priority,
             recurring=recurring,
             interval_seconds=interval_seconds,
+            cron=cron_expression,
         )
+        if cron_expression:
+            # A cron goal is an appointment, not a "do this now" -- unlike
+            # interval_seconds, which is silent until the goal has run once,
+            # this must not fire the moment it is created.
+            goal.next_attempt_at = cron.next_after(cron_expression, now_utc())
         self.goals.append(goal)
         return goal
 

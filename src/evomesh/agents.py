@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from evomesh import cron
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.cognition import AgentBehavior, CycleContext, CycleOutcome
 from evomesh.contracts import (
@@ -227,13 +228,16 @@ class AgentRuntime:
                 # Intentions belong to the BDI reasoner; recording one here
                 # would drop the agent's commitment on every single cycle.
                 goal.note(outcome.step)
-            if outcome.goal_done and goal.interval_seconds:
+            if outcome.goal_done and (goal.cron or goal.interval_seconds):
                 # Independent of whether this goal is recurring: a one-shot
                 # goal still only means "don't re-plan the instant this
                 # finishes" until this fires, and a recurring one is exactly
-                # what this exists for -- checked again in interval_seconds,
+                # what this exists for -- checked again on its own schedule,
                 # not on the agent's very next tick.
-                goal.next_attempt_at = now_utc() + timedelta(seconds=goal.interval_seconds)
+                if goal.cron:
+                    goal.next_attempt_at = cron.next_after(goal.cron, now_utc())
+                elif goal.interval_seconds:
+                    goal.next_attempt_at = now_utc() + timedelta(seconds=goal.interval_seconds)
             if outcome.goal_done and not goal.recurring:
                 if worked_before:
                     goal.status = GoalStatus.DONE

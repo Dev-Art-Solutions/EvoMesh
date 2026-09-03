@@ -271,6 +271,40 @@ async def test_a_finished_goal_with_an_interval_waits_before_reopening(
     await environment.stop()
 
 
+def test_a_cron_goal_waits_for_its_first_scheduled_time() -> None:
+    """Unlike interval_seconds, a cron schedule is an appointment: adding the
+    goal must not make it due right away just because it is new."""
+    mind = MindState()
+    goal = mind.add_goal("Check example.com", cron_expression="0 * * * *")
+
+    assert goal.next_attempt_at is not None
+    assert not goal.is_open
+    assert goal.recurring is False, "add_goal itself does not force recurring -- the console does"
+
+
+async def test_a_finished_cron_goal_reschedules_to_its_next_occurrence(
+    tmp_path: Path,
+) -> None:
+    """Exercises AgentRuntime._apply's cron branch: finishing a cycle moves
+    next_attempt_at to the next matching time, not a fixed offset."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal(
+        "Check example.com", priority=1, recurring=True, cron_expression="0 * * * *"
+    )
+    runtime = environment.runtimes[agent.id]
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(summary="fetched it", goal_done=True, phase=AgentPhase.IDLE, worked=True),
+        goal,
+    )
+
+    assert goal.next_attempt_at is not None
+    assert goal.next_attempt_at.minute == 0
+    assert goal.next_attempt_at > now_utc()
+    assert not goal.is_open
+    await environment.stop()
+
+
 # -- means-ends reasoning -----------------------------------------------
 
 

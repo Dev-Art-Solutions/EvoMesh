@@ -92,6 +92,46 @@ async def test_goal_add_with_an_interval_sets_recurring_automatically(tmp_path: 
     await environment.stop()
 
 
+async def test_goal_add_accepts_a_cron_expression_in_place_of_an_interval(
+    tmp_path: Path,
+) -> None:
+    """The other schedule shape: '/goal add ... "0 * * * *"' triggers the
+    agent on a real cron schedule instead of a fixed offset from last run,
+    and gets the same automatic recurring=True as a plain interval."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Watcher", purpose="Watch things")
+    await environment.register_agent(agent)
+
+    result = await console.route('/goal add "Watcher" "Check example.com" 5 "0 * * * *"')
+
+    assert "Triggers on schedule '0 * * * *'" in result
+    assert "cycle_seconds" in result
+    goal = next(iter(agent.mind.goals))
+    assert goal.cron == "0 * * * *"
+    assert goal.interval_seconds is None
+    assert goal.recurring is True
+    assert goal.next_attempt_at is not None
+    await environment.stop()
+
+
+async def test_goal_add_rejects_a_malformed_cron_expression(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Watcher", purpose="Watch things")
+    await environment.register_agent(agent)
+
+    result = await console.route('/goal add "Watcher" "Check example.com" 5 "not a cron"')
+
+    assert "Bad schedule" in result
+    assert not agent.mind.goals, "a rejected schedule must not leave a half-added goal behind"
+    await environment.stop()
+
+
 async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})
