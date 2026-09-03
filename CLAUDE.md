@@ -151,7 +151,18 @@ regresses.
     moves the metadata — one canonical tree, one commit to reset to. Two refusals are deliberate and
     must stay: a generation is **never** applied over uncommitted changes (the candidate is parked,
     not discarded — the candidate is fine, the destination is not), and a pick that does not apply
-    cleanly is aborted rather than left half-applied.
+    cleanly is aborted rather than left half-applied. **`git -C <path> <command>` does not require
+    `<path>` to be a repository at all** — it walks up looking for the nearest ancestor `.git`,
+    same as running the command from inside `<path>` would. Every `GitRepository(path, ...)` this
+    project constructs assumes `path` is already its own repository; the two places that create
+    one from something that might not be (`CandidateWorkspace.create`'s `worktree add`,
+    `EnvironmentEvolver.candidate_changed_nothing`'s `status`) check `rev-parse --show-toplevel`
+    against `path` first and fall back rather than trust the command. Found live: a test fixture
+    with no `.git` of its own, nested under this project's own `.pytest-tmp`, escaped into *this
+    checkout* — a real worktree, a real branch, and once, a real commit on `main`, sitting unnoticed
+    since the previous day's test run until `git worktree list` was actually read. Any new code
+    that builds a `GitRepository` from a path it did not itself just `git init` needs the same
+    check.
 12. **The mesh commits under its own identity, passed per invocation** (`git.author_name` /
     `author_email`, default `Mesh Evo Agent`). It never edits the checkout's git config, and it
     signs correctly on a machine with no `user.name` at all. **The push is the last step, never a
