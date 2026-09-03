@@ -19,8 +19,8 @@ internal sealed class MainForm : Form
     private readonly Label _status = new();
     private readonly Button _start = new();
     private readonly Button _stop = new();
-    private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key)> _providers = [];
-    private readonly Dictionary<string, (ComboBox Provider, ComboBox Model)> _systemAgents = [];
+    private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key, TextBox NumCtx)> _providers = [];
+    private readonly Dictionary<string, (ComboBox Provider, ComboBox Model, TextBox NumCtx)> _systemAgents = [];
     private bool _loadingSettings;
     private bool _running;
     private DateTimeOffset? _lastCheck;
@@ -360,7 +360,19 @@ internal sealed class MainForm : Form
             var key = AddField(grid, "API key (optional)", 0, row);
             key.UseSystemPasswordChar = true;
             grid.SetColumnSpan(key, 3);
-            _providers[name] = (url, model, key);
+            row++;
+            var numCtx = AddField(grid, "Context window (num_ctx)", 0, row);
+            grid.Controls.Add(
+                new Label
+                {
+                    Text = "Tokens Ollama allocates per request; ignored by other providers.",
+                    AutoSize = true,
+                    ForeColor = Color.DimGray,
+                    Margin = new Padding(3, 8, 8, 8),
+                },
+                2,
+                row);
+            _providers[name] = (url, model, key, numCtx);
             row++;
         }
 
@@ -463,7 +475,9 @@ internal sealed class MainForm : Form
                     await RefreshOllamaModelsAsync(showErrors: false);
                 }
             };
-            _systemAgents[agentId] = (provider, model);
+            row++;
+            var numCtx = AddField(grid, "Context window override (blank = inherit)", 0, row);
+            _systemAgents[agentId] = (provider, model, numCtx);
             row++;
         }
 
@@ -669,6 +683,7 @@ internal sealed class MainForm : Form
                     controls.Url.Text = provider.BaseUrl;
                     controls.Model.Text = provider.Model;
                     controls.Key.Text = provider.ApiKey;
+                    controls.NumCtx.Text = provider.NumCtx.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
             }
             _autoRestart.Checked = settings.Evolution.AutoRestart;
@@ -694,6 +709,7 @@ internal sealed class MainForm : Form
                 }
                 controls.Provider.SelectedItem = providerName;
                 controls.Model.Text = modelName ?? "local-model";
+                controls.NumCtx.Text = configured?.NumCtx?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
             }
         }
         finally
@@ -764,17 +780,33 @@ internal sealed class MainForm : Form
         foreach (var (name, controls) in _providers)
         {
             var existing = settings.Providers.GetValueOrDefault(name);
-            settings.Providers[name] = new ProviderEditorSettings(
+            var updated = new ProviderEditorSettings(
                 controls.Url.Text.Trim(),
                 controls.Model.Text.Trim(),
                 controls.Key.Text,
-                existing?.TimeoutSeconds ?? 600);
+                existing?.TimeoutSeconds ?? 600,
+                int.TryParse(controls.NumCtx.Text.Trim(), out var numCtx) && numCtx > 0
+                    ? numCtx
+                    : existing?.NumCtx ?? 65536);
+            // The record's constructor gives ModelNumCtx a fresh, empty dictionary;
+            // a per-model entry a human hand-edited into the file has no editor
+            // control at all, so it is copied across rather than dropped here.
+            if (existing is not null)
+            {
+                foreach (var (tag, tagNumCtx) in existing.ModelNumCtx)
+                {
+                    updated.ModelNumCtx[tag] = tagNumCtx;
+                }
+            }
+            settings.Providers[name] = updated;
         }
         foreach (var (agentId, controls) in _systemAgents)
         {
+            var numCtxText = controls.NumCtx.Text.Trim();
             settings.SystemAgents[agentId] = new AgentModelEditorSettings(
                 controls.Provider.Text,
-                controls.Model.Text.Trim());
+                controls.Model.Text.Trim(),
+                int.TryParse(numCtxText, out var agentNumCtx) && agentNumCtx > 0 ? agentNumCtx : null);
         }
         settings.Save(_configPath);
         AppendOutput($"[settings saved to {_configPath}]");

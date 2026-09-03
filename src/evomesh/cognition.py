@@ -144,6 +144,10 @@ class CycleContext:
     # What the runtime knows the agent is doing right now. Beliefs and notes are
     # a cycle old at best, so a human asking mid-cycle gets this instead.
     work: str = ""
+    # Resolved once per agent (definition override, else the provider's own
+    # default) rather than read from settings here, because a shared provider
+    # instance serves every agent on it and each may need a different window.
+    num_ctx: int | None = None
 
     @property
     def goal(self) -> Goal | None:
@@ -159,6 +163,7 @@ class CycleContext:
             prompt,
             system=self.system_prompt(),
             model=self.definition.model_name,
+            num_ctx=self.num_ctx,
         )
         return strip_reasoning(raw)
 

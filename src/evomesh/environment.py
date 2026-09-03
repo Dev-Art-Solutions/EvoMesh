@@ -162,7 +162,7 @@ class Environment:
         provider_config = self.settings.models.providers.get(default_name)
         model = provider_config.model if provider_config else "local-model"
         system_models = {
-            agent_id: (configuration.provider, configuration.model)
+            agent_id: (configuration.provider, configuration.model, configuration.num_ctx)
             for agent_id, configuration in self.settings.system_agents.items()
         }
         system_definitions = system_agent_definitions(default_name, model, system_models)
@@ -171,7 +171,9 @@ class Environment:
         known_ids: set[str] = set()
         for definition in definitions:
             if definition.id in system_models:
-                definition.provider, definition.model_name = system_models[definition.id]
+                definition.provider, definition.model_name, definition.num_ctx = system_models[
+                    definition.id
+                ]
             self._reconcile(definition, seeded.get(definition.id))
             if definition.id not in known_ids:
                 self.registry.register(definition)
@@ -295,6 +297,30 @@ class Environment:
             return float(self.settings.evolution.cycle_seconds)
         return float(self.settings.runtime.cycle_seconds)
 
+    def resolve_num_ctx(
+        self, provider_name: str, model_name: str | None, override: int | None = None
+    ) -> int | None:
+        """The window a request against this provider/model should ask for.
+
+        Checked in order: an explicit override (an agent's own setting) first,
+        since it names the one agent that needs something different from its
+        siblings; then the provider's per-model entry, for a provider serving
+        more than one model with genuinely different needs; then the
+        provider's own default. Absent all three, there is nowhere left to
+        look and the provider's own default (unset) applies.
+        """
+        if override is not None:
+            return override
+        provider = self.settings.models.providers.get(provider_name)
+        if provider is None:
+            return None
+        if model_name and model_name in provider.model_num_ctx:
+            return provider.model_num_ctx[model_name]
+        return provider.num_ctx
+
+    def num_ctx_for(self, definition: AgentDefinition) -> int | None:
+        return self.resolve_num_ctx(definition.provider, definition.model_name, definition.num_ctx)
+
     async def start_agent(self, agent_id: str, *, start_delay: float = 0.0) -> None:
         if agent_id in self.runtimes:
             return
@@ -311,6 +337,7 @@ class Environment:
             behavior=self.behaviors.get(definition.id, ReflectiveBehavior()),
             budget=self.budget,
             cycle_seconds=self.cycle_seconds_for(definition),
+            num_ctx=self.num_ctx_for(definition),
             start_delay=start_delay,
             services=self._services,
             world_context=self._world_snapshot,
@@ -387,9 +414,11 @@ class Environment:
         settings = self.settings.harness
         provider_name = self.settings.models.default_provider
         model: str | None = None
+        num_ctx_override: int | None = None
         if job.agent_id and self._has(job.agent_id):
             definition = self.registry.get(job.agent_id)
             provider_name, model = definition.provider, definition.model_name
+            num_ctx_override = definition.num_ctx
         provider = self.providers.get(provider_name)
         if provider is None:
             raise RuntimeError(f"Provider '{provider_name}' is not configured")
@@ -407,6 +436,7 @@ class Environment:
             shell_seconds=settings.shell_seconds,
             read_only=not job.allow_write,
             allow_write=job.allow_write,
+            num_ctx=self.resolve_num_ctx(provider_name, model, num_ctx_override),
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.
@@ -484,6 +514,27 @@ class Environment:
             await self.start_agent(definition.id)
         return definition
 
+    async def configure_agent_num_ctx(
+        self, agent_id_or_name: str, num_ctx: int | None
+    ) -> AgentDefinition:
+        """Set or clear one agent's context-window override.
+
+        None (not zero) means "stop overriding" -- the agent goes back to
+        whatever its provider's own num_ctx resolves to, the same as it would
+        for an agent that never had an override at all.
+        """
+        definition = self.registry.get(agent_id_or_name)
+        was_running = definition.id in self.runtimes
+        if was_running:
+            await self.stop_agent(definition.id, persist_status=False)
+        definition.num_ctx = num_ctx
+        definition.touch()
+        await self.repository.save_agent(definition)
+        if was_running:
+            definition.status = AgentStatus.ACTIVE
+            await self.start_agent(definition.id)
+        return definition
+
     async def available_models(self, provider_name: str) -> list[str]:
         provider = self.providers.get(provider_name)
         if provider is None:
@@ -551,7 +602,8 @@ class Environment:
         provider = self.providers.get(name)
         if provider is None:
             raise RuntimeError(f"Provider '{name}' is unavailable")
-        return await provider.generate(prompt, system=system, model=model_name)
+        num_ctx = self.resolve_num_ctx(name, model_name)
+        return await provider.generate(prompt, system=system, model=model_name, num_ctx=num_ctx)
 
     def status(self) -> dict[str, object]:
         states = self.runtime_states()

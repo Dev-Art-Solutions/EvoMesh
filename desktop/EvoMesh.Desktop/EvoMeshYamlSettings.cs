@@ -4,8 +4,36 @@ internal sealed record ProviderEditorSettings(
     string BaseUrl,
     string Model,
     string ApiKey = "",
-    double TimeoutSeconds = 600);
-internal sealed record AgentModelEditorSettings(string Provider, string Model);
+    double TimeoutSeconds = 600,
+    int NumCtx = 65536)
+{
+    /// <summary>Per-model override, keyed by model tag. Not itself part of the
+    /// record's equality/`with` shape since it is mutated in place rather than
+    /// replaced -- there is no editor control for it, only load/save round-trip.</summary>
+    public Dictionary<string, int> ModelNumCtx { get; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+internal sealed record AgentModelEditorSettings(string Provider, string Model, int? NumCtx = null);
+
+/// <summary>A model that can look at the project before it answers. Off by default.
+/// No editor surface here beyond load/save -- the point is that saving the Settings
+/// tab must never silently erase a harness block a human or the mesh already wrote.</summary>
+internal sealed class HarnessEditorSettings
+{
+    public bool Enabled { get; set; }
+    public bool AllowWrite { get; set; }
+    public int MaxSteps { get; set; } = 24;
+    public double MaxSeconds { get; set; } = 300;
+    public int TranscriptChars { get; set; } = 12000;
+    public string ShellAllow { get; set; } = "";
+    public double ShellSeconds { get; set; } = 60;
+    public int ToolResultChars { get; set; } = 4000;
+    public int ToolResultLines { get; set; } = 200;
+    public int GrepMatches { get; set; } = 40;
+    public string SessionPath { get; set; } = ".runtime/harness";
+    public int Workers { get; set; } = 1;
+    public int MaxQueue { get; set; } = 8;
+}
 
 /// <summary>Runtime cadence and prompt budgets. Small local models need small budgets.</summary>
 internal sealed class RuntimeEditorSettings
@@ -66,6 +94,7 @@ internal sealed class EvoMeshYamlSettings
     public TelegramEditorSettings Telegram { get; } = new();
     public Dictionary<string, ProviderEditorSettings> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AgentModelEditorSettings> SystemAgents { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HarnessEditorSettings Harness { get; } = new();
 
     public static EvoMeshYamlSettings Load(string path)
     {
@@ -78,6 +107,7 @@ internal sealed class EvoMeshYamlSettings
         string? section = null;
         string? modelSection = null;
         string? provider = null;
+        string? modelNumCtxProvider = null;
         string? systemAgent = null;
         foreach (var rawLine in File.ReadAllLines(path))
         {
@@ -96,6 +126,7 @@ internal sealed class EvoMeshYamlSettings
                 section = key;
                 modelSection = null;
                 provider = null;
+                modelNumCtxProvider = null;
                 systemAgent = null;
                 switch (key)
                 {
@@ -148,6 +179,31 @@ internal sealed class EvoMeshYamlSettings
                     case "branch": result.Git.Branch = value; break;
                 }
             }
+            else if (section == "harness" && indent >= 2)
+            {
+                switch (key)
+                {
+                    case "enabled": result.Harness.Enabled = ParseBool(value, false); break;
+                    case "allow_write": result.Harness.AllowWrite = ParseBool(value, false); break;
+                    case "max_steps": result.Harness.MaxSteps = ParseInt(value, result.Harness.MaxSteps); break;
+                    case "max_seconds": result.Harness.MaxSeconds = ParseDouble(value, result.Harness.MaxSeconds); break;
+                    case "transcript_chars":
+                        result.Harness.TranscriptChars = ParseInt(value, result.Harness.TranscriptChars);
+                        break;
+                    case "shell_allow": result.Harness.ShellAllow = ParseNameList(value); break;
+                    case "shell_seconds": result.Harness.ShellSeconds = ParseDouble(value, result.Harness.ShellSeconds); break;
+                    case "tool_result_chars":
+                        result.Harness.ToolResultChars = ParseInt(value, result.Harness.ToolResultChars);
+                        break;
+                    case "tool_result_lines":
+                        result.Harness.ToolResultLines = ParseInt(value, result.Harness.ToolResultLines);
+                        break;
+                    case "grep_matches": result.Harness.GrepMatches = ParseInt(value, result.Harness.GrepMatches); break;
+                    case "session_path": result.Harness.SessionPath = value; break;
+                    case "workers": result.Harness.Workers = ParseInt(value, result.Harness.Workers); break;
+                    case "max_queue": result.Harness.MaxQueue = ParseInt(value, result.Harness.MaxQueue); break;
+                }
+            }
             else if (section == "telegram" && indent >= 2)
             {
                 switch (key)
@@ -174,11 +230,31 @@ internal sealed class EvoMeshYamlSettings
                      indent == 4 && value.Length == 0)
             {
                 provider = key;
+                modelNumCtxProvider = null;
                 result.Providers.TryAdd(provider, new ProviderEditorSettings("", ""));
+            }
+            else if (section == "models" && modelSection == "providers" &&
+                     indent >= 8 && modelNumCtxProvider is not null)
+            {
+                // A model tag routinely contains a colon of its own
+                // (name:tag), which the naive first-colon split above gets
+                // wrong -- so this one nested shape re-splits the raw line
+                // quote-aware instead of trusting the key/value already cut.
+                var (tag, tagValue) = SplitQuotedKeyPair(line);
+                if (ParseIntOrNull(tagValue, null) is int n)
+                {
+                    result.Providers[modelNumCtxProvider].ModelNumCtx[tag] = n;
+                }
+            }
+            else if (section == "models" && modelSection == "providers" &&
+                     indent == 6 && key == "model_num_ctx" && value.Length == 0 && provider is not null)
+            {
+                modelNumCtxProvider = provider;
             }
             else if (section == "models" && modelSection == "providers" &&
                      indent >= 6 && provider is not null)
             {
+                modelNumCtxProvider = null;
                 var current = result.Providers[provider];
                 result.Providers[provider] = key switch
                 {
@@ -186,6 +262,7 @@ internal sealed class EvoMeshYamlSettings
                     "model" => current with { Model = value },
                     "api_key" => current with { ApiKey = value },
                     "timeout_seconds" => current with { TimeoutSeconds = ParseDouble(value, current.TimeoutSeconds) },
+                    "num_ctx" => current with { NumCtx = ParseInt(value, current.NumCtx) },
                     _ => current,
                 };
             }
@@ -201,6 +278,7 @@ internal sealed class EvoMeshYamlSettings
                 {
                     "provider" => current with { Provider = value },
                     "model" => current with { Model = value },
+                    "num_ctx" => current with { NumCtx = ParseIntOrNull(value, current.NumCtx) },
                     _ => current,
                 };
             }
@@ -236,6 +314,24 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  auto_restart: {(Evolution.AutoRestart ? "true" : "false")}");
         writer.WriteLine($"  restart_delay_seconds: {Number(Evolution.RestartDelaySeconds)}");
         writer.WriteLine($"  objective: {(string.IsNullOrWhiteSpace(Evolution.Objective) ? "null" : Quote(Evolution.Objective))}");
+        // Round-tripped even though this tab has no controls for it: a save
+        // that only knows the fields it shows would otherwise erase whatever
+        // enabled the harness, which the Evolver's propose stage cannot run
+        // without.
+        writer.WriteLine("harness:");
+        writer.WriteLine($"  enabled: {(Harness.Enabled ? "true" : "false")}");
+        writer.WriteLine($"  allow_write: {(Harness.AllowWrite ? "true" : "false")}");
+        writer.WriteLine($"  max_steps: {Harness.MaxSteps}");
+        writer.WriteLine($"  max_seconds: {Number(Harness.MaxSeconds)}");
+        writer.WriteLine($"  transcript_chars: {Harness.TranscriptChars}");
+        writer.WriteLine($"  shell_allow: [{FormatNameList(Harness.ShellAllow)}]");
+        writer.WriteLine($"  shell_seconds: {Number(Harness.ShellSeconds)}");
+        writer.WriteLine($"  tool_result_chars: {Harness.ToolResultChars}");
+        writer.WriteLine($"  tool_result_lines: {Harness.ToolResultLines}");
+        writer.WriteLine($"  grep_matches: {Harness.GrepMatches}");
+        writer.WriteLine($"  session_path: {Quote(Harness.SessionPath)}");
+        writer.WriteLine($"  workers: {Harness.Workers}");
+        writer.WriteLine($"  max_queue: {Harness.MaxQueue}");
         writer.WriteLine("git:");
         writer.WriteLine($"  author_name: {Quote(Git.AuthorName)}");
         writer.WriteLine($"  author_email: {Quote(Git.AuthorEmail)}");
@@ -255,6 +351,10 @@ internal sealed class EvoMeshYamlSettings
             writer.WriteLine($"  {agentId}:");
             writer.WriteLine($"    provider: {Quote(agent.Provider)}");
             writer.WriteLine($"    model: {Quote(agent.Model)}");
+            if (agent.NumCtx is int agentNumCtx)
+            {
+                writer.WriteLine($"    num_ctx: {agentNumCtx}");
+            }
         }
         writer.WriteLine("models:");
         writer.WriteLine($"  default_provider: {Quote(DefaultProvider)}");
@@ -265,6 +365,15 @@ internal sealed class EvoMeshYamlSettings
             writer.WriteLine($"      base_url: {Quote(provider.BaseUrl)}");
             writer.WriteLine($"      model: {Quote(provider.Model)}");
             writer.WriteLine($"      timeout_seconds: {Number(provider.TimeoutSeconds)}");
+            writer.WriteLine($"      num_ctx: {provider.NumCtx}");
+            if (provider.ModelNumCtx.Count > 0)
+            {
+                writer.WriteLine("      model_num_ctx:");
+                foreach (var (tag, tagNumCtx) in provider.ModelNumCtx)
+                {
+                    writer.WriteLine($"        {Quote(tag)}: {tagNumCtx}");
+                }
+            }
             if (!string.IsNullOrEmpty(provider.ApiKey))
             {
                 writer.WriteLine($"      api_key: {Quote(provider.ApiKey)}");
@@ -292,10 +401,53 @@ internal sealed class EvoMeshYamlSettings
             value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(item => long.TryParse(item, out _)));
 
+    /// <summary>Bare, comma-separated program/command names -- shell_allow's shape,
+    /// not numeric like the chat-id lists above, and not expected to be quoted.</summary>
+    private static string ParseNameList(string value)
+    {
+        var inner = value.Trim().Trim('[', ']');
+        var names = inner
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Unquote)
+            .Where(item => item.Length > 0);
+        return string.Join(", ", names);
+    }
+
+    private static string FormatNameList(string value) =>
+        string.Join(
+            ", ",
+            value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    /// <summary>
+    /// A mapping key that is itself allowed to contain a colon -- an Ollama model
+    /// tag such as "name:tag" under model_num_ctx -- which the file-wide
+    /// first-colon split above gets wrong. Only that one nested shape needs this;
+    /// every other key in this file is a bare identifier with no colon of its own.
+    /// </summary>
+    private static (string Key, string Value) SplitQuotedKeyPair(string line)
+    {
+        if (line.Length > 0 && (line[0] == '\'' || line[0] == '"'))
+        {
+            var quoteChar = line[0];
+            var closing = line.IndexOf(quoteChar, 1);
+            var separator = closing > 0 ? line.IndexOf(':', closing + 1) : -1;
+            if (separator > 0)
+            {
+                return (Unquote(line[..(closing + 1)]), Unquote(line[(separator + 1)..].Trim()));
+            }
+        }
+        var plainSeparator = line.IndexOf(':');
+        return (line[..plainSeparator].Trim(), Unquote(line[(plainSeparator + 1)..].Trim()));
+    }
+
     private static string Number(double value) =>
         value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static int ParseInt(string value, int fallback) =>
+        int.TryParse(value, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
+    private static int? ParseIntOrNull(string value, int? fallback) =>
         int.TryParse(value, System.Globalization.NumberStyles.Integer,
             System.Globalization.CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
 

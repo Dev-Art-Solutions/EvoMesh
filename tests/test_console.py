@@ -30,6 +30,8 @@ async def test_console_routes_commands(tmp_path: Path) -> None:
     assert "ollama:mock-specialist" in (
         await console.route('/model "Writer" mock-specialist ollama')
     )
+    assert "context window of 32768" in (await console.route('/num-ctx "Writer" 32768'))
+    assert "no longer overrides" in (await console.route('/num-ctx "Writer" clear'))
     assert await console.route('/chat "Writer"') == "Talking to Writer."
     assert await console.route("hello") == "Writer> Mock response"
     await environment.stop()

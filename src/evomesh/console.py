@@ -23,6 +23,7 @@ HELP = """Commands:
   /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
   /model <agent> <model> [prov] Change one agent's provider/model
+  /num-ctx <agent> <n>|clear    Override (or clear) one agent's context window
   /agent start|stop <agent>     Control an individual agent loop
   /cycle <agent>                Run one deliberation cycle now
   /beliefs <agent>              What the agent currently holds true
@@ -209,6 +210,22 @@ class ConsoleChannel:
             f"{definition.provider}:{definition.model_name}."
         )
 
+    async def _command_num_ctx(self, parts: list[str]) -> str:
+        if len(parts) != 3:
+            return "Usage: /num-ctx <agent> <n>|clear"
+        agent_name, value = parts[1], parts[2]
+        if value.lower() == "clear":
+            definition = await self.environment.configure_agent_num_ctx(agent_name, None)
+            resolved = self.environment.num_ctx_for(definition)
+            return (
+                f"Agent '{definition.name}' no longer overrides its context window "
+                f"(now {resolved or 'unset'}, from {definition.provider}'s own setting)."
+            )
+        if not value.isdigit() or int(value) <= 0:
+            return "num_ctx must be a positive integer, or 'clear'."
+        definition = await self.environment.configure_agent_num_ctx(agent_name, int(value))
+        return f"Agent '{definition.name}' now uses a context window of {definition.num_ctx}."
+
     async def _command_agent(self, parts: list[str]) -> str:
         if len(parts) != 3:
             return "Usage: /agent start|stop <agent>"
@@ -394,6 +411,9 @@ class ConsoleChannel:
         provider = self.environment.providers.get(provider_name)
         if provider is None:
             return f"Provider '{provider_name}' is not configured."
+        provider_settings = self.environment.settings.models.providers.get(provider_name)
+        model_name = provider_settings.model if provider_settings else None
+        num_ctx = self.environment.resolve_num_ctx(provider_name, model_name)
         writing = action == "do"
         root = self.environment.project_root
         task = parts[2]
@@ -420,6 +440,7 @@ class ConsoleChannel:
             shell_seconds=settings.shell_seconds,
             read_only=not writing,
             allow_write=writing,
+            num_ctx=num_ctx,
         )
         result = await runner.run(task)
         # Every tool call is printed, not just the answer: the point of the

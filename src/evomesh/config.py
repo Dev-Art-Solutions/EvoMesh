@@ -31,7 +31,15 @@ class ProviderSettings(BaseModel):
     # character budgets exist to prevent -- so a local model gets no context
     # widening unless this is set to match. None keeps a provider's own default
     # (an OpenAI-compatible server has no equivalent knob and ignores this).
-    num_ctx: int | None = None
+    # 64k is a starting point, not a measurement of any particular card: this
+    # class has no way to know free VRAM, so it cannot size the number itself.
+    num_ctx: int | None = 65536
+    # Same knob, keyed by model tag, for a provider that serves more than one
+    # model on the same endpoint -- a bigger reasoning model alongside a small,
+    # fast one, say. Checked before the provider-wide default above whenever a
+    # call names a model this dict has an entry for; an agent's own num_ctx
+    # (AgentDefinition.num_ctx / AgentModelSettings.num_ctx) outranks both.
+    model_num_ctx: dict[str, int] = Field(default_factory=dict)
 
 
 class ModelSettings(BaseModel):
@@ -42,6 +50,10 @@ class ModelSettings(BaseModel):
 class AgentModelSettings(BaseModel):
     provider: str
     model: str
+    # Overrides the provider's num_ctx for this one agent -- the model it runs
+    # may need a different window than its siblings on the same provider.
+    # None defers to ProviderSettings.num_ctx instead.
+    num_ctx: int | None = None
 
 
 class RuntimeSettings(BaseModel):

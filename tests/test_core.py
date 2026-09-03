@@ -169,6 +169,83 @@ async def test_system_agent_model_settings_override_persisted_values(tmp_path: P
     await restarted.stop()
 
 
+def test_num_ctx_resolution_prefers_agent_then_model_then_provider(tmp_path: Path) -> None:
+    """The order matters: an agent's own setting is the one exception a human
+    reaches for, a per-model entry serves every agent on that model, and the
+    provider default is what a config with neither still has to fall back to."""
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            providers={
+                "ollama": ProviderSettings(
+                    base_url="http://127.0.0.1:11434",
+                    model="qwen3",
+                    num_ctx=8192,
+                    model_num_ctx={"qwen3:32b": 32768},
+                )
+            }
+        ),
+    )
+    environment = Environment(settings)
+
+    assert environment.resolve_num_ctx("ollama", "qwen3") == 8192
+    assert environment.resolve_num_ctx("ollama", "qwen3:32b") == 32768
+    assert environment.resolve_num_ctx("ollama", "qwen3:32b", override=4096) == 4096
+    assert environment.resolve_num_ctx("unknown-provider", "qwen3") is None
+
+
+async def test_configure_agent_num_ctx_overrides_and_clears(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            providers={
+                "ollama": ProviderSettings(
+                    base_url="http://127.0.0.1:11434", model="qwen3", num_ctx=8192
+                )
+            }
+        ),
+    )
+    provider = MockProvider(["ok"])
+    environment = Environment(settings, {"ollama": provider})
+    await environment.start()
+    worker = AgentDefinition(name="Worker", purpose="Do work", model_name="qwen3")
+    await environment.register_agent(worker)
+    await environment.start_agent(worker.id)
+
+    updated = await environment.configure_agent_num_ctx(worker.id, 32768)
+    assert updated.num_ctx == 32768
+    assert worker.id in environment.runtimes
+
+    await environment.send_message(
+        Message(sender_id="human", recipient_id=worker.id, content="hello")
+    )
+    await environment.bus.receive("human", wait_seconds=1)
+    assert provider.calls[-1]["num_ctx"] == 32768
+
+    cleared = await environment.configure_agent_num_ctx(worker.id, None)
+    assert cleared.num_ctx is None
+    assert environment.num_ctx_for(cleared) == 8192
+    await environment.stop()
+
+
+async def test_system_agent_num_ctx_override_persisted(tmp_path: Path) -> None:
+    data_path = tmp_path / "data.db"
+    configured = Settings(
+        data_path=data_path,
+        generation_path=tmp_path / "generations",
+        system_agents={
+            "guardian": AgentModelSettings(provider="ollama", model="qwen3", num_ctx=4096)
+        },
+    )
+    environment = Environment(configured, {"ollama": MockProvider()})
+    await environment.start()
+    guardian = environment.registry.get("guardian")
+    assert guardian.num_ctx == 4096
+    await environment.stop()
+
+
 async def test_builtin_file_skill_enforces_grant(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

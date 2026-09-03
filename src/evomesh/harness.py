@@ -194,6 +194,7 @@ class HarnessRunner:
     registry: ToolRegistry = field(default_factory=ToolRegistry)
     session: HarnessSession = field(default_factory=lambda: HarnessSession(None))
     model: str | None = None
+    num_ctx: int | None = None
     max_steps: int = 24
     max_seconds: float = 300.0
     # What the model may be sent in one turn. The tools cap their own output;
@@ -334,6 +335,7 @@ class HarnessRunner:
                     tools=self.registry.schemas(),
                     system=self.system,
                     model=self.model,
+                    num_ctx=self.num_ctx,
                 )
                 return ChatTurn(text=strip_reasoning(turn.text), tool_calls=turn.tool_calls), True
             except ToolsUnsupportedError as exc:
@@ -343,6 +345,7 @@ class HarnessRunner:
             self._render(messages),
             system=f"{TEXT_SYSTEM}\n\nTools:\n{self.registry.describe()}",
             model=self.model,
+            num_ctx=self.num_ctx,
         )
         return parse_text_call(strip_reasoning(answer)), False
 
@@ -514,6 +517,7 @@ def build_runner(
     session: HarnessSession | None = None,
     limits: ToolLimits | None = None,
     model: str | None = None,
+    num_ctx: int | None = None,
     max_steps: int = 24,
     max_seconds: float = 300.0,
     transcript_chars: int = 12000,
@@ -550,6 +554,7 @@ def build_runner(
         registry=ToolRegistry(tools),
         session=session or HarnessSession(None),
         model=model,
+        num_ctx=num_ctx,
         max_steps=max_steps,
         max_seconds=max_seconds,
         transcript_chars=transcript_chars,

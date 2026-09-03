@@ -142,7 +142,14 @@ async def test_a_confirmed_agent_keeps_working_on_its_purpose(tmp_path: Path) ->
 
 async def test_a_model_failure_costs_an_attempt_and_shows_up_as_error(tmp_path: Path) -> None:
     class Broken(MockProvider):
-        async def generate(self, prompt: str, *, system: str = "", model: str | None = None) -> str:
+        async def generate(
+            self,
+            prompt: str,
+            *,
+            system: str = "",
+            model: str | None = None,
+            num_ctx: int | None = None,
+        ) -> str:
             raise RuntimeError("model is down")
 
     environment = Environment(settings_for(tmp_path), {"ollama": Broken()})

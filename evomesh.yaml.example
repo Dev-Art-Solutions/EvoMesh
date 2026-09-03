@@ -101,6 +101,11 @@ system_agents:
   evolver:
     provider: ollama
     model: qwen3
+    # Any of the four may override the provider's num_ctx (below) for just
+    # this agent -- the Evolver's harness turns are the biggest prompts this
+    # project sends, so it is the one most likely to need its own number.
+    # Omit to inherit models.providers.<provider>.num_ctx like the other three.
+    # num_ctx: 65536
 
 models:
   default_provider: ollama
@@ -115,14 +120,16 @@ models:
       # character budget in this file (runtime.*_chars, harness.transcript_chars)
       # assumes the server actually has room for what gets sent -- unset, the
       # server truncates the prompt from the oldest end itself, silently, before
-      # this project's own budgeting ever runs. Size it above your largest
-      # budget: runtime's four *_chars fields plus prompt_chars top out around
-      # 6000 chars (~1500-2000 tokens) per cycle, and the harness's
-      # transcript_chars (12000 chars) plus its system prompt and tool schemas
-      # can reach 6000-7000 tokens in one turn. 8192 covers both with margin;
-      # raise it if VRAM allows and leave it unset only for a server with no
-      # such option (OpenAI-compatible providers ignore this field).
-      num_ctx: 8192
+      # this project's own budgeting ever runs. 64k is a comfortable default for
+      # anything from a small chat model up to the 30-35B class this project
+      # targets; raise it if VRAM allows a bigger window, lower it if a smaller
+      # model or a tighter card needs the memory back. Leave it unset only for a
+      # server with no such option (OpenAI-compatible providers ignore this
+      # field). Overridable per model below, and per agent in system_agents
+      # above -- checked in that order: agent, then model, then this default.
+      num_ctx: 65536
+      # model_num_ctx:
+      #   some-other-model-on-this-server: 8192
     inferhub:
       base_url: http://127.0.0.1:5080/v1
       model: qwen3

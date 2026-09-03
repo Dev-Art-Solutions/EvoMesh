@@ -52,8 +52,17 @@ class ScriptedProvider(MockProvider):
         self.plan = plan
         self.step = step
 
-    async def generate(self, prompt: str, *, system: str = "", model: str | None = None) -> str:
-        self.calls.append({"prompt": prompt, "system": system, "model": model})
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
+    ) -> str:
+        self.calls.append(
+            {"prompt": prompt, "system": system, "model": model, "num_ctx": num_ctx}
+        )
         return self.plan if PLANNING_MARKER in prompt else self.step
 
 
@@ -223,7 +232,14 @@ async def test_a_library_plan_is_used_without_calling_the_model(tmp_path: Path) 
 
 async def test_a_model_that_is_down_still_yields_a_usable_plan(tmp_path: Path) -> None:
     class Broken(MockProvider):
-        async def generate(self, prompt: str, *, system: str = "", model: str | None = None) -> str:
+        async def generate(
+            self,
+            prompt: str,
+            *,
+            system: str = "",
+            model: str | None = None,
+            num_ctx: int | None = None,
+        ) -> str:
             raise RuntimeError("model is down")
 
     environment, agent = await worker(tmp_path, Broken(), goal="Keep the notes tidy")

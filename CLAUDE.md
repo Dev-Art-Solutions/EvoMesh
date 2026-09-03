@@ -91,10 +91,15 @@ regresses.
    its own default context (2048 tokens on most Modelfiles) no matter how the model was trained or
    how generous the character budgets above are, and truncates from the oldest end itself —
    silently, and before any of this project's budgeting runs — if the request never says otherwise.
-   `models.providers.ollama.num_ctx` (`ProviderSettings.num_ctx`, sent as `options.num_ctx` on
-   every `/api/generate` and `/api/chat` call) is what makes the budget authoritative instead of
-   aspirational; size it above the largest thing actually sent — the harness's `transcript_chars`
-   is usually the biggest — not above the per-cycle prompt alone.
+   `models.providers.ollama.num_ctx` (`ProviderSettings.num_ctx`, default 65536, sent as
+   `options.num_ctx` on every `/api/generate` and `/api/chat` call) is what makes the budget
+   authoritative instead of aspirational; size it above the largest thing actually sent — the
+   harness's `transcript_chars` is usually the biggest — not above the per-cycle prompt alone.
+   Resolution checks three places in order: an agent's own `num_ctx` (`AgentDefinition.num_ctx`,
+   `AgentModelSettings.num_ctx` in `system_agents`, settable live with `/num-ctx <agent> <n>|clear`
+   and in the Control Center's Settings tab), then the provider's `model_num_ctx` for that model
+   tag, then the provider default above — `Environment.resolve_num_ctx` is the one place that
+   order lives. An OpenAI-compatible server has no equivalent knob and ignores all of it.
 4. **`<think>` blocks are stripped before anything is stored or re-prompted**, including the case
    where the chat template opened the block and the model returns only the closing tag.
    `strip_reasoning` is the one place that happens.

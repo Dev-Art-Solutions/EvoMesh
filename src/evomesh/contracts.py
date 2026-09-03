@@ -356,6 +356,9 @@ class AgentDefinition(BaseModel):
     # something every agent has because the mesh has it.
     harness_root: str = ""
     cycle_seconds: int | None = None
+    # Overrides the provider's num_ctx for this one agent. None defers to
+    # ProviderSettings.num_ctx for whatever provider/model this agent runs.
+    num_ctx: int | None = None
     status: AgentStatus = AgentStatus.CANDIDATE
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)

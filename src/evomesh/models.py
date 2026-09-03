@@ -91,7 +91,12 @@ def describe(exc: Exception) -> str:
 
 class ModelProvider(Protocol):
     async def generate(
-        self, prompt: str, *, system: str = "", model: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> str: ...
 
     async def chat(
@@ -101,6 +106,7 @@ class ModelProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         system: str = "",
         model: str | None = None,
+        num_ctx: int | None = None,
     ) -> ChatTurn: ...
 
     async def health(self) -> tuple[bool, str]: ...
@@ -127,8 +133,9 @@ class OllamaProvider:
         # thing that trims, per the load-bearing rule in CLAUDE.md.
         self.num_ctx = num_ctx
 
-    def _options(self) -> dict[str, Any] | None:
-        return {"num_ctx": self.num_ctx} if self.num_ctx else None
+    def _options(self, num_ctx: int | None) -> dict[str, Any] | None:
+        effective = num_ctx if num_ctx is not None else self.num_ctx
+        return {"num_ctx": effective} if effective else None
 
     async def health(self) -> tuple[bool, str]:
         try:
@@ -152,7 +159,12 @@ class OllamaProvider:
                 raise ModelUnavailableError(describe(exc)) from exc
 
     async def generate(
-        self, prompt: str, *, system: str = "", model: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "model": model or self.model,
@@ -160,7 +172,7 @@ class OllamaProvider:
             "system": system,
             "stream": False,
         }
-        if options := self._options():
+        if options := self._options(num_ctx):
             body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -189,6 +201,7 @@ class OllamaProvider:
         tools: list[dict[str, Any]] | None = None,
         system: str = "",
         model: str | None = None,
+        num_ctx: int | None = None,
     ) -> ChatTurn:
         wire = [ChatMessage(role="system", content=system)] if system else []
         body: dict[str, Any] = {
@@ -198,7 +211,7 @@ class OllamaProvider:
         }
         if tools:
             body["tools"] = tools
-        if options := self._options():
+        if options := self._options(num_ctx):
             body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -260,8 +273,18 @@ class OpenAICompatibleProvider:
         return {"Authorization": f"Bearer {self.api_key or 'local'}"}
 
     async def generate(
-        self, prompt: str, *, system: str = "", model: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> str:
+        # No OpenAI-compatible equivalent to Ollama's options.num_ctx exists in
+        # the chat-completions spec; a server this points at sizes its own
+        # context (e.g. vLLM's --max-model-len), so the argument is accepted
+        # for interface parity with OllamaProvider and otherwise unused.
+        del num_ctx
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -301,7 +324,9 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]] | None = None,
         system: str = "",
         model: str | None = None,
+        num_ctx: int | None = None,
     ) -> ChatTurn:
+        del num_ctx  # see generate(): no equivalent on this dialect
         wire = [ChatMessage(role="system", content=system)] if system else []
         body: dict[str, Any] = {
             "model": model or self.model,
@@ -341,7 +366,7 @@ class MockProvider:
         turns: list[ChatTurn] | None = None,
     ) -> None:
         self.responses = responses or ["Mock response"]
-        self.calls: list[dict[str, str | None]] = []
+        self.calls: list[dict[str, str | int | None]] = []
         # None means "this model has no tools", which is the case the harness
         # has to work in anyway -- so it is the default a test gets for free.
         self.turns = turns
@@ -354,9 +379,16 @@ class MockProvider:
         return ["mock-model", "mock-specialist"]
 
     async def generate(
-        self, prompt: str, *, system: str = "", model: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> str:
-        self.calls.append({"prompt": prompt, "system": system, "model": model})
+        self.calls.append(
+            {"prompt": prompt, "system": system, "model": model, "num_ctx": num_ctx}
+        )
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 
     async def chat(
@@ -366,7 +398,9 @@ class MockProvider:
         tools: list[dict[str, Any]] | None = None,
         system: str = "",
         model: str | None = None,
+        num_ctx: int | None = None,
     ) -> ChatTurn:
+        del num_ctx
         if self.turns is None:
             raise ToolsUnsupportedError("mock model has no tool calling")
         self.chats.append(list(messages))

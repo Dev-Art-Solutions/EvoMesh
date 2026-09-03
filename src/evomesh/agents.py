@@ -70,6 +70,10 @@ class AgentRuntime:
     behavior: AgentBehavior = field(default_factory=ReflectiveBehavior)
     budget: MemoryBudget = field(default_factory=MemoryBudget)
     cycle_seconds: float = 60.0
+    # Resolved once at start_agent(), same as cycle_seconds: a model swap or a
+    # num_ctx change restarts the runtime, so re-resolving mid-life would only
+    # ever return what this already holds.
+    num_ctx: int | None = None
     start_delay: float = 0.0
     services: Callable[[], dict[str, Any]] = dict
     world_context: Callable[[], str] = lambda: ""
@@ -278,6 +282,7 @@ class AgentRuntime:
             f"still true and useful.\n\n{text}",
             system="You compress an agent's long-term memory. Output bullets only.",
             model=self.definition.model_name,
+            num_ctx=self.num_ctx,
         )
 
     # -- helpers --------------------------------------------------------
@@ -292,6 +297,7 @@ class AgentRuntime:
             inbox=list(self._inbox),
             services=self.services(),
             work=self._work_summary(),
+            num_ctx=self.num_ctx,
         )
 
     def _work_summary(self) -> str:
@@ -356,7 +362,7 @@ SYSTEM_AGENTS: tuple[tuple[str, str, str, str, Autonomy], ...] = (
 def system_agent_definitions(
     provider: str,
     model: str,
-    overrides: dict[str, tuple[str, str]] | None = None,
+    overrides: dict[str, tuple[str, str, int | None]] | None = None,
 ) -> list[AgentDefinition]:
     """Bootstrap the built-in agents, each already carrying its standing goal.
 
@@ -367,6 +373,7 @@ def system_agent_definitions(
     overrides = overrides or {}
     definitions: list[AgentDefinition] = []
     for agent_id, name, purpose, goal, autonomy in SYSTEM_AGENTS:
+        chosen = overrides.get(agent_id, (provider, model, None))
         definition = AgentDefinition(
             id=agent_id,
             name=name,
@@ -374,8 +381,9 @@ def system_agent_definitions(
             created_by="bootstrap",
             identity=name,
             purpose=purpose,
-            provider=overrides.get(agent_id, (provider, model))[0],
-            model_name=overrides.get(agent_id, (provider, model))[1],
+            provider=chosen[0],
+            model_name=chosen[1],
+            num_ctx=chosen[2],
             autonomy=autonomy,
             status=AgentStatus.ACTIVE,
         )

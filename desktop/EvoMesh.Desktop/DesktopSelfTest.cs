@@ -21,11 +21,20 @@ internal static class DesktopSelfTest
             settings.EnvironmentName = "desktop-self-test";
             settings.Providers["ollama"] = settings.Providers["ollama"] with
             {
-                Model = "qwen3:14b"
+                Model = "qwen3:14b",
+                NumCtx = 32768,
             };
+            // The colon is deliberate: an Ollama model tag routinely has one
+            // (name:tag), and it is exactly what a naive first-colon split on
+            // the mapping key gets wrong.
+            settings.Providers["ollama"].ModelNumCtx["ornith-1.5:35b-128k"] = 131072;
             settings.SystemAgents["guardian"] = new AgentModelEditorSettings(
                 "ollama",
-                "qwen3:14b");
+                "qwen3:14b",
+                4096);
+            settings.Harness.Enabled = true;
+            settings.Harness.AllowWrite = true;
+            settings.Harness.TranscriptChars = 9000;
             settings.Runtime.CycleSeconds = 45;
             settings.Runtime.MemoryChars = 2222;
             settings.Evolution.Autonomous = false;
@@ -44,6 +53,24 @@ internal static class DesktopSelfTest
                 saved.SystemAgents["guardian"].Model != "qwen3:14b")
             {
                 throw new InvalidOperationException("Settings round-trip failed.");
+            }
+            // num_ctx exists because Ollama's own default context (2048 tokens)
+            // silently truncates a prompt the mesh already budgeted for -- a
+            // save that lost it would reintroduce exactly that bug.
+            if (saved.Providers["ollama"].NumCtx != 32768 ||
+                !saved.Providers["ollama"].ModelNumCtx.TryGetValue("ornith-1.5:35b-128k", out var tagNumCtx) ||
+                tagNumCtx != 131072 ||
+                saved.SystemAgents["guardian"].NumCtx != 4096)
+            {
+                throw new InvalidOperationException("num_ctx settings were lost on save.");
+            }
+            // Missing entirely (which defaults to off) is the exact shape that
+            // left the Evolver logging "the harness is off" every cycle with no
+            // way to author a generation -- a save must not reproduce that by
+            // silently dropping a block this tab has no controls for.
+            if (!saved.Harness.Enabled || !saved.Harness.AllowWrite || saved.Harness.TranscriptChars != 9000)
+            {
+                throw new InvalidOperationException("harness settings were lost on save.");
             }
             // Saving settings must not silently drop the runtime cadence, the
             // prompt budgets, the workspace path, or the evolution policy.
