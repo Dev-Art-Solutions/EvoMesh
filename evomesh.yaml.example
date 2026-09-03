@@ -88,13 +88,17 @@ evolution:
 #   workers: 1
 #   max_queue: 8
 
-# The Web.Fetch skill: an agent asks for a URL, gets back its main content as
-# Markdown. Off by default. Scrapling (github.com/D4Vinci/Scrapling) is not a
-# runtime dependency of this project -- its fetchers extra alone pulls in a
-# dozen packages, a browser automation stack among them, and rule 16 in
-# CLAUDE.md keeps this project's own list at five. Run
-# scripts/install-scrapling.ps1 / .sh once to provision it into its own venv
-# under .runtime/, then point executable at the scrapling binary that produces.
+# The Web.Fetch skill and the harness's fetch tool: an agent asks for a URL,
+# gets back its main content as Markdown. Off by default. Scrapling
+# (github.com/D4Vinci/Scrapling) is not a runtime dependency of this project --
+# its fetchers extra alone pulls in a dozen packages, a browser automation
+# stack among them, and rule 16 in CLAUDE.md keeps this project's own list at
+# five. Run scripts/install-scrapling.ps1 / .sh once to provision it into its
+# own venv under .runtime/, then point executable at the scrapling binary that
+# produces. Add -WithBrowser / --with-browser to also pull down Chromium (a
+# few hundred MB, one time) so the fetch tool's dynamic: true argument works,
+# for a page whose content JavaScript builds client-side; without it, static
+# HTTP fetching alone already works.
 #
 # scraping:
 #   enabled: false

@@ -680,6 +680,35 @@ async def test_a_configured_fetcher_returns_its_output(
     assert context.tally.reads == 1
 
 
+async def test_dynamic_fetch_uses_the_browser_command_and_millisecond_timeout(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_command(program: str, *arguments: str, cwd: Path | None = None):
+        calls.append((program, *arguments))
+        await asyncio.to_thread(
+            Path(arguments[3]).write_text, "Rendered.\n", encoding="utf-8"
+        )
+        return CommandResult(exit_code=0, output="")
+
+    monkeypatch.setattr("evomesh.harness_tools.run_command", fake_run_command)
+    context = ToolContext(
+        root=project, scraping_executable="fake-scrapling", scraping_timeout=15.0
+    )
+
+    result = await ToolRegistry(WEB_TOOLS).invoke(
+        context, "fetch", {"url": "https://example.com", "dynamic": True}
+    )
+
+    assert result == "Rendered."
+    _, *arguments = calls[0]
+    assert arguments[:3] == ["extract", "fetch", "https://example.com"]
+    # Milliseconds, not seconds -- the browser subcommand's own unit.
+    assert "15000" in arguments
+    assert "15" not in arguments
+
+
 async def test_a_failed_fetch_is_named_in_the_refusal(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

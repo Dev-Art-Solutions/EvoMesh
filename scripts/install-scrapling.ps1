@@ -5,7 +5,13 @@
 # whatever this script builds; it never imports scrapling directly.
 [CmdletBinding()]
 param(
-    [string]$Root
+    [string]$Root,
+    # Pulls down Chromium via Playwright -- hundreds of MB, one time -- so the
+    # fetch tool's dynamic=true (a real browser, for JavaScript-rendered
+    # pages) works. Off by default: the static fetcher alone already handles
+    # most pages, and nobody should get a download that size without asking
+    # for it. Re-run with this switch later; it is additive, not a reinstall.
+    [switch]$WithBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +33,12 @@ $venvPython = Join-Path $venvPath "Scripts\python.exe"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $executable = Join-Path $venvPath "Scripts\scrapling.exe"
+
+if ($WithBrowser) {
+    & $executable install
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 Write-Output ""
 Write-Output "Scrapling installed at $executable"
 Write-Output "Set in evomesh.yaml:"
@@ -34,7 +46,11 @@ Write-Output "  scraping:"
 Write-Output "    enabled: true"
 Write-Output "    executable: '$($executable.Replace('\', '/'))'"
 Write-Output ""
-Write-Output "This installs the static fetcher only (curl_cffi -- no browser download)."
-Write-Output "Web.Fetch works with that alone. For JS-rendered pages, a real browser"
-Write-Output "is needed too; run once more, from this venv:"
-Write-Output "  & '$executable' install"
+if ($WithBrowser) {
+    Write-Output "Browser installed: dynamic=true on the fetch tool works too."
+} else {
+    Write-Output "This installed the static fetcher only (curl_cffi -- no browser download)."
+    Write-Output "The fetch tool's dynamic=true needs a real browser; re-run with -WithBrowser"
+    Write-Output "to add it (hundreds of MB, one time), or by hand from this venv:"
+    Write-Output "  & '$executable' install"
+}

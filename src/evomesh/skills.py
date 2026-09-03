@@ -99,17 +99,31 @@ class SkillRegistry:
             if not url:
                 raise ValueError("url is required")
             css_selector = inputs.get("css_selector")
+            dynamic = bool(inputs.get("dynamic"))
             with tempfile.TemporaryDirectory(prefix="evomesh-fetch-") as scratch:
                 output_path = Path(scratch) / "page.md"
-                arguments = [
-                    "extract",
-                    "get",
-                    url,
-                    str(output_path),
-                    "--ai-targeted",
-                    "--timeout",
-                    str(int(self.scraping.timeout_seconds)),
-                ]
+                if dynamic:
+                    # Browser commands take the timeout in milliseconds, unlike
+                    # the static path below -- a different unit, not a typo.
+                    arguments = [
+                        "extract",
+                        "fetch",
+                        url,
+                        str(output_path),
+                        "--ai-targeted",
+                        "--timeout",
+                        str(int(self.scraping.timeout_seconds * 1000)),
+                    ]
+                else:
+                    arguments = [
+                        "extract",
+                        "get",
+                        url,
+                        str(output_path),
+                        "--ai-targeted",
+                        "--timeout",
+                        str(int(self.scraping.timeout_seconds)),
+                    ]
                 if css_selector:
                     arguments += ["--css-selector", str(css_selector)]
                 result = await run_command(self.scraping.executable, *arguments)

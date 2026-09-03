@@ -459,6 +459,14 @@ async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
     environment (scripts/install-scrapling.ps1) and pointed scraping.executable
     at it -- it is not a runtime dependency of this project (CLAUDE.md rule
     16), so there is nothing to fall back to.
+
+    Static by default: `extract get`, no browser, fast. ``dynamic: true``
+    switches to `extract fetch`, a real headless Chromium -- needed for a page
+    whose content is rendered by client-side JavaScript, and only present if
+    `scripts/install-scrapling.ps1 -WithBrowser` (or `scrapling install` run
+    by hand from that venv) already pulled the browser down; a plain install
+    refuses this branch by naming what is missing, same as everything else
+    that is off until configured.
     """
     url = str(args.get("url") or "").strip()
     if not url:
@@ -468,31 +476,54 @@ async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
             "DENIED: no fetcher is configured. Run scripts/install-scrapling.ps1 "
             "and set scraping.enabled and scraping.executable in evomesh.yaml."
         )
+    dynamic = bool(args.get("dynamic"))
     css_selector = str(args.get("css_selector") or "").strip()
     with tempfile.TemporaryDirectory(prefix="evomesh-fetch-") as scratch:
         output_path = Path(scratch) / "page.md"
-        arguments = [
-            "extract",
-            "get",
-            url,
-            str(output_path),
-            "--ai-targeted",
-            "--timeout",
-            str(int(context.scraping_timeout)),
-        ]
+        if dynamic:
+            # Browser commands take the timeout in milliseconds, not seconds --
+            # a different unit on the same CLI, not a typo.
+            arguments = [
+                "extract",
+                "fetch",
+                url,
+                str(output_path),
+                "--ai-targeted",
+                "--timeout",
+                str(int(context.scraping_timeout * 1000)),
+            ]
+        else:
+            arguments = [
+                "extract",
+                "get",
+                url,
+                str(output_path),
+                "--ai-targeted",
+                "--timeout",
+                str(int(context.scraping_timeout)),
+            ]
         if css_selector:
             arguments += ["--css-selector", css_selector]
         try:
             result = await asyncio.wait_for(
                 run_command(context.scraping_executable, *arguments),
-                timeout=context.scraping_timeout + 5,
+                # A browser launch is real overhead on top of the page's own
+                # timeout, not covered by --timeout above; the static path
+                # gets the same margin rather than a second code path.
+                timeout=context.scraping_timeout + 30,
             )
         except TimeoutError:
             raise ToolDenied(f"DENIED: fetching {url} did not finish in time") from None
         except OSError as exc:
             raise ToolDenied(f"DENIED: the fetcher could not be started: {exc}") from exc
         if result.exit_code != 0 or not output_path.exists():
-            detail = result.output.strip() or "no output"
+            hint = (
+                " (the browser may not be installed -- see "
+                "scripts/install-scrapling.ps1 -WithBrowser)"
+                if dynamic
+                else ""
+            )
+            detail = (result.output.strip() or "no output") + hint
             raise ToolDenied(f"DENIED: could not fetch {url}: {detail}")
         content = await asyncio.to_thread(output_path.read_text, encoding="utf-8")
     context.tally.reads += 1
@@ -620,8 +651,9 @@ WEB_TOOLS: tuple[Tool, ...] = (
         name="fetch",
         description=(
             "Fetch a URL and return its main content as Markdown -- navigation, "
-            "ads and scripts stripped. Static pages only: JavaScript that renders "
-            "content client-side will not appear."
+            "ads and scripts stripped. Static by default: content that JavaScript "
+            "renders client-side will not appear. Set dynamic=true for that -- "
+            "slower, and only works if a browser is installed for it."
         ),
         parameters={
             "type": "object",
@@ -630,6 +662,13 @@ WEB_TOOLS: tuple[Tool, ...] = (
                 "css_selector": {
                     "type": "string",
                     "description": "Optional CSS selector to return only matching content.",
+                },
+                "dynamic": {
+                    "type": "boolean",
+                    "description": (
+                        "Render with a real browser instead of a plain HTTP request. "
+                        "Try false first; only set true if the content is missing."
+                    ),
                 },
             },
             "required": ["url"],

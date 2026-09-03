@@ -131,6 +131,36 @@ async def test_web_fetch_shells_out_and_clips_the_result(
     assert "30 more characters withheld" in result["content"]
 
 
+async def test_web_fetch_dynamic_uses_the_browser_command_and_millisecond_timeout(
+    repository: SQLiteRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def fake_run_command(
+        program: str, *arguments: str, cwd: Path | None = None
+    ) -> CommandResult:
+        calls.append((program, arguments))
+        await asyncio.to_thread(Path(arguments[3]).write_text, "Rendered.", encoding="utf-8")
+        return CommandResult(exit_code=0, output="")
+
+    monkeypatch.setattr("evomesh.skills.run_command", fake_run_command)
+    policy = FilesystemPolicy(repository)
+    settings = ScrapingSettings(enabled=True, executable="fake-scrapling", timeout_seconds=15)
+    registry = SkillRegistry(repository, policy, settings)
+    await registry.register_builtins()
+
+    result = await registry.invoke(
+        "agent-1", "Web.Fetch", {"url": "https://example.com", "dynamic": True}
+    )
+
+    assert result["content"] == "Rendered."
+    _, arguments = calls[0]
+    assert arguments[:3] == ("extract", "fetch", "https://example.com")
+    # Milliseconds, not seconds -- the browser subcommand's own unit.
+    assert "15000" in arguments
+    assert "15" not in arguments
+
+
 async def test_web_fetch_reports_a_failed_command_instead_of_an_empty_page(
     repository: SQLiteRepository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
