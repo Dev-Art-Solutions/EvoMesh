@@ -20,7 +20,6 @@ async def test_create_grant_message_and_restart(tmp_path: Path) -> None:
     await environment.register_agent(agent)
     papers = tmp_path / "papers"
     await environment.grant_access(FilesystemGrant(agent_id=agent.id, path=str(papers)))
-    await environment.skills.attach(agent.id, "Markdown.Read")
     await environment.start_agent(agent.id)
     await environment.send_message(
         Message(sender_id="human", recipient_id=agent.id, content="Summarize the papers")

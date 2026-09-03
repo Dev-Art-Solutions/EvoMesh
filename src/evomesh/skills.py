@@ -1,58 +1,117 @@
+"""What a skill is, and how the mesh finds one.
+
+A skill is a description an agent reads, never a capability the mesh executes
+on its behalf. The earlier shape of this module -- a registry of Python
+handlers keyed by name, "invoked" with arguments like a function call -- built
+exactly the wrong thing: every one of those handlers was a tool wearing a
+skill's name. Filesystem.Read/Write and Git.Status/Diff duplicated what the
+harness's read/write/edit tools and its shell (with git allowed) already do
+more honestly; Web.Fetch duplicated the harness's own fetch tool outright.
+A skill should add nothing a tool call could not already do -- it adds the
+*procedure*, in prose, for when to make which calls, the same shape a skill
+has in Claude Code itself.
+
+Skills live on disk, not in the database, for the reason memory.md and
+context.md do (rule 18): a human reads or edits them directly. One skill is
+one directory under skills/, a SKILL.md with YAML frontmatter (name,
+description) over a Markdown body -- the frontmatter is what
+SkillRegistry.discover() searches without opening the file, and the body is
+what an agent reads, with the same `read` tool it reads any other file with,
+once render_catalog() has told it the skill exists and where. Nothing here
+ever runs the body; that is the whole point.
+"""
+
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from collections.abc import Awaitable, Callable
+import logging
 from pathlib import Path
-from typing import Any
 
-from evomesh.config import ScrapingSettings
+import yaml
+
 from evomesh.contracts import SkillDefinition
-from evomesh.permissions import FilesystemPolicy
-from evomesh.processes import run_command
-from evomesh.storage import SQLiteRepository
 
-SkillHandler = Callable[[str, dict[str, Any]], Awaitable[Any]]
+logger = logging.getLogger(__name__)
+
+SKILL_FILENAME = "SKILL.md"
 
 
 class MissingSkillError(LookupError):
     pass
 
 
-def _clip_fetched(text: str, budget: int) -> str:
-    """Cut a fetched page to budget and say what was withheld.
+class InvalidSkillError(ValueError):
+    pass
 
-    A page can be any size, and it is about to sit in a model's prompt --
-    same rule as everything else this project hands a model (CLAUDE.md rule
-    3): the trim is ours, not the model server's, and it says so.
+
+def parse_skill(path: Path, text: str, *, created_by: str = "system") -> SkillDefinition:
+    """Split a SKILL.md into its frontmatter and the definition it describes.
+
+    Frontmatter is YAML between the file's opening ``---`` lines -- the same
+    shape every skill in Claude Code already uses, because name and
+    description are the metadata the registry needs before anything decides
+    to read the body at all.
     """
-    if budget <= 0 or len(text) <= budget:
-        return text
-    withheld = len(text) - budget
-    hint = "narrow css_selector or fetch a smaller page"
-    return f"{text[:budget]}\n[... {withheld} more characters withheld, {hint} ...]"
+    if not text.startswith("---"):
+        raise InvalidSkillError(f"{path}: missing YAML frontmatter (a leading '---' block)")
+    end = text.find("\n---", 3)
+    if end == -1:
+        raise InvalidSkillError(f"{path}: frontmatter is opened but never closed with '---'")
+    try:
+        meta = yaml.safe_load(text[3:end].strip("\n")) or {}
+    except yaml.YAMLError as exc:
+        raise InvalidSkillError(f"{path}: frontmatter is not valid YAML: {exc}") from exc
+    if not isinstance(meta, dict):
+        kind = type(meta).__name__
+        raise InvalidSkillError(f"{path}: frontmatter must be a mapping, not a {kind}")
+    name = str(meta.get("name") or "").strip()
+    description = str(meta.get("description") or "").strip()
+    if not name or not description:
+        raise InvalidSkillError(f"{path}: frontmatter needs both 'name' and 'description'")
+    return SkillDefinition(name=name, description=description, path=path, created_by=created_by)
+
+
+def skill_body(text: str) -> str:
+    """The instructions, with the frontmatter stripped -- what an agent acts
+    on once it has decided, from the catalog line, that this skill applies."""
+    if not text.startswith("---"):
+        return text.strip()
+    end = text.find("\n---", 3)
+    return text[end + 4 :].strip() if end != -1 else text.strip()
 
 
 class SkillRegistry:
-    def __init__(
-        self,
-        repository: SQLiteRepository,
-        policy: FilesystemPolicy,
-        scraping: ScrapingSettings | None = None,
-    ) -> None:
-        self.repository = repository
-        self.policy = policy
-        self.scraping = scraping or ScrapingSettings()
+    """Discovers skills under ``root/skills/*/SKILL.md``."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
         self._skills: dict[str, SkillDefinition] = {}
-        self._handlers: dict[str, SkillHandler] = {}
+
+    @property
+    def skills_dir(self) -> Path:
+        return self.root / "skills"
 
     async def load(self) -> None:
-        self._skills = {skill.name: skill for skill in await self.repository.load_skills()}
+        """Rescan disk. A handful of small files -- cheap enough to redo
+        after every /skill install rather than patch the registry in place."""
+        self._skills = await asyncio.to_thread(self._scan)
 
-    async def register(self, skill: SkillDefinition, handler: SkillHandler) -> None:
-        self._skills[skill.name] = skill
-        self._handlers[skill.name] = handler
-        await self.repository.save_skill(skill)
+    def _scan(self) -> dict[str, SkillDefinition]:
+        found: dict[str, SkillDefinition] = {}
+        if not self.skills_dir.is_dir():
+            return found
+        for entry in sorted(self.skills_dir.iterdir()):
+            skill_file = entry / SKILL_FILENAME
+            if not skill_file.is_file():
+                continue
+            try:
+                text = skill_file.read_text(encoding="utf-8")
+                definition = parse_skill(skill_file.relative_to(self.root), text)
+            except (InvalidSkillError, OSError, UnicodeDecodeError) as exc:
+                logger.warning("skill at %s could not be loaded: %s", skill_file, exc)
+                continue
+            found[definition.name] = definition
+        return found
 
     def discover(self, query: str = "") -> list[SkillDefinition]:
         needle = query.lower()
@@ -62,106 +121,48 @@ class SkillRegistry:
             if needle in skill.name.lower() or needle in skill.description.lower()
         ]
 
-    async def attach(self, agent_id: str, skill_name: str) -> None:
-        if skill_name not in self._skills:
-            raise MissingSkillError(skill_name)
-        await self.repository.attach_skill(agent_id, skill_name)
+    def get(self, name: str) -> SkillDefinition:
+        skill = self._skills.get(name)
+        if skill is None:
+            raise MissingSkillError(name)
+        return skill
 
-    async def invoke(self, agent_id: str, skill_name: str, inputs: dict[str, Any]) -> Any:
-        handler = self._handlers.get(skill_name)
-        if handler is None:
-            raise MissingSkillError(skill_name)
-        return await handler(agent_id, inputs)
+    async def read(self, name: str) -> str:
+        """The skill's instructions, frontmatter stripped -- for previewing
+        one from the console, not for handing to an agent (render_catalog
+        does that, by name and path, so the agent still does its own reading
+        through the same tool it reads any other file with)."""
+        skill = self.get(name)
+        text = await asyncio.to_thread((self.root / skill.path).read_text, encoding="utf-8")
+        return skill_body(text)
 
-    async def register_builtins(self) -> None:
-        async def read_text(agent_id: str, inputs: dict[str, Any]) -> str:
-            path = await self.policy.require(agent_id, str(inputs["path"]), "read")
-            return await asyncio.to_thread(path.read_text, encoding="utf-8")
-
-        async def write_text(agent_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
-            path = await self.policy.require(agent_id, str(inputs["path"]), "write")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            content = str(inputs["content"])
-            await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-            return {"path": str(path), "bytes": len(content.encode())}
-
-        async def git_command(agent_id: str, inputs: dict[str, Any]) -> str:
-            root = await self.policy.require(agent_id, str(inputs["path"]), "read")
-            command = str(inputs.get("command", "status"))
-            arguments = ["git", "-C", str(root), command]
-            if command == "diff":
-                arguments.append("--")
-            return (await run_command(*arguments)).output
-
-        async def web_fetch(agent_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
-            del agent_id  # no filesystem grant applies to a network fetch
-            url = str(inputs.get("url", "")).strip()
-            if not url:
-                raise ValueError("url is required")
-            css_selector = inputs.get("css_selector")
-            dynamic = bool(inputs.get("dynamic"))
-            with tempfile.TemporaryDirectory(prefix="evomesh-fetch-") as scratch:
-                output_path = Path(scratch) / "page.md"
-                if dynamic:
-                    # Browser commands take the timeout in milliseconds, unlike
-                    # the static path below -- a different unit, not a typo.
-                    arguments = [
-                        "extract",
-                        "fetch",
-                        url,
-                        str(output_path),
-                        "--ai-targeted",
-                        "--timeout",
-                        str(int(self.scraping.timeout_seconds * 1000)),
-                    ]
-                else:
-                    arguments = [
-                        "extract",
-                        "get",
-                        url,
-                        str(output_path),
-                        "--ai-targeted",
-                        "--timeout",
-                        str(int(self.scraping.timeout_seconds)),
-                    ]
-                if css_selector:
-                    arguments += ["--css-selector", str(css_selector)]
-                result = await run_command(self.scraping.executable, *arguments)
-                if result.exit_code != 0 or not output_path.exists():
-                    raise RuntimeError(
-                        f"scrapling could not fetch {url} (exit {result.exit_code}): "
-                        f"{result.output.strip() or 'no output'}"
-                    )
-                content = await asyncio.to_thread(output_path.read_text, encoding="utf-8")
-            return {
-                "url": url,
-                "content": _clip_fetched(content, self.scraping.max_content_chars),
-            }
-
-        definitions = [
-            ("Filesystem.Read", "Read a UTF-8 file", read_text, ["filesystem:read"]),
-            ("Filesystem.Write", "Write a UTF-8 file", write_text, ["filesystem:write"]),
-            ("Markdown.Read", "Read Markdown text", read_text, ["filesystem:read"]),
-            ("Markdown.Write", "Write Markdown text", write_text, ["filesystem:write"]),
-            ("Git.Status", "Read Git status", git_command, ["filesystem:read"]),
-            ("Git.Diff", "Read Git diff", git_command, ["filesystem:read"]),
+    def render_catalog(self) -> str:
+        """One line per skill, sized for a prompt: name, description, and the
+        path to read for the rest. Never the body -- spending that budget
+        unconditionally would undo the reason a skill is a file an agent
+        reads only when it decides to, rather than a paragraph pinned to
+        every prompt whether it is relevant or not."""
+        if not self._skills:
+            return ""
+        lines = [
+            f"- {skill.name}: {skill.description} (read {skill.path.as_posix()} for how)"
+            for skill in sorted(self._skills.values(), key=lambda item: item.name)
         ]
-        if self.scraping.enabled and self.scraping.executable:
-            definitions.append(
-                (
-                    "Web.Fetch",
-                    "Fetch a URL and return its main content as Markdown, via Scrapling",
-                    web_fetch,
-                    ["network:fetch"],
-                )
-            )
-        for name, description, handler, permissions in definitions:
-            await self.register(
-                SkillDefinition(
-                    name=name,
-                    description=description,
-                    entrypoint=f"builtin:{name}",
-                    required_permissions=permissions,
-                ),
-                handler,
-            )
+        return "Skills available -- read one only if it is relevant to this task:\n" + "\n".join(
+            lines
+        )
+
+    async def install(self, source_text: str, *, created_by: str = "human") -> SkillDefinition:
+        """Write a new skill from a SKILL.md's raw text -- a file already
+        read, or a URL already fetched. This one step is the whole
+        installation mechanism: whatever produced valid frontmatter and a
+        body becomes a skill, and a market is just a place skills like this
+        one get shared from.
+        """
+        definition = parse_skill(Path("<new skill>"), source_text, created_by=created_by)
+        target = self.skills_dir / definition.name / SKILL_FILENAME
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_text, source_text, encoding="utf-8")
+        installed = definition.model_copy(update={"path": target.relative_to(self.root)})
+        self._skills[installed.name] = installed
+        return installed

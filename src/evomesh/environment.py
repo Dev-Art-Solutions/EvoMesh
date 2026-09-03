@@ -19,7 +19,6 @@ from evomesh.contracts import (
     AgentStatus,
     FilesystemGrant,
     Message,
-    SkillDefinition,
 )
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
 from evomesh.harness import HarnessResult, build_runner
@@ -50,7 +49,7 @@ class Environment:
         self.registry = AgentRegistry()
         self.bus = MessageBus(self.repository)
         self.permissions = FilesystemPolicy(self.repository)
-        self.skills = SkillRegistry(self.repository, self.permissions, settings.scraping)
+        self.skills = SkillRegistry(self.project_root)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
@@ -156,7 +155,6 @@ class Environment:
         self.evolver.workspace.supervisor.clear_restart_flag()
         await self.repository.initialize()
         await self.skills.load()
-        await self.skills.register_builtins()
         stored = await self.repository.load_agents()
         default_name = self.settings.models.default_provider
         provider_config = self.settings.models.providers.get(default_name)
@@ -462,8 +460,15 @@ class Environment:
             )
             runner.context.policy = self.permissions
             runner.context.agent_id = job.agent_id
+        # Every skill is a file under skills/, inside the job root the same as
+        # any other -- this line is the only thing that makes one reachable at
+        # all: naming it and where to read it, so the model decides whether to
+        # spend a step on it, rather than the description being pinned to
+        # every job whether it turns out relevant or not.
+        catalog = self.skills.render_catalog()
+        task = f"{catalog}\n\n{job.objective}" if catalog else job.objective
         try:
-            return await runner.run(job.objective)
+            return await runner.run(task)
         finally:
             # Kept even when the job failed: what it managed to change before
             # it broke is the part a human has to look at.
@@ -584,9 +589,6 @@ class Environment:
 
     async def send_message(self, message: Message) -> None:
         await self.bus.send(message)
-
-    async def register_skill(self, definition: SkillDefinition, handler: object) -> None:
-        await self.skills.register(definition, handler)  # type: ignore[arg-type]
 
     async def grant_access(self, grant: FilesystemGrant) -> None:
         await self.permissions.grant(grant)

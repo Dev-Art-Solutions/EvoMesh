@@ -6,6 +6,8 @@ import shlex
 import threading
 from pathlib import Path
 
+import httpx
+
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
 from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
@@ -14,12 +16,15 @@ from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits
 from evomesh.models import describe
+from evomesh.skills import InvalidSkillError, MissingSkillError
 
 HELP = """Commands:
   /help                         Show this help
   /status                       Environment and provider health
   /agents                       Agents with desired status and live phase
-  /skills                       List available skills
+  /skills [query]                Search installed skills by name or description
+  /skill show <name>             Preview a skill's instructions
+  /skill install <path-or-url>   Add a skill (a SKILL.md, local or fetched)
   /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
   /model <agent> <model> [prov] Change one agent's provider/model
@@ -120,6 +125,9 @@ class ConsoleChannel:
         if self.selected_agent == "architect":
             if not self.architect.answers:
                 provider, model = self._default_model()
+                self.architect.available_skills = {
+                    skill.name: skill.description for skill in self.environment.skills.discover()
+                }
                 return await self.architect.draft(text, provider, model, self._infer)
             return self.architect.refine(text)
         agent = self.environment.registry.get(self.selected_agent)
@@ -165,7 +173,39 @@ class ConsoleChannel:
         return "\n".join(rows)
 
     def _command_skills(self, parts: list[str]) -> str:
-        return "\n".join(skill.name for skill in self.environment.skills.discover())
+        query = " ".join(parts[1:])
+        found = self.environment.skills.discover(query)
+        if not found:
+            return "No skills match." if query else "No skills installed."
+        return "\n".join(f"{skill.name}: {skill.description}" for skill in found)
+
+    async def _command_skill(self, parts: list[str]) -> str:
+        usage = 'Usage: /skill show <name>  |  /skill install <path-or-url>'
+        if len(parts) < 3:
+            return usage
+        action, target = parts[1].lower(), parts[2]
+        if action == "show":
+            try:
+                return await self.environment.skills.read(target)
+            except MissingSkillError:
+                return f"There is no skill called {target}."
+        if action == "install":
+            try:
+                if target.startswith(("http://", "https://")):
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        response = await client.get(target)
+                        response.raise_for_status()
+                        text = response.text
+                else:
+                    source = Path(target)
+                    if not await asyncio.to_thread(source.is_file):
+                        return f"{target} is not a file."
+                    text = await asyncio.to_thread(source.read_text, encoding="utf-8")
+                definition = await self.environment.skills.install(text, created_by="console")
+            except (httpx.HTTPError, InvalidSkillError, OSError, UnicodeDecodeError) as exc:
+                return f"Could not install the skill: {describe(exc)}"
+            return f"Installed '{definition.name}': {definition.description} ({definition.path})"
+        return usage
 
     async def _command_models(self, parts: list[str]) -> str:
         provider = parts[1] if len(parts) > 1 else self._default_model()[0]
@@ -448,7 +488,8 @@ class ConsoleChannel:
             ),
             scraping_timeout=self.environment.settings.scraping.timeout_seconds,
         )
-        result = await runner.run(task)
+        catalog = self.environment.skills.render_catalog()
+        result = await runner.run(f"{catalog}\n\n{task}" if catalog else task)
         # Every tool call is printed, not just the answer: the point of the
         # harness phases is watching what a small model actually does with the
         # tools, and a summary line hides exactly that. A change prints its

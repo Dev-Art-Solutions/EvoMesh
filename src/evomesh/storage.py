@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from evomesh.contracts import AgentDefinition, FilesystemGrant, Message, SkillDefinition
+from evomesh.contracts import AgentDefinition, FilesystemGrant, Message
 
 logger = logging.getLogger(__name__)
 
@@ -113,23 +113,6 @@ class SQLiteRepository:
         grants = [FilesystemGrant.model_validate_json(row[0]) for row in rows]
         return [grant for grant in grants if agent_id is None or grant.agent_id == agent_id]
 
-    async def save_skill(self, skill: SkillDefinition) -> None:
-        await self._upsert("skills", "name", skill.name, "definition", skill.model_dump_json())
-
-    async def load_skills(self) -> list[SkillDefinition]:
-        rows = await self._all("SELECT definition FROM skills")
-        return [SkillDefinition.model_validate_json(row[0]) for row in rows]
-
-    async def attach_skill(self, agent_id: str, skill_name: str) -> None:
-        await self._write(
-            [
-                (
-                    "INSERT OR IGNORE INTO agent_skills(agent_id, skill_name) VALUES (?, ?)",
-                    (agent_id, skill_name),
-                )
-            ]
-        )
-
     async def save_state(self, key: str, value: object) -> None:
         await self._upsert("state", "key", key, "value", json.dumps(value))
 
@@ -149,7 +132,6 @@ class SQLiteRepository:
             ("agents", "id", "definition"),
             ("messages", "id", "payload"),
             ("filesystem_grants", "id", "payload"),
-            ("skills", "name", "definition"),
             ("state", "key", "value"),
         }
         if (table, key_column, value_column) not in allowed:

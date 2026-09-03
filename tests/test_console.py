@@ -16,12 +16,20 @@ from evomesh.models import MockProvider
 
 async def test_console_routes_commands(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    skill_dir = tmp_path / "skills" / "research"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: research\ndescription: Look things up before answering.\n---\n\n"
+        "Do the research before you answer.\n",
+        encoding="utf-8",
+    )
     environment = Environment(settings, {"ollama": MockProvider()})
     await environment.start()
     console = ConsoleChannel(environment)
     assert "status: READY" in (await console.route("/status"))
     assert "Agent Architect" in (await console.route("/agents"))
-    assert "Filesystem.Read" in (await console.route("/skills"))
+    assert "research: Look things up before answering." in (await console.route("/skills"))
+    assert "Do the research before you answer." in (await console.route("/skill show research"))
     assert "mock-specialist" in (await console.route("/models ollama"))
     assert await console.route("/chat architect") == "Talking to Agent Architect."
     agent = AgentDefinition(name="Writer", purpose="Write", model_name="mock-model")
@@ -34,6 +42,31 @@ async def test_console_routes_commands(tmp_path: Path) -> None:
     assert "no longer overrides" in (await console.route('/num-ctx "Writer" clear'))
     assert await console.route('/chat "Writer"') == "Talking to Writer."
     assert await console.route("hello") == "Writer> Mock response"
+    await environment.stop()
+
+
+async def test_skill_install_adds_a_skill_from_a_local_file(tmp_path: Path) -> None:
+    """The installation mechanism this session was actually asked for: a
+    SKILL.md a human already has on disk becomes an installed skill in one
+    command, no restart needed to see it in /skills."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    source = tmp_path / "shared-skill.md"
+    source.write_text(
+        "---\nname: wire-a-dead-module\ndescription: Wire an unreachable module in.\n---\n\n"
+        "Pick one module from the dead list and give it a real caller.\n",
+        encoding="utf-8",
+    )
+
+    result = await console.route(f'/skill install "{source}"')
+
+    assert "Installed 'wire-a-dead-module'" in result
+    assert "wire-a-dead-module: Wire an unreachable module in." in (
+        await console.route("/skills")
+    )
+    assert "is not a file" in (await console.route("/skill install nowhere.md"))
     await environment.stop()
 
 

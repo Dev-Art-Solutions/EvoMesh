@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -416,15 +417,20 @@ class FilesystemGrant(BaseModel):
 
 
 class SkillDefinition(BaseModel):
+    """A description, not a capability. What `read`ing ``path`` teaches an
+    agent to do with the tools it already has -- never a new tool of its own.
+
+    A skill that needed ``entrypoint``, ``inputs`` and ``outputs`` was a tool
+    wearing a skill's name: the earlier shape of this class, and the mistake
+    it existed to make. Everything a skill can *do* already exists as a
+    harness tool or a shell program; a skill only ever adds procedure.
+    """
+
     name: str
-    version: str = "1.0.0"
-    generation: int = 1
     description: str
-    entrypoint: str
-    inputs: dict[str, str] = Field(default_factory=dict)
-    outputs: dict[str, str] = Field(default_factory=dict)
-    required_permissions: list[str] = Field(default_factory=list)
-    required_dependencies: list[str] = Field(default_factory=list)
+    # Relative to the repository root -- skills/<name>/SKILL.md by
+    # convention. Plain Markdown on purpose (the same reasoning as
+    # memory.md and context.md, rule 18): a human reads or edits it directly,
+    # and an agent reads it with the same `read` tool it reads any file with.
+    path: Path
     created_by: str = "system"
-    parent_generation: int = 1
-    status: str = "active"

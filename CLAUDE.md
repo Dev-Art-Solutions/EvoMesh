@@ -23,6 +23,7 @@ src/evomesh/     the whole runtime (see the module map below)
 desktop/         EvoMesh.Desktop — WinForms Control Center (net8.0-windows)
 tests/           unit, cycle, reachability, publishing and restart-scenario coverage
 docs/evolution/  one entry per generation, written by the mesh into its own commit
+skills/          one directory per skill, each a SKILL.md (see rule 19) -- tracked, not ignored
 scripts/         run-dev.ps1 / run-dev.sh / run-supervised.ps1 / package-windows.ps1 /
                  install-scrapling.ps1 / .sh
 *.bat            start-evomesh.bat (Control Center), start-evomesh-console.bat (terminal)
@@ -48,7 +49,7 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `models.py` | Ollama / OpenAI-compatible providers, per-request model, `timeout_seconds` |
 | `console.py`, `control.py`, `telegram.py` | the three channels onto the same command router |
 | `architect.py` | the one-shot Agent Architect |
-| `skills.py`, `permissions.py` | skill registry and path grants (application-level, not an OS sandbox). Nothing in the agent's own deliberation loop calls `SkillRegistry.invoke` yet — a skill is reachable today by name, from console/control, or from a human's own code; `Web.Fetch` is also, separately, the harness's `fetch` tool, which *is* reachable from a model |
+| `skills.py`, `permissions.py` | skill discovery (see rule 19) and path grants (application-level, not an OS sandbox) |
 
 ## Build / test / run
 
@@ -179,8 +180,8 @@ regresses.
 16. **Runtime dependencies stay at five** — `aiosqlite`, `httpx`, `pydantic`, `pydantic-settings`,
     `pyyaml`. A local-first runtime that drags in a framework has stopped being the thing. Add one
     only with an argument recorded here. This is why Scrapling (github.com/D4Vinci/Scrapling, the
-    harness's `fetch` tool and the `Web.Fetch` skill) is never `import`ed: its fetchers extra alone
-    pulls in a dozen packages, a browser automation stack among them.
+    harness's `fetch` tool) is never `import`ed: its fetchers extra alone pulls in a dozen packages,
+    a browser automation stack among them.
     `scripts/install-scrapling.ps1` / `.sh` provisions it into its own venv under `.runtime/`, and
     `scraping.executable` in `evomesh.yaml` is a path to a subprocess, the same relationship this
     project already has with `git`, `ruff`, and `uv`.
@@ -191,6 +192,22 @@ regresses.
 18. **`memory.md`, `context.md` and the world context are plain Markdown on purpose.** A human can
     read or edit them while the mesh runs and the agent picks the change up next cycle. Keep them
     human-readable; do not "optimise" them into a binary or a database blob.
+19. **A skill is a description an agent reads, never a capability the mesh executes.** The registry
+    used to hold Python handlers keyed by name (`Filesystem.Read`, `Git.Status`, and — briefly,
+    introduced and removed in the same session — `Web.Fetch`), "invoked" with arguments like a
+    function call. Every one of those was a tool wearing a skill's name: everything they did already
+    exists, more honestly, as a harness tool. A skill has no code path of its own at all — it is a
+    Markdown file, `skills/<name>/SKILL.md` with YAML frontmatter (`name`, `description`) over a
+    body of instructions, living on disk for the reason rule 18 gives. `SkillRegistry.discover()`
+    searches the frontmatter without opening the file; `render_catalog()` — spliced into a harness
+    job's task text in `Environment._run_harness_job` and in console's `/harness ask|do` — is the
+    *only* thing that makes a skill reachable at all, one line per skill naming it and where to read
+    it, never its body. The agent decides whether to spend a step reading the file, with the same
+    `read` tool it reads any other file with; nothing here ever runs what the file says. `/skill
+    install <path-or-url>` is the whole installation mechanism a skill market would need: whatever
+    text has valid frontmatter and a body becomes a skill, written to disk and live in the registry
+    immediately, no restart. A "skill builder" agent needs no new machinery at all — it is any agent
+    already granted harness `write` access to `skills/`, with a purpose that says to write one.
 
 ## How a generation is authored
 

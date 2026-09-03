@@ -96,16 +96,18 @@ Run `/chat architect` and describe the agent you need in one sentence. Architect
 
 ```text
 evomesh> /chat architect
-evomesh> read my markdown notes in D:/notes and write a weekly summary
+evomesh> Create an agent called Researcher that does web research and summarizes results
 Draft ready.
-  name:     Notes Summarizer
-  purpose:  read my markdown notes in D:/notes and write a weekly summary
+  name:     Researcher
+  purpose:  Create an agent called Researcher that does web research and summarizes results
   model:    ollama:qwen3
-  skills:   Markdown.Read, Filesystem.Write, Filesystem.Read
-  access:   D:/notes
-  first goal: read my markdown notes in D:/notes and write a weekly summary
+  skills:   web-research
+  access:   none
+  first goal: Create an agent called Researcher that does web research and summarizes results
 evomesh> /confirm
 ```
+
+`skills` is matched against whatever is currently installed (see Skills below), not a fixed catalog — a mesh with none installed always drafts `skills: none`, honestly.
 
 This matters most on small models. A six-question interview drifts and is forgotten before it ends, so no agent ever got created; one pass with deterministic fallbacks always produces a working definition.
 
@@ -217,9 +219,22 @@ Means-ends reasoning is a library lookup first and a model call only as a fallba
 
 ## Skills
 
-The shared registry supports discovery, attachment, and invocation. Built-ins are `Filesystem.Read`, `Filesystem.Write`, `Markdown.Read`, `Markdown.Write`, `Git.Status`, and `Git.Diff`. A skill never grants path access by itself.
+A skill is a description an agent reads, not a capability the mesh executes. Everything a skill could ever *do* already exists as a harness tool below (`read`, `edit`, `write`, `shell`, `fetch`); a skill only ever adds the procedure — in prose — for when to reach for which one. One skill is one directory under `skills/`, a `SKILL.md` with YAML frontmatter over a Markdown body:
 
-`Web.Fetch` joins that list once `scraping.enabled` and `scraping.executable` are set in `evomesh.yaml` (see [scripts/install-scrapling.ps1](scripts/install-scrapling.ps1) / `.sh`) — it fetches a URL and returns its main content as Markdown, via [Scrapling](https://github.com/D4Vinci/Scrapling). The same capability is also, separately, the harness's `fetch` tool below, which is the one a model actually reaches for during a job.
+```markdown
+---
+name: web-research
+description: Fetch a web page and use its content to answer a question, instead of guessing from memory.
+---
+
+Use the `fetch` tool. Do not answer from memory when a URL is available...
+```
+
+`/skills [query]` searches installed skills by name or description; `/skill show <name>` previews one. Two ship with the repo: `web-research` and `wire-a-dead-module` (a concrete procedure for the Evolver's own backlog, see [docs/evolution/known-dead-modules.txt](docs/evolution/known-dead-modules.txt)).
+
+**Reachability, not invocation.** `SkillRegistry` has no "run this skill" method — an agent reaches a skill the same way it reaches any other file, with the harness's own `read` tool. What makes a skill findable at all is `render_catalog()`: one line per skill (name, description, and the path to read for the rest), spliced into a harness job's task before the model sees it, in both `/harness ask|do` and every job an agent submits. The model decides whether reading the file is worth a step; nothing here ever executes what the file says.
+
+**Installing one is the whole market mechanism.** `/skill install <path-or-url>` reads a `SKILL.md` — local, or fetched over HTTP — checks it parses, writes it to `skills/<name>/SKILL.md`, and it is discoverable immediately, no restart. A "skill builder" needs no new agent type: grant any agent (the Architect can create one) harness `write` access to `skills/`, give it a purpose that says to write skills for procedures it notices repeating, and it already has everything `/skill install` has, one level more directly.
 
 ## Filesystem access grants
 
@@ -476,7 +491,7 @@ CI runs the same checks on Python 3.13 without Ollama or a GPU by using a mock p
 
 ## Roadmap
 
-Near-term milestones include a Skill Architect, richer mutation application and Git lineage, more capable long-term memory, a local web channel, Telegram, PDF skills, benchmark-based promotion, and stronger process isolation.
+Near-term milestones include richer mutation application, more capable long-term memory, a local web channel, benchmark-based promotion, and stronger process isolation. Skill discovery, installation, and an agent that can write new ones now exist (see Skills above); a dedicated interview flow for curating them is still open.
 
 ## Security / experimental status
 

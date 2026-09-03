@@ -39,13 +39,6 @@ STOP_WORDS = frozenset(
     }
 )
 
-SKILL_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
-    (("markdown", ".md", "notes", "documentation", "docs"), ("Markdown.Read",)),
-    (("write", "save", "create file", "edit", "author"), ("Filesystem.Write",)),
-    (("read", "scan", "summar", "review", "analyse", "analyze", "research"), ("Filesystem.Read",)),
-    (("git", "commit", "repository", "repo", "diff"), ("Git.Status", "Git.Diff")),
-)
-
 DEFAULT_CONSTRAINTS = (
     "Stay inside granted paths, act only on the stated purpose, "
     "and report instead of guessing when information is missing."
@@ -118,13 +111,25 @@ def derive_name(need: str) -> str:
     return f"{_title(' '.join(words))} Agent".strip() if words else "New Agent"
 
 
-def derive_skills(need: str) -> list[str]:
-    lowered = need.lower()
-    found: list[str] = []
-    for hints, skills in SKILL_HINTS:
-        if any(hint in lowered for hint in hints):
-            found.extend(skill for skill in skills if skill not in found)
-    return found
+def derive_skills(need: str, available: dict[str, str] | None = None) -> list[str]:
+    """Match the request against real, currently-installed skills.
+
+    Used to be a static keyword table pointing at a fixed catalog
+    (Markdown.Read, Filesystem.Write, ...) -- names that stopped existing the
+    day a skill became a description an agent reads (skills/<name>/SKILL.md)
+    rather than a capability the mesh executes. There is no fixed catalog to
+    guess from any more, so the interview is handed whatever the registry
+    currently holds (name -> description) and matches against that instead,
+    or against nothing if the mesh has not installed any skills yet.
+    """
+    words = {
+        word for word in re.findall(r"[a-z][\w-]*", need.lower()) if word not in STOP_WORDS
+    }
+    return [
+        name
+        for name, description in (available or {}).items()
+        if any(word in f"{name} {description}".lower() for word in words)
+    ]
 
 
 def derive_access(need: str) -> str:
@@ -145,6 +150,11 @@ class ArchitectInterview:
 
     answers: dict[str, str] = field(default_factory=dict)
     candidate: AgentDefinition | None = None
+    # name -> description, one entry per currently-installed skill, set by the
+    # caller before begin() -- the interview has no registry of its own to
+    # ask, and matching against nothing is the honest answer on a mesh with
+    # no skills installed yet.
+    available_skills: dict[str, str] = field(default_factory=dict)
 
     def begin(
         self, initial_need: str, provider: str = "ollama", model: str = "qwen3"
@@ -159,7 +169,7 @@ class ArchitectInterview:
             "purpose": need,
             "constraints": DEFAULT_CONSTRAINTS,
             "access": derive_access(need),
-            "skills": ", ".join(derive_skills(need)),
+            "skills": ", ".join(derive_skills(need, self.available_skills)),
             "model": f"{selected_provider}:{selected_model}",
         }
         self._build()
@@ -230,7 +240,7 @@ class ArchitectInterview:
         else:
             self.answers["purpose"] = f"{self.answers['purpose']} {instruction}".strip()
             self.answers.setdefault("skills", "")
-            extra = derive_skills(instruction)
+            extra = derive_skills(instruction, self.available_skills)
             merged = [
                 item
                 for item in [*self.answers["skills"].split(","), *extra]
