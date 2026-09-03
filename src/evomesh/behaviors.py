@@ -80,7 +80,17 @@ HEALTHY_PREFIXES = ("the model provider is ready", "all ")
 INVESTIGATE = "Investigate why "
 
 # How long the validate stage waits before deciding the suite is not instant.
-INSTANT_VALIDATION = 0.05
+# Widened from 0.05s: passed locally every time, failed on GitHub Actions the
+# first time a test happened to add real subprocess work (a git status call)
+# to the cycle immediately before this wait, on a loaded runner. This only
+# ever matters for a scripted test validator that resolves in microseconds,
+# never for a real suite (minutes), so a wider margin costs nothing in
+# production. Capped below 0.2s: test_a_validation_that_outruns_its_budget
+# deliberately configures validate_seconds=0.2 to prove a slow suite is
+# "blocked", not "failed", and this window racing past that value would
+# retire the whole pipeline stage in the same cycle that started it --
+# exactly the one-stage-per-cycle promise (rule 7) the test exists to check.
+INSTANT_VALIDATION = 0.1
 
 
 class ArchitectBehavior(ReflectiveBehavior):

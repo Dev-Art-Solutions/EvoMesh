@@ -985,6 +985,61 @@ async def test_a_free_repair_that_undoes_everything_skips_validation(tmp_path: P
     assert "not validated" in report.summary
 
 
+async def test_candidate_changed_nothing_ignores_an_unrelated_ancestor_repository(
+    tmp_path: Path,
+) -> None:
+    """The regression the fix above actually had, caught only by running the
+    existing free-repair test rather than the new one: a candidate that is
+    not itself a git repository (the copytree fallback in
+    CandidateWorkspace.create, or any test using the plain `project` fixture)
+    can still sit inside one that is -- this project's own generations/ in
+    production, a pytest tmp_path nested in the checkout here. `git -C`
+    walks up and answers for that ancestor, not the candidate, and an
+    ancestor that happens to be clean must never read as "this candidate
+    changed nothing" -- that silently skipped validation for a candidate
+    that both propose and repair had genuinely rewritten.
+    """
+    outer = await git_project(tmp_path / "outer")
+    evolver, _, _ = await evolving(
+        tmp_path, outer, [MUTATION], ScriptedValidator([passing()]), StubRepairer()
+    )
+    nested = outer / "nested-candidate"
+    nested.mkdir()
+    (nested / "app.py").write_text("ACTIVE = False\n", encoding="utf-8")
+    generation = Generation(number=99, status=GenerationStatus.CANDIDATE, path=nested)
+
+    assert await evolver.candidate_changed_nothing(generation) is False
+
+
+async def test_create_falls_back_to_copytree_inside_an_unrelated_ancestor_repository(
+    tmp_path: Path,
+) -> None:
+    """`CandidateWorkspace.create`'s own version of the bug above, and the
+    one that actually reached a human's disk: `git -C <repository_root>
+    worktree add` does not require `repository_root` to be a repository at
+    all -- found live, run against a plain `project` fixture (no `.git` of
+    its own) sitting under this project's own .pytest-tmp, which put a real
+    worktree and a real branch into *this* repository, based on whatever
+    commit this checkout happened to be on, in a directory a later pytest
+    cleanup then deleted out from under it. A candidate whose repository_root
+    is not genuinely its own top level must take the copytree fallback
+    instead of asking git to try at all.
+    """
+    outer = await git_project(tmp_path / "outer")
+    before = (await GitRepository(outer).run("branch")).strip()
+    source = outer / "unrelated-project"
+    source.mkdir()
+    (source / "app.py").write_text("ACTIVE = True\n", encoding="utf-8")
+    workspace = CandidateWorkspace(source, tmp_path / "generations")
+
+    candidate = await workspace.create("Improve health reporting")
+
+    assert not (candidate.path / ".git").exists()
+    assert (candidate.path / "app.py").read_text(encoding="utf-8") == "ACTIVE = True\n"
+    after = (await GitRepository(outer).run("branch")).strip()
+    assert after == before, "no new branch should appear in the unrelated ancestor repository"
+
+
 async def test_a_failure_the_linter_cannot_fix_goes_to_the_model(
     tmp_path: Path, project: Path
 ) -> None:

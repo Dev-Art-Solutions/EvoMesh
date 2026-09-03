@@ -339,6 +339,35 @@ class CandidateWorkspace:
                 ignored.add(name)
         return set(ignored)
 
+    async def _repository_root_is_a_real_repository(self) -> bool:
+        """Whether `repository_root` is actually the top of its own git
+        repository, rather than a plain directory `git -C` would silently
+        walk up and out of.
+
+        `git -C <dir> worktree add` does not require `<dir>` to be a
+        repository at all -- it behaves exactly as running the command from
+        inside `<dir>` would, which means it finds the *nearest ancestor*
+        `.git` when `<dir>` has none of its own. On a repository_root that is
+        a plain directory nested inside an unrelated repository -- found
+        live, from a test fixture sitting under this project's own
+        `.pytest-tmp` -- that silently creates a real worktree and branch in
+        the *ancestor's* repository instead of failing over to the copytree
+        fallback below, which is what actually happened the one time this
+        went unchecked. A mismatch here means "not this one, don't ask git
+        to try" rather than a real failure to report.
+        """
+        try:
+            result = await run_command(
+                "git", "-C", str(self.repository_root), "rev-parse", "--show-toplevel"
+            )
+        except OSError:
+            return False
+        if result.exit_code != 0:
+            return False
+        top_level = await asyncio.to_thread(lambda: Path(result.output.strip()).resolve())
+        resolved_root = await asyncio.to_thread(self.repository_root.resolve)
+        return top_level == resolved_root
+
     async def create(self, objective: str) -> Generation:
         metadata = self.supervisor.metadata()
         existing = [int(item) for item in dict(metadata.get("candidates", {}))]
@@ -350,18 +379,21 @@ class CandidateWorkspace:
         while destination.exists():
             number += 1
             destination = self.supervisor.root / f"{number:06d}-candidate"
-        result = await run_command(
-            "git",
-            "-C",
-            str(self.repository_root),
-            "worktree",
-            "add",
-            "-b",
-            f"evomesh/candidate-{number:06d}",
-            str(destination),
-            "HEAD",
-        )
-        if result.exit_code != 0:
+        if await self._repository_root_is_a_real_repository():
+            result = await run_command(
+                "git",
+                "-C",
+                str(self.repository_root),
+                "worktree",
+                "add",
+                "-b",
+                f"evomesh/candidate-{number:06d}",
+                str(destination),
+                "HEAD",
+            )
+        else:
+            result = None
+        if result is None or result.exit_code != 0:
             await asyncio.to_thread(
                 shutil.copytree, self.repository_root, destination, ignore=self._ignore
             )
@@ -637,13 +669,29 @@ class EnvironmentEvolver:
 
         A candidate is ordinarily a `git worktree`, sharing the checkout's own
         history; a host where `git worktree add` itself failed falls back to a
-        plain directory copy with no `.git` at all (see `CandidateWorkspace.
-        create`), where `status` cannot answer the question. That is an
-        environment limit, not evidence of a clean tree, so it reads as "no"
-        here rather than short-circuiting a repair that may have real work
+        plain directory copy with no `.git` of its own (see `CandidateWorkspace.
+        create`). `git -C` does not refuse there -- it walks up looking for a
+        `.git` the way it always does, and a candidate created under this
+        project's own generations/ (or, in a test, a pytest tmp_path nested
+        inside this checkout) sits right below one: the checkout's. Trusting
+        `status` there answers "is the checkout clean", a different generation
+        entirely, and it can say yes while the candidate itself is full of
+        uncommitted work. `rev-parse --show-toplevel` catches this before
+        `status` ever gets asked: a real worktree's top level is the candidate
+        itself, and anything else -- a foreign repository, or none at all --
+        is an environment limit, not evidence of a clean tree, so it reads as
+        "no" rather than short-circuiting a repair that may have real work
         left to validate.
         """
         candidate = GitRepository(generation.path, self.identity)
+        try:
+            top_level = (await candidate.run("rev-parse", "--show-toplevel")).strip()
+        except GitError:
+            return False
+        resolved_top_level = await asyncio.to_thread(lambda: Path(top_level).resolve())
+        resolved_candidate = await asyncio.to_thread(generation.path.resolve)
+        if resolved_top_level != resolved_candidate:
+            return False
         try:
             return await candidate.is_clean()
         except GitError:
