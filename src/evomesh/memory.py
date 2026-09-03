@@ -90,6 +90,21 @@ class AgentMemory:
     def context_path(self) -> Path:
         return self.directory / "context.md"
 
+    @property
+    def playground_path(self) -> Path:
+        """Where a non-system agent's harness jobs default to.
+
+        Alongside memory.md and context.md rather than a separate top-level
+        setting: an agent already has exactly one directory that is its own,
+        and a place to freely read and write is one more thing that belongs
+        there, not a new tree to configure.
+        """
+        return self.directory / "playground"
+
+    async def ensure_playground(self) -> Path:
+        await asyncio.to_thread(self.playground_path.mkdir, parents=True, exist_ok=True)
+        return self.playground_path
+
     async def ensure(self) -> None:
         await asyncio.to_thread(self._ensure_sync)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -80,6 +80,11 @@ class AgentRuntime:
     services: Callable[[], dict[str, Any]] = dict
     world_context: Callable[[], str] = lambda: ""
     on_response: Callable[[Message], None] | None = None
+    # Set from Environment.announce at start_agent() -- the same fan-out a
+    # restart or a promotion already uses, so a goal's summary reaches every
+    # channel listening for one (Telegram today, the control port's pull-based
+    # /notifications for the desktop Control Center) without a second path.
+    announce: Callable[[str], Awaitable[None]] | None = None
     state: AgentRuntimeState = field(init=False)
     _tasks: list[asyncio.Task[None]] = field(default_factory=list, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
@@ -245,6 +250,25 @@ class AgentRuntime:
                     # Small models rubber-stamp DONE the first time they read a
                     # goal. Make one show its work twice before the goal closes.
                     goal.note("claimed complete on the first cycle; re-checking")
+            if goal.notify and self.announce:
+                # A one-shot goal's first goal_done is the rubber stamp above,
+                # not a real finish -- only a genuine completion (or any
+                # completion of a recurring goal, which has no such stamp) is
+                # worth reporting as done rather than as one more step.
+                genuinely_done = outcome.goal_done and (goal.recurring or worked_before)
+                if genuinely_done:
+                    await self.announce(
+                        f'{self.definition.name} finished "{goal.description}": {outcome.summary}'
+                    )
+                elif outcome.error:
+                    await self.announce(
+                        f'{self.definition.name} hit an error on "{goal.description}": '
+                        f"{outcome.error}"
+                    )
+                elif outcome.step:
+                    await self.announce(
+                        f'{self.definition.name} progress on "{goal.description}": {outcome.step}'
+                    )
         if outcome.fact:
             # Beliefs come from perception; a cycle's takeaway is durable memory.
             # Writing it into the belief base too stacks a keyless near-duplicate

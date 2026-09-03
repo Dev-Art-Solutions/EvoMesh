@@ -219,6 +219,19 @@ regresses.
     text has valid frontmatter and a body becomes a skill, written to disk and live in the registry
     immediately, no restart. A "skill builder" agent needs no new machinery at all — it is any agent
     already granted harness `write` access to `skills/`, with a purpose that says to write one.
+
+    **Amended: a skill can be a group of commands, not only a description.** The same shape Claude
+    Code itself uses — a `SKILL.md` can have scripts sitting beside it in its own directory, which
+    the body names by relative path (`scripts/check.py`) for an agent to run with its own harness
+    tools (`shell`, allow-listed same as anything else). The scripts stay exactly as inert as the
+    prose until an agent's own tool call runs one — nothing here executes on the skill's behalf, so
+    this changes what a skill directory may *contain*, never rule 19's first sentence. `/skill
+    install` takes a directory now as well as a file or URL: `SkillRegistry.install_directory()`
+    requires a `SKILL.md` inside it, then copies the whole directory in as one unit (replacing a
+    previous install of the same name outright, so a stale bundled file from an earlier version
+    cannot survive a reinstall). See `skills/validate-skill/` for a real one: `scripts/check.py`
+    checks a candidate `SKILL.md`'s frontmatter using the identical rules `SkillRegistry.install()`
+    enforces, so a pass there means the install would actually succeed.
 20. **A goal's cadence is its own, not the agent's.** `runtime.cycle_seconds` is per-agent and shared
     by everything that agent does — every message, every other goal — so a command that changed it
     to satisfy one goal needing only hourly attention would starve all the rest between checks.
@@ -244,6 +257,54 @@ regresses.
     fresh `interval_seconds` goal is. `/goal add <agent> "<text>" [priority] "<cron expression>"`
     detects which of the two a human meant (`isdigit()` for an interval, otherwise parsed as cron)
     and rejects a malformed expression before a goal is ever created.
+21. **A goal's notifications are opt-in, and cover more than "done".** `Goal.notify` (off by
+    default, `/goal notify <agent> <id> [on|off]`) routes through `Environment.announce()` — the
+    same fan-out a restart or a promotion already uses, so a goal's summary reaches Telegram (already
+    a push subscriber) without a second channel. A request-response connection like the control port
+    cannot be pushed to, though — one client's `/restart` reply must never carry another client's
+    announcement — so `announce()` also appends to `Environment.announcement_log`, a bounded
+    `deque`, and `/notifications [since-id]` lets a client with no push of its own (the desktop
+    Control Center) poll it by cursor instead. `AgentRuntime._apply` reports three shapes, not one:
+    a genuine finish (`outcome.goal_done` and, for a one-shot goal, past its first-cycle rubber
+    stamp — see rule 15's neighbor above), an error, or — the actual point, not an afterthought —
+    ordinary step-by-step progress whenever neither of the other two applies. Silence the instant a
+    goal is created would answer "did it finish" and nothing else; a human watching a goal wants to
+    know where it is, not only when it stops moving.
+22. **A non-system agent gets its own playground the moment it exists.** System agents (the Evolver,
+    Guardian, ...) already work in the EvoMesh tree itself — that default never changed. Anything
+    else historically defaulted the same way purely by accident: `/harness grant <agent>` with no
+    path fell back to `project_root` for every agent alike, so the first human who granted a fresh
+    agent harness access without naming a directory had just handed it write access to this
+    project's own source. `Environment.register_agent()` now provisions
+    `AgentMemory.playground_path` (`workspace/agents/<slug>/playground/`, beside memory.md and
+    context.md for the reason rule 18 already gives) for every non-system agent as it is created,
+    and `Environment.default_harness_root()` — the fallback `/harness grant` and
+    `_run_harness_job` actually consult — returns that playground for anything that is not
+    `type == "system"`, `project_root` otherwise. Granting harness access still stays an explicit
+    capability (rule from `AgentDefinition.harness_root`'s own comment); only *where it defaults to*
+    changed.
+23. **A custom tool is a declarative command, not code loaded into the process.** The harness already
+    had a general-purpose way to run a program — the `shell` tool, any allow-listed command,
+    arguments and all — but nothing *named* and *described* the way `read` or `fetch` are, which
+    matters on hardware where a small model reliably fails to construct a correct shell command line
+    from prose alone. `evomesh/tools.py` defines `ToolDefinition`/`ToolRegistry`, mirroring
+    `skills.py` exactly: `tools/<name>/TOOL.md`, YAML frontmatter (`name`, `description`, `command`,
+    `parameters`), discovered from disk, installable from a file, URL, or directory bundle with
+    `/tool install`, live immediately, no restart. The difference from a skill is what happens once
+    one is found: `harness_tools.build_custom_tool()` turns a `ToolDefinition` into a real `Tool`
+    whose `run` shells out through the *exact* allow-listed subprocess path `tool_shell` already
+    uses — a parameter's value is appended as one more argv entry, never interpolated into a string
+    that gets re-parsed — so a custom tool can never run anything beyond what its own `command`
+    already names, and never anything at all unless that program is in `harness.shell_allow`.
+    `Environment.active_custom_tools()` filters to tools whose program is actually allowed before
+    they ever reach `build_runner`, the same "an unusable tool in the schema is a tool a model will
+    try" reasoning already applied to `shell` and `fetch`. A bundled script is found with
+    `{tool_dir}` in `command` (`python "{tool_dir}/scripts/check.py"`), resolved to the tool's own
+    absolute directory rather than left as a plain relative path — a harness job's root is whatever
+    that job is about (a non-system agent's own playground, per rule 22, most of the time), never
+    reliably this project's tree, so a plain relative path found the wrong file the instant a job ran
+    anywhere else. See `tools/check-site/` for a real one, standard-library Python, no dependency
+    beyond `python` itself in the allow-list.
 
 ## How a generation is authored
 

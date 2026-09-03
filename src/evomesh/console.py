@@ -15,9 +15,10 @@ from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
 from evomesh.environment import Environment
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
-from evomesh.harness_tools import ToolLimits
+from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.models import describe
 from evomesh.skills import InvalidSkillError, MissingSkillError
+from evomesh.tools import InvalidToolError, MissingToolError
 
 HELP = """Commands:
   /help                         Show this help
@@ -25,7 +26,10 @@ HELP = """Commands:
   /agents                       Agents with desired status and live phase
   /skills [query]                Search installed skills by name or description
   /skill show <name>             Preview a skill's instructions
-  /skill install <path-or-url>   Add a skill (a SKILL.md, local or fetched)
+  /skill install <path-or-url-or-directory>  A SKILL.md, or a bundle with scripts beside it
+  /tools [query]                  Search installed custom tools by name or description
+  /tool show <name>               Preview a custom tool's TOOL.md
+  /tool install <path-or-url-or-directory>  A named, described tool over one allow-listed command
   /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
   /model <agent> <model> [prov] Change one agent's provider/model
@@ -37,6 +41,8 @@ HELP = """Commands:
   /intentions <agent>           What it committed to, and the plan it is running
   /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]
   /goal done|drop <agent> <goal-id>
+  /goal notify <agent> <goal-id> [on|off]  Announce this goal's progress and finish
+  /notifications [since-id]     What the mesh has announced on its own, and their ids
   /memory <agent>               Show the agent's memory.md
   /context <agent>|world        Show context.md
   /grant <agent> <path> <mode>  Grant read or write access
@@ -50,7 +56,8 @@ HELP = """Commands:
   /harness ask "<question>"     Let the model read the project before answering
   /harness do "<objective>" [path]  Let it change files, if harness.allow_write
   /harness status               Queue, workers, and what the last jobs did
-  /harness grant <agent> [path] Let an agent use the harness in a directory
+  /harness grant <agent> [path] Let it use the harness; no path defaults to
+                                its own playground (the project root for system agents)
   /harness revoke <agent>       Take it away
   /telegram status              Whether the bot is connected, and who may use it
   /telegram test                Ask Telegram whether the configured token works
@@ -181,7 +188,7 @@ class ConsoleChannel:
         return "\n".join(f"{skill.name}: {skill.description}" for skill in found)
 
     async def _command_skill(self, parts: list[str]) -> str:
-        usage = 'Usage: /skill show <name>  |  /skill install <path-or-url>'
+        usage = 'Usage: /skill show <name>  |  /skill install <path-or-url-or-directory>'
         if len(parts) < 3:
             return usage
         action, target = parts[1].lower(), parts[2]
@@ -192,20 +199,86 @@ class ConsoleChannel:
                 return f"There is no skill called {target}."
         if action == "install":
             try:
+                source = Path(target)
                 if target.startswith(("http://", "https://")):
                     async with httpx.AsyncClient(timeout=15) as client:
                         response = await client.get(target)
                         response.raise_for_status()
                         text = response.text
-                else:
-                    source = Path(target)
-                    if not await asyncio.to_thread(source.is_file):
-                        return f"{target} is not a file."
+                    definition = await self.environment.skills.install(text, created_by="console")
+                elif await asyncio.to_thread(source.is_dir):
+                    # A group of commands, not only a description: the whole
+                    # directory -- SKILL.md and whatever scripts it names --
+                    # is installed as one unit.
+                    definition = await self.environment.skills.install_directory(
+                        source, created_by="console"
+                    )
+                elif await asyncio.to_thread(source.is_file):
                     text = await asyncio.to_thread(source.read_text, encoding="utf-8")
-                definition = await self.environment.skills.install(text, created_by="console")
+                    definition = await self.environment.skills.install(text, created_by="console")
+                else:
+                    return f"{target} is not a file or directory."
             except (httpx.HTTPError, InvalidSkillError, OSError, UnicodeDecodeError) as exc:
                 return f"Could not install the skill: {describe(exc)}"
             return f"Installed '{definition.name}': {definition.description} ({definition.path})"
+        return usage
+
+    def _command_tools(self, parts: list[str]) -> str:
+        query = " ".join(parts[1:])
+        found = self.environment.tools.discover(query)
+        if not found:
+            return "No custom tools match." if query else "No custom tools installed."
+        allow = self.environment.settings.harness.shell_programs()
+        rows = []
+        for tool in found:
+            try:
+                active = custom_tool_program(tool) in allow
+            except ValueError:
+                active = False
+            flag = "" if active else " (inactive: its command is not in harness.shell_allow)"
+            rows.append(f"{tool.name}: {tool.description}{flag}")
+        return "\n".join(rows)
+
+    async def _command_tool(self, parts: list[str]) -> str:
+        usage = 'Usage: /tool show <name>  |  /tool install <path-or-url-or-directory>'
+        if len(parts) < 3:
+            return usage
+        action, target = parts[1].lower(), parts[2]
+        if action == "show":
+            try:
+                return await self.environment.tools.read(target)
+            except MissingToolError:
+                return f"There is no tool called {target}."
+        if action == "install":
+            try:
+                source = Path(target)
+                if target.startswith(("http://", "https://")):
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        response = await client.get(target)
+                        response.raise_for_status()
+                        text = response.text
+                    definition = await self.environment.tools.install(text, created_by="console")
+                elif await asyncio.to_thread(source.is_dir):
+                    definition = await self.environment.tools.install_directory(
+                        source, created_by="console"
+                    )
+                elif await asyncio.to_thread(source.is_file):
+                    text = await asyncio.to_thread(source.read_text, encoding="utf-8")
+                    definition = await self.environment.tools.install(text, created_by="console")
+                else:
+                    return f"{target} is not a file or directory."
+            except (httpx.HTTPError, InvalidToolError, OSError, UnicodeDecodeError) as exc:
+                return f"Could not install the tool: {describe(exc)}"
+            allow = self.environment.settings.harness.shell_programs()
+            try:
+                active = custom_tool_program(definition) in allow
+            except ValueError:
+                active = False
+            note = "" if active else " -- add its program to harness.shell_allow to activate it"
+            return (
+                f"Installed '{definition.name}': {definition.description} "
+                f"({definition.path}){note}"
+            )
         return usage
 
     async def _command_models(self, parts: list[str]) -> str:
@@ -311,7 +384,7 @@ class ConsoleChannel:
         if len(parts) < 4:
             return (
                 'Usage: /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]'
-                "  |  /goal done|drop <agent> <id>"
+                "  |  /goal done|drop <agent> <id>  |  /goal notify <agent> <id> [on|off]"
             )
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
@@ -358,11 +431,28 @@ class ConsoleChannel:
             goal.status = GoalStatus.DONE if action == "done" else GoalStatus.FAILED
             goal.recurring = False
             message = f"Goal {goal.id} marked {goal.status}."
+        elif action == "notify":
+            goal = definition.mind.goal(parts[3])
+            goal.notify = not (len(parts) > 4 and parts[4].lower() in {"off", "false", "0"})
+            state = "will" if goal.notify else "will no longer"
+            message = f"Goal {goal.id} {state} announce its progress and when it finishes."
         else:
-            return "Goal action must be add, done, or drop."
+            return "Goal action must be add, done, drop, or notify."
         definition.touch()
         await self.environment.repository.save_agent(definition)
         return message
+
+    def _command_notifications(self, parts: list[str]) -> str:
+        """Pull what Telegram gets pushed, for a channel with no push of its
+        own -- the desktop Control Center polls this with the last id it
+        saw, same as it already polls /ping."""
+        since = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        entries = [item for item in self.environment.announcement_log if item[0] > since]
+        if not entries:
+            return f"No new notifications since {since}."
+        return "\n".join(
+            f"{item_id}\t{when.isoformat()}\t{text}" for item_id, when, text in entries
+        )
 
     def _command_beliefs(self, parts: list[str]) -> str:
         if len(parts) != 2:
@@ -458,9 +548,17 @@ class ConsoleChannel:
                 agent.harness_root = ""
                 await self.environment.repository.save_agent(agent)
                 return f"{agent.name} may no longer submit harness jobs."
-            root = _directory(parts[3]) if len(parts) > 3 else self.environment.project_root
-            if root is None:
-                return f"{parts[3]} is not a directory."
+            if len(parts) > 3:
+                root = _directory(parts[3])
+                if root is None:
+                    return f"{parts[3]} is not a directory."
+            elif agent.type == "system":
+                root = self.environment.project_root
+            else:
+                # No path named, and this is not a system agent: its own
+                # playground, never this project's own source tree, is what
+                # "let it use the harness" should default to.
+                root = await self.environment.memory_for(agent).ensure_playground()
             agent.harness_root = str(root)
             await self.environment.repository.save_agent(agent)
             await self.environment.grant_access(
@@ -525,6 +623,7 @@ class ConsoleChannel:
                 else ""
             ),
             scraping_timeout=self.environment.settings.scraping.timeout_seconds,
+            custom_tools=self.environment.active_custom_tools(),
         )
         catalog = self.environment.skills.render_catalog()
         result = await runner.run(f"{catalog}\n\n{task}" if catalog else task)

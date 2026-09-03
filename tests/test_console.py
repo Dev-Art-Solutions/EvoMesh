@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import evomesh.control
-from evomesh.config import Settings
+from evomesh.config import HarnessSettings, Settings
 from evomesh.console import ConsoleChannel
 from evomesh.contracts import AgentDefinition
 from evomesh.control import ControlServer
@@ -70,6 +70,103 @@ async def test_skill_install_adds_a_skill_from_a_local_file(tmp_path: Path) -> N
     await environment.stop()
 
 
+async def test_skill_install_accepts_a_directory_bundle_with_a_script(tmp_path: Path) -> None:
+    """'A skill is one or a group of commands': installing a directory brings
+    its bundled script along, not only the SKILL.md that names it."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    source = tmp_path / "web-check"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: web-check\ndescription: Check a site is still up.\n---\n\n"
+        "Run scripts/check.sh with the shell tool.\n",
+        encoding="utf-8",
+    )
+    (source / "scripts").mkdir()
+    (source / "scripts" / "check.sh").write_text("#!/bin/sh\ncurl -sf \"$1\"\n", encoding="utf-8")
+
+    result = await console.route(f'/skill install "{source}"')
+
+    assert "Installed 'web-check'" in result
+    assert "web-check: Check a site is still up." in (await console.route("/skills"))
+    await environment.stop()
+
+
+TOOL_TEXT = (
+    "---\nname: check-site\ndescription: Check a site responds.\n"
+    'command: python "{tool_dir}/scripts/check.py"\n'
+    "parameters:\n  - name: url\n    description: The URL to check.\n"
+    "---\n"
+)
+
+
+async def test_tool_install_from_a_file_is_inactive_until_allow_listed(
+    tmp_path: Path,
+) -> None:
+    """A custom tool is only ever as permitted as the program it wraps: it
+    installs either way, but does not show up as active until a human has
+    put that program in harness.shell_allow."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    source = tmp_path / "check-site.md"
+    source.write_text(TOOL_TEXT, encoding="utf-8")
+
+    result = await console.route(f'/tool install "{source}"')
+
+    assert "Installed 'check-site'" in result
+    assert "harness.shell_allow" in result
+    assert "check-site: Check a site responds. (inactive" in (await console.route("/tools"))
+    assert environment.active_custom_tools() == ()
+    await environment.stop()
+
+
+async def test_tool_install_directory_bundle_becomes_active_once_allow_listed(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True, shell_allow=["python"]),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    source = tmp_path / "check-site"
+    source.mkdir()
+    (source / "TOOL.md").write_text(TOOL_TEXT, encoding="utf-8")
+    (source / "scripts").mkdir()
+    (source / "scripts" / "check.py").write_text("print('ok')\n", encoding="utf-8")
+
+    result = await console.route(f'/tool install "{source}"')
+
+    assert "Installed 'check-site'" in result
+    assert "inactive" not in result
+    listing = await console.route("/tools")
+    assert "check-site: Check a site responds." in listing
+    assert "inactive" not in listing
+    active = environment.active_custom_tools()
+    assert [tool.name for tool in active] == ["check-site"]
+    await environment.stop()
+
+
+async def test_tool_show_previews_the_raw_tool_md(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    await environment.tools.install(TOOL_TEXT, created_by="console")
+
+    result = await console.route("/tool show check-site")
+
+    assert 'command: python "{tool_dir}/scripts/check.py"' in result
+    assert "There is no tool" in (await console.route("/tool show nope"))
+    await environment.stop()
+
+
 async def test_goal_add_with_an_interval_sets_recurring_automatically(tmp_path: Path) -> None:
     """The command surface for the cadence feature: a human giving an
     interval_seconds should never also have to remember --recurring, because
@@ -129,6 +226,114 @@ async def test_goal_add_rejects_a_malformed_cron_expression(tmp_path: Path) -> N
 
     assert "Bad schedule" in result
     assert not agent.mind.goals, "a rejected schedule must not leave a half-added goal behind"
+    await environment.stop()
+
+
+async def test_goal_notify_toggles_the_flag_and_defaults_to_on(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Watcher", purpose="Watch things")
+    await environment.register_agent(agent)
+    goal = agent.mind.add_goal("Check example.com", recurring=True)
+
+    on_result = await console.route(f'/goal notify "Watcher" {goal.id}')
+    assert goal.notify is True
+    assert "will announce" in on_result
+
+    off_result = await console.route(f'/goal notify "Watcher" {goal.id} off')
+    assert goal.notify is False
+    assert "will no longer announce" in off_result
+    await environment.stop()
+
+
+async def test_notifications_is_pulled_by_a_cursor_the_caller_advances(tmp_path: Path) -> None:
+    """This is the desktop Control Center's path to the same summaries
+    Telegram gets pushed: it cannot be pushed to over a request-response
+    control connection, so it polls with the last id it has already seen."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+
+    assert "No new notifications since 0" in (await console.route("/notifications"))
+
+    await environment.announce("Watcher finished checking example.com")
+    first = await console.route("/notifications")
+    assert "Watcher finished checking example.com" in first
+    first_id = int(first.split("\t", 1)[0])
+
+    assert f"No new notifications since {first_id}" in (
+        await console.route(f"/notifications {first_id}")
+    )
+
+    await environment.announce("a second thing happened")
+    second = await console.route(f"/notifications {first_id}")
+    assert "a second thing happened" in second
+    assert "Watcher finished checking example.com" not in second
+    await environment.stop()
+
+
+async def test_a_new_non_system_agent_gets_its_own_playground_on_disk(tmp_path: Path) -> None:
+    """The actual ask: a place of its own to freely read and write, ready the
+    moment the agent exists -- not only once harness access is granted."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Scraper", purpose="Scrape things")
+
+    await environment.register_agent(agent)
+
+    playground = environment.memory_for(agent).playground_path
+    assert playground.is_dir()
+    assert playground.is_relative_to(settings.workspace_path)
+    await environment.stop()
+
+
+async def test_harness_grant_with_no_path_defaults_a_custom_agent_to_its_playground(
+    tmp_path: Path,
+) -> None:
+    """Not the project's own source tree -- that default stays for system
+    agents only (see the next test). A fresh agent granted harness access
+    with no path named should land somewhere that is only ever its own."""
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Scraper", purpose="Scrape things")
+    await environment.register_agent(agent)
+
+    result = await console.route('/harness grant "Scraper"')
+
+    playground = environment.memory_for(agent).playground_path
+    assert str(playground) in result
+    assert agent.harness_root == str(playground)
+    assert playground != environment.project_root
+    await environment.stop()
+
+
+async def test_harness_grant_with_no_path_defaults_a_system_agent_to_the_project_root(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = environment.registry.get("Guardian")  # bootstrapped by Environment.start()
+
+    result = await console.route('/harness grant "Guardian"')
+
+    assert str(environment.project_root) in result
+    assert agent.harness_root == str(environment.project_root)
     await environment.stop()
 
 

@@ -41,10 +41,13 @@ from evomesh.harness_tools import (
     ToolContext,
     ToolLimits,
     ToolRegistry,
+    build_custom_tool,
+    custom_tool_program,
     tool_read,
 )
 from evomesh.models import ChatMessage, ChatTurn, MockProvider, ToolCall
 from evomesh.processes import CommandResult
+from evomesh.tools import ToolDefinition, parse_tool
 
 
 @pytest.fixture
@@ -638,6 +641,97 @@ def test_the_shell_is_absent_from_the_schema_until_it_is_allowed(project: Path) 
 
     assert "shell" not in off.registry.tools
     assert "shell" in on.registry.tools
+
+
+# -- custom, declarative tools ---------------------------------------------
+
+
+def check_site_definition(tmp_path: Path) -> tuple[ToolDefinition, Path]:
+    """A tool bundle in its own directory, separate from the job root a test
+    later invokes it against -- this is exactly the arrangement {tool_dir}
+    exists for: a bundled script found by the tool's own location, not by
+    whatever happens to be the calling job's root."""
+    bundle = tmp_path / "tool-bundle"
+    scripts = bundle / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "check.py").write_text(
+        "import sys\nprint(f'checked {sys.argv[1]}')\n", encoding="utf-8"
+    )
+    definition = parse_tool(
+        Path("tools/check-site/TOOL.md"),
+        "---\nname: check-site\ndescription: Check a site.\n"
+        'command: python "{tool_dir}/scripts/check.py"\n'
+        "parameters:\n  - name: url\n---\n",
+    )
+    return definition, bundle
+
+
+async def test_a_custom_tool_runs_its_command_with_the_argument_appended(
+    project: Path,
+) -> None:
+    definition, bundle = check_site_definition(project)
+    tool = build_custom_tool(definition, tool_dir=bundle)
+
+    result = await ToolRegistry((tool,)).invoke(
+        shell_context(project, {"python"}), "check-site", {"url": "https://example.com"}
+    )
+
+    assert result.startswith("exit 0")
+    assert "checked https://example.com" in result
+
+
+async def test_a_custom_tool_finds_its_script_regardless_of_the_job_root(
+    project: Path, tmp_path: Path
+) -> None:
+    """The bug {tool_dir} exists to fix: a plain relative path in `command`
+    resolves against the job's cwd, which is almost never the tool's own
+    directory once a non-system agent's playground is the job root."""
+    definition, bundle = check_site_definition(project)
+    tool = build_custom_tool(definition, tool_dir=bundle)
+    unrelated_job_root = tmp_path / "some-agents-playground"
+    unrelated_job_root.mkdir()
+
+    result = await ToolRegistry((tool,)).invoke(
+        shell_context(unrelated_job_root, {"python"}),
+        "check-site",
+        {"url": "https://example.com"},
+    )
+
+    assert result.startswith("exit 0")
+    assert "checked https://example.com" in result
+
+
+async def test_a_custom_tool_is_denied_when_its_program_is_not_allowed(
+    project: Path,
+) -> None:
+    definition, bundle = check_site_definition(project)
+    tool = build_custom_tool(definition, tool_dir=bundle)
+
+    result = await ToolRegistry((tool,)).invoke(
+        shell_context(project), "check-site", {"url": "https://example.com"}
+    )
+
+    assert "not in harness.shell_allow" in result
+
+
+async def test_a_custom_tool_refuses_a_missing_required_argument(project: Path) -> None:
+    definition, bundle = check_site_definition(project)
+    tool = build_custom_tool(definition, tool_dir=bundle)
+
+    result = await ToolRegistry((tool,)).invoke(
+        shell_context(project, {"python"}), "check-site", {}
+    )
+
+    assert "needs: url" in result
+
+
+def test_custom_tool_program_names_the_program_the_allow_list_checks() -> None:
+    definition = parse_tool(
+        Path("tools/x/TOOL.md"),
+        "---\nname: x\ndescription: d\ncommand: Python.exe scripts/x.py\n---\n",
+    )
+
+    assert custom_tool_program(definition) == "python"
 
 
 # -- fetching a URL --------------------------------------------------------

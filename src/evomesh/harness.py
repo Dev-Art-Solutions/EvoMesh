@@ -31,6 +31,7 @@ from evomesh.harness_tools import (
     READ_ONLY_TOOLS,
     SHELL_TOOLS,
     WEB_TOOLS,
+    Tool,
     ToolContext,
     ToolLimits,
     ToolRegistry,
@@ -528,6 +529,7 @@ def build_runner(
     shell_seconds: float = 60.0,
     scraping_executable: str = "",
     scraping_timeout: float = 30.0,
+    custom_tools: tuple[Tool, ...] = (),
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -555,6 +557,11 @@ def build_runner(
         tools = tools + SHELL_TOOLS
     if scraping_executable:
         tools = tools + WEB_TOOLS
+    # Already filtered by the caller to ones whose command is allow-listed --
+    # the same "an unusable tool in the schema is a tool a model will try"
+    # reasoning above, applied to a custom tool's own program instead of
+    # shell/fetch's.
+    tools = tools + custom_tools
     return HarnessRunner(
         provider=provider,
         context=context,

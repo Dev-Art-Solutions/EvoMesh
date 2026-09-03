@@ -88,6 +88,12 @@ class Goal(BaseModel):
     # is a stronger statement than "some time after it last ran".
     cron: str | None = None
     next_attempt_at: datetime | None = None
+    # Opt-in: a human who wants to be told what is happening on this specific
+    # goal, not just able to ask -- both its progress (one line per step) and
+    # when it finishes. Off by default, and toggled independently per goal
+    # with /goal notify <agent> <id> [on|off]: an agent narrating every step
+    # of every goal unprompted is noise, not a feature, until asked for.
+    notify: bool = False
     notes: list[str] = Field(default_factory=list)
     last_error: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -268,6 +274,7 @@ class MindState(BaseModel):
         recurring: bool = False,
         interval_seconds: int | None = None,
         cron_expression: str | None = None,
+        notify: bool = False,
     ) -> Goal:
         goal = Goal(
             description=description.strip(),
@@ -275,6 +282,7 @@ class MindState(BaseModel):
             recurring=recurring,
             interval_seconds=interval_seconds,
             cron=cron_expression,
+            notify=notify,
         )
         if cron_expression:
             # A cron goal is an appointment, not a "do this now" -- unlike

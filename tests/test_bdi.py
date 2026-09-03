@@ -305,6 +305,150 @@ async def test_a_finished_cron_goal_reschedules_to_its_next_occurrence(
     await environment.stop()
 
 
+# -- announcing a goal's summary, opt in -----------------------------------
+
+
+async def test_a_recurring_goal_with_notify_on_announces_every_completion(
+    tmp_path: Path,
+) -> None:
+    """A recurring goal has no first-cycle rubber stamp to wait out -- every
+    goal_done is real, so it should announce every time."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(summary="all quiet", goal_done=True, phase=AgentPhase.IDLE, worked=True),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert agent.name in announced[0]
+    assert "Check example.com" in announced[0]
+    assert "all quiet" in announced[0]
+    assert "finished" in announced[0]
+    await environment.stop()
+
+
+async def test_a_one_shot_goals_first_completion_is_progress_not_finished(
+    tmp_path: Path,
+) -> None:
+    """The first goal_done on a fresh, non-recurring goal is a small model's
+    rubber stamp (see _apply), not a real finish -- worth surfacing as
+    progress, but calling it "finished" would tell a human the work is over
+    right before the agent quietly re-checks it once more."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Summarize the notes", notify=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+    outcome = CycleOutcome(
+        summary="done", step="read the notes", goal_done=True, phase=AgentPhase.IDLE, worked=True
+    )
+
+    await runtime._apply(outcome, goal)  # noqa: SLF001 - first cycle: the rubber stamp
+    assert len(announced) == 1
+    assert "progress" in announced[0]
+    assert "finished" not in announced[0]
+
+    await runtime._apply(outcome, goal)  # noqa: SLF001 - second cycle: the real finish
+    assert len(announced) == 2
+    assert "finished" in announced[1]
+    await environment.stop()
+
+
+async def test_a_notified_goal_announces_progress_on_an_ordinary_step(tmp_path: Path) -> None:
+    """The actual ask this answers: visibility into how far along a goal is,
+    not just a message once it is over."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(step="opened the page", phase=AgentPhase.ACTING, worked=True),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "progress" in announced[0]
+    assert "opened the page" in announced[0]
+    await environment.stop()
+
+
+async def test_a_notified_goal_announces_an_error(tmp_path: Path) -> None:
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(error="the site timed out", phase=AgentPhase.ERROR, worked=True),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "error" in announced[0]
+    assert "the site timed out" in announced[0]
+    await environment.stop()
+
+
+async def test_notify_defaults_off(tmp_path: Path) -> None:
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Check example.com", recurring=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(summary="all quiet", goal_done=True, phase=AgentPhase.IDLE, worked=True),
+        goal,
+    )
+
+    assert announced == []
+    await environment.stop()
+
+
+async def test_environment_announce_is_also_kept_for_pull_based_polling(tmp_path: Path) -> None:
+    """Telegram gets announcements pushed; a request-response channel like the
+    control port cannot be pushed to, so the same text has to be readable by
+    cursor too."""
+    environment, _agent = await worker(tmp_path, ScriptedProvider())
+
+    await environment.announce("first")
+    await environment.announce("second")
+
+    ids = [item[0] for item in environment.announcement_log]
+    texts = [item[2] for item in environment.announcement_log]
+    assert texts == ["first", "second"]
+    assert ids == sorted(ids)
+    await environment.stop()
+
+
 # -- means-ends reasoning -----------------------------------------------
 
 

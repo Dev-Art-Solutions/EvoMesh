@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 
 import yaml
@@ -164,5 +165,29 @@ class SkillRegistry:
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, source_text, encoding="utf-8")
         installed = definition.model_copy(update={"path": target.relative_to(self.root)})
+        self._skills[installed.name] = installed
+        return installed
+
+    async def install_directory(
+        self, source: Path, *, created_by: str = "human"
+    ) -> SkillDefinition:
+        """Like install(), for a skill that is a group of commands rather
+        than only a description: a directory with SKILL.md plus one or more
+        bundled scripts, copied in as a unit so the file the description
+        tells an agent to run ("run scripts/check.sh") actually exists next
+        to it. The scripts stay inert either way -- an agent runs one with
+        its own harness tools, on purpose, the same as reading any skill.
+        """
+        skill_file = source / SKILL_FILENAME
+        if not await asyncio.to_thread(skill_file.is_file):
+            raise InvalidSkillError(f"{source}: no {SKILL_FILENAME} in this directory")
+        text = await asyncio.to_thread(skill_file.read_text, encoding="utf-8")
+        definition = parse_skill(Path("<new skill>"), text, created_by=created_by)
+        target = self.skills_dir / definition.name
+        await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+        await asyncio.to_thread(shutil.copytree, source, target)
+        installed = definition.model_copy(
+            update={"path": (target / SKILL_FILENAME).relative_to(self.root)}
+        )
         self._skills[installed.name] = installed
         return installed

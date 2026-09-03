@@ -11,7 +11,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.2.0-alpha.1 is an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.2.0-alpha.1 is an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -132,6 +132,17 @@ A goal can carry its own schedule instead, in one of two shapes:
 
 Either way, the agent's own `cycle_seconds` never changes: it still answers chat and works its other goals at the normal pace in between, and `next_goal()` simply skips the scheduled one until it is due. Both are automatically recurring, since a standing check that permanently fails after `max_attempts` and never runs again defeats the reason it was given a schedule in the first place; drop it by hand with `/goal drop` if it should stop. No dependency was added for the cron parsing — see [`src/evomesh/cron.py`](src/evomesh/cron.py) and rule 16 in CLAUDE.md.
 
+### Getting a goal's progress pushed to you, not just its answer to a question
+
+`/agents` and asking in chat are both pull: you have to look. `/goal notify <agent> <goal-id> [on|off]` makes one goal push instead — every step it takes while the flag is on, not only when it finishes:
+
+```text
+evomesh> /goal notify "Scraper" a1b2c3d4
+Goal a1b2c3d4 will announce its progress and when it finishes.
+```
+
+From there it reaches the same places an automatic promotion or a restart notice already does: Telegram, pushed as it happens, and `/notifications [since-id]` for a connection with no push of its own — the desktop Control Center polls this with the last id it has already seen. A one-shot goal's first `DONE` is the rubber-stamp mentioned above, not a real finish, so it is reported as progress; only a genuine completion (or any completion of a recurring goal, which has no such stamp) is announced as "finished". Off by default, per goal, so turning this on for one goal never makes every other agent narrate itself.
+
 ### Asking an agent what it is working on
 
 You can simply ask, in chat, and the answer is not the model guessing. Every reply is prompted with a `CURRENT WORK` block the runtime fills in as the message arrives: phase, cycles completed, the goal and plan step in hand, the last finished step, the last error, and how long until the next cycle. A behavior that drives a pipeline of its own adds to it — ask **Environment Evolver** and you get the live stage (`plan`, `propose`, `validate`, `repair`, `report`, `await-human`), the candidate generation number, the objective, the file it changed, the workspace path, and the validation verdict, read at the moment you ask rather than remembered from the last cycle.
@@ -237,11 +248,33 @@ description: Fetch a web page and use its content to answer a question, instead 
 Use the `fetch` tool. Do not answer from memory when a URL is available...
 ```
 
-`/skills [query]` searches installed skills by name or description; `/skill show <name>` previews one. Two ship with the repo: `web-research` and `wire-a-dead-module` (a concrete procedure for the Evolver's own backlog, see [docs/evolution/known-dead-modules.txt](docs/evolution/known-dead-modules.txt)).
+`/skills [query]` searches installed skills by name or description; `/skill show <name>` previews one. Three ship with the repo: `web-research`, `wire-a-dead-module` (a concrete procedure for the Evolver's own backlog, see [docs/evolution/known-dead-modules.txt](docs/evolution/known-dead-modules.txt)), and `validate-skill` (below).
 
 **Reachability, not invocation.** `SkillRegistry` has no "run this skill" method — an agent reaches a skill the same way it reaches any other file, with the harness's own `read` tool. What makes a skill findable at all is `render_catalog()`: one line per skill (name, description, and the path to read for the rest), spliced into a harness job's task before the model sees it, in both `/harness ask|do` and every job an agent submits. The model decides whether reading the file is worth a step; nothing here ever executes what the file says.
 
-**Installing one is the whole market mechanism.** `/skill install <path-or-url>` reads a `SKILL.md` — local, or fetched over HTTP — checks it parses, writes it to `skills/<name>/SKILL.md`, and it is discoverable immediately, no restart. A "skill builder" needs no new agent type: grant any agent (the Architect can create one) harness `write` access to `skills/`, give it a purpose that says to write skills for procedures it notices repeating, and it already has everything `/skill install` has, one level more directly.
+**A skill can be a group of commands, not only a description.** The same shape Claude Code itself uses: a skill's directory can hold scripts beside `SKILL.md`, which the body names by relative path for an agent to run with its own harness tools. `skills/validate-skill/` is a real one — `scripts/check.py` checks a candidate `SKILL.md`'s frontmatter before you `/skill install` it, using the identical rules the installer enforces. The scripts stay exactly as inert as the prose until an agent's own tool call actually runs one.
+
+**Installing one is the whole market mechanism.** `/skill install <path-or-url-or-directory>` accepts a lone `SKILL.md` — local file or fetched over HTTP — or a directory bundling scripts alongside one; either way it checks the frontmatter parses, writes it under `skills/<name>/`, and it is discoverable immediately, no restart. A directory install replaces a previous one of the same name outright, so a stale bundled file from an earlier version never survives a reinstall. A "skill builder" needs no new agent type: grant any agent (the Architect can create one) harness `write` access to `skills/`, give it a purpose that says to write skills for procedures it notices repeating, and it already has everything `/skill install` has, one level more directly.
+
+## Custom tools
+
+A skill is a description an agent decides to read; a custom tool is the other shape — a named, described, parameterized affordance a model calls the way it calls `read` or `fetch`, instead of constructing a `shell` command line correctly from prose, which is exactly the step that goes wrong on the hardware this project targets. It is still declarative, still no dependency, still added live: a `command` template plus named parameters, in `tools/<name>/TOOL.md`.
+
+```markdown
+---
+name: check-site
+description: Check whether a URL responds, and how fast.
+command: python "{tool_dir}/scripts/check.py"
+parameters:
+  - name: url
+    description: The URL to check, including scheme (https://...).
+    required: true
+---
+```
+
+`check-site` ships with the repo, standard-library Python only — see [tools/check-site/](tools/check-site/). `{tool_dir}` is the tool's own absolute directory, substituted before the command runs: a harness job's root is whatever that job is about (a non-system agent's own playground, below, most of the time), never reliably this project's tree, so a bundled script found by a plain relative path resolves against the wrong directory the moment a job runs anywhere else.
+
+`build_custom_tool()` turns a `TOOL.md` into a real tool whose call shells out through the *exact* allow-listed subprocess path the `shell` tool itself uses — a parameter's value is appended as one more argv entry, never interpolated into a string that gets re-parsed — so a custom tool can never run anything beyond what its own `command` already names, and never anything at all unless that program is in `harness.shell_allow`. `/tools [query]` lists installed tools and says which are active for that reason; `/tool show <name>` previews one; `/tool install <path-or-url-or-directory>` is the same one-step mechanism `/skill install` already has — install first, then add the program to `harness.shell_allow` to activate it.
 
 ## Filesystem access grants
 
@@ -292,6 +325,8 @@ Every job writes one JSONL file under `.runtime/harness/`, flushed as it runs, s
 ### Any agent can be given the harness
 
 `/harness grant "Notes Summarizer" D:/notes` lets an ordinary agent use the tools inside one directory, and `/harness revoke` takes it back. A granted agent takes a plan step with tools rather than with a prompt when the step starts with a looking verb — *investigate*, *find*, *search*, *check*, *inspect*, *review*, *diagnose* — and everything else stays a plain model call. The finding is written into the agent's memory as that step's outcome.
+
+**Naming no path defaults to a playground, never this project's own tree.** `/harness grant "Notes Summarizer"` with nothing after the name still has to pick somewhere — system agents (the Evolver, Guardian, Evaluator, the Architect) default to the project root, exactly as before, but anything else defaults to a directory of its own: `workspace/agents/<agent>/playground/`, created the moment the agent exists so there is somewhere to land in even before harness access is ever granted. One or more folders, freely read and written, with no risk of an agent you just created editing this checkout by accident because nobody thought to name a path.
 
 ### An agent asks for a job rather than stopping to do one
 

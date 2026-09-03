@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -19,17 +21,20 @@ from evomesh.contracts import (
     AgentStatus,
     FilesystemGrant,
     Message,
+    now_utc,
 )
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
 from evomesh.harness import HarnessResult, build_runner
 from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue, HarnessWorker
 from evomesh.harness_session import HarnessSession, next_session_path
+from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
 from evomesh.memory import AgentMemory, WorldContext
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, OllamaProvider, OpenAICompatibleProvider
 from evomesh.permissions import FilesystemPolicy
 from evomesh.skills import SkillRegistry
 from evomesh.storage import SQLiteRepository
+from evomesh.tools import ToolRegistry as CustomToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class Environment:
         self.bus = MessageBus(self.repository)
         self.permissions = FilesystemPolicy(self.repository)
         self.skills = SkillRegistry(self.project_root)
+        self.tools = CustomToolRegistry(self.project_root)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
@@ -91,6 +97,13 @@ class Environment:
         # only what it was asked. Telegram registers one; the console does not,
         # because it is already printing the cycle summaries.
         self.notifiers: list[Callable[[str], Awaitable[None]]] = []
+        # The same announcements, kept for a channel with no push of its own:
+        # the control port is request-response only (one client's /restart
+        # must not leak into another's next reply), so the desktop Control
+        # Center polls /notifications with a cursor instead of being pushed
+        # to. Bounded so a mesh nobody is polling does not grow this forever.
+        self.announcement_log: deque[tuple[int, datetime, str]] = deque(maxlen=200)
+        self._next_announcement_id = 1
         # Long-lived channels the process owns, registered by whoever started
         # them. Held as plain objects rather than imported types: the console
         # only has to ask them about themselves, and importing the Telegram
@@ -127,6 +140,8 @@ class Environment:
 
     async def announce(self, text: str) -> None:
         """Tell every listening channel something the mesh did unprompted."""
+        self.announcement_log.append((self._next_announcement_id, now_utc(), text))
+        self._next_announcement_id += 1
         for notify in list(self.notifiers):
             try:
                 await notify(text)
@@ -155,6 +170,7 @@ class Environment:
         self.evolver.workspace.supervisor.clear_restart_flag()
         await self.repository.initialize()
         await self.skills.load()
+        await self.tools.load()
         stored = await self.repository.load_agents()
         default_name = self.settings.models.default_provider
         provider_config = self.settings.models.providers.get(default_name)
@@ -284,6 +300,24 @@ class Environment:
         self.registry.register(definition)
         self.bus.register(definition.id)
         await self.repository.save_agent(definition)
+        if definition.type != "system":
+            # A place to play, ready the moment the agent exists -- not a
+            # harness grant yet (that stays an explicit capability, see
+            # AgentDefinition.harness_root), just somewhere of its own to
+            # land in the instant one is given without a human naming a path.
+            await self.memory_for(definition).ensure_playground()
+
+    def default_harness_root(self, definition: AgentDefinition) -> Path:
+        """Where an agent's harness jobs run when nobody names a directory.
+
+        A system agent (the Evolver, Guardian, ...) already works in the
+        EvoMesh tree itself. Anything else gets its own playground instead --
+        granting harness access with no path should never be how a fresh
+        agent ends up editing this project's own source.
+        """
+        if definition.type == "system":
+            return self.project_root
+        return self.memory_for(definition).playground_path
 
     def memory_for(self, definition: AgentDefinition) -> AgentMemory:
         return AgentMemory(self.settings.workspace_path, definition, self.budget)
@@ -339,6 +373,7 @@ class Environment:
             start_delay=start_delay,
             services=self._services,
             world_context=self._world_snapshot,
+            announce=self.announce,
         )
         await runtime.start()
         self.runtimes[agent_id] = runtime
@@ -408,6 +443,22 @@ class Environment:
             allow_write=self.settings.harness.allow_write,
         )
 
+    def active_custom_tools(self) -> tuple[Tool, ...]:
+        """Custom tools whose command is actually allow-listed.
+
+        Filtered here, in ToolDefinition form, rather than after converting
+        to a Tool: the same "an unusable tool in the schema is a tool a model
+        will try" reasoning build_runner already applies to shell and fetch,
+        just checked one program name earlier so a custom tool that runs an
+        allowed program is the only kind that ever reaches the model.
+        """
+        allow = self.settings.harness.shell_programs()
+        return tuple(
+            build_custom_tool(definition, tool_dir=self.tools.root / definition.path.parent)
+            for definition in self.tools.discover()
+            if custom_tool_program(definition) in allow
+        )
+
     async def _run_harness_job(self, job: HarnessJob) -> HarnessResult:
         settings = self.settings.harness
         provider_name = self.settings.models.default_provider
@@ -439,6 +490,7 @@ class Environment:
                 self.settings.scraping.executable if self.settings.scraping.enabled else ""
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
+            custom_tools=self.active_custom_tools(),
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.
@@ -496,6 +548,7 @@ class Environment:
         return {
             "evolver": self.evolver,
             "skills": self.skills,
+            "tools": self.tools,
             "permissions": self.permissions,
             "repository": self.repository,
             "runtime_states": self.runtime_states(),

@@ -142,4 +142,65 @@ async def test_install_rejects_text_with_no_valid_frontmatter(tmp_path: Path) ->
     with pytest.raises(InvalidSkillError):
         await registry.install("just some text, not a skill")
 
+
+async def test_install_directory_copies_the_whole_bundle_not_only_skill_md(
+    tmp_path: Path,
+) -> None:
+    """'A skill is one or a group of commands': a script beside SKILL.md is
+    part of the skill, so installing it has to bring the script along, not
+    just the description that names it."""
+    source = tmp_path / "incoming" / "web-check"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: web-check\ndescription: Check a site is still up.\n---\n\n"
+        "Run scripts/check.sh with the shell tool.\n",
+        encoding="utf-8",
+    )
+    scripts = source / "scripts"
+    scripts.mkdir()
+    (scripts / "check.sh").write_text("#!/bin/sh\ncurl -sf \"$1\"\n", encoding="utf-8")
+    registry = SkillRegistry(tmp_path)
+    await registry.load()
+
+    installed = await registry.install_directory(source, created_by="console")
+
+    assert installed.name == "web-check"
+    installed_root = tmp_path / "skills" / "web-check"
+    assert (installed_root / "SKILL.md").is_file()
+    assert (installed_root / "scripts" / "check.sh").read_text(encoding="utf-8") == (
+        "#!/bin/sh\ncurl -sf \"$1\"\n"
+    )
+    assert [skill.name for skill in registry.discover()] == ["web-check"]
+
+
+async def test_install_directory_replaces_a_previous_install_of_the_same_name(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "incoming" / "web-check"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: web-check\ndescription: v1.\n---\n\nOld body.\n", encoding="utf-8"
+    )
+    (source / "old-file.txt").write_text("stale", encoding="utf-8")
+    registry = SkillRegistry(tmp_path)
+    await registry.install_directory(source, created_by="console")
+
+    (source / "SKILL.md").write_text(
+        "---\nname: web-check\ndescription: v2.\n---\n\nNew body.\n", encoding="utf-8"
+    )
+    (source / "old-file.txt").unlink()
+    installed = await registry.install_directory(source, created_by="console")
+
+    assert installed.description == "v2."
+    assert not (tmp_path / "skills" / "web-check" / "old-file.txt").exists()
+
+
+async def test_install_directory_rejects_one_with_no_skill_md(tmp_path: Path) -> None:
+    source = tmp_path / "incoming" / "empty"
+    source.mkdir(parents=True)
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(InvalidSkillError):
+        await registry.install_directory(source)
+
     assert not (tmp_path / "skills").exists()

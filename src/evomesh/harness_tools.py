@@ -26,6 +26,7 @@ from typing import Any
 from evomesh.harness_session import HarnessSession
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.processes import run_command
+from evomesh.tools import ToolDefinition
 
 # Directories no answer about this project ever comes out of, and which a
 # recursive grep would otherwise spend its whole match budget inside.
@@ -450,6 +451,89 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     context.tally.reads += 1
     body = _clip(result.output.rstrip(), context.limits, unit="lines")
     return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
+
+
+def custom_tool_program(definition: ToolDefinition) -> str:
+    """The allow-list name a custom tool's command answers to.
+
+    Exposed separately from build_custom_tool() so a caller can decide
+    whether to offer the tool's schema at all -- the same "an unusable tool
+    in the schema is a tool a model will try" reasoning build_runner already
+    applies to the shell and fetch tools -- without needing a ToolContext yet.
+    """
+    try:
+        parts = shlex.split(definition.command, posix=True)
+    except ValueError as exc:
+        raise ValueError(f"{definition.name}: command could not be parsed: {exc}") from exc
+    if not parts:
+        raise ValueError(f"{definition.name}: command is empty")
+    program = Path(parts[0]).name.lower()
+    return program[:-4] if program.endswith(".exe") else program
+
+
+def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = None) -> Tool:
+    """Turn a declarative TOOL.md into a real, named, described tool.
+
+    Backed by the exact allow-listed subprocess path tool_shell uses: a
+    parameter's value is appended as one more argv entry after the command's
+    own fixed parts, never interpolated into a string that gets re-parsed, so
+    a custom tool can never run anything beyond what its own command already
+    names -- and never anything at all unless that program is allow-listed.
+
+    A harness job's root is whatever the *job* is about -- an agent's own
+    playground, not necessarily this project's tree -- so a bundled script
+    referenced by a plain relative path would resolve against the wrong
+    directory the moment a job runs anywhere else. ``{tool_dir}`` in the
+    command is substituted with the tool's own absolute directory before
+    parsing, so `"{tool_dir}/scripts/check.py"` finds the script regardless
+    of where the calling job is rooted.
+    """
+    command = definition.command
+    if tool_dir is not None:
+        # Resolved here, not trusted from the caller: a relative tool_dir
+        # would defeat the entire reason this exists, silently resolving
+        # against whatever job happens to be running instead of the tool's
+        # own directory -- exactly the bug this placeholder replaces.
+        command = command.replace("{tool_dir}", str(tool_dir.resolve(strict=False)))
+    base = shlex.split(command, posix=True)
+    program = custom_tool_program(definition)
+
+    async def run(context: ToolContext, args: dict[str, Any]) -> str:
+        if program not in context.shell_allow:
+            allowed = ", ".join(sorted(context.shell_allow))
+            raise ToolDenied(
+                f"DENIED: {definition.name} runs '{program}', which is not in "
+                f"harness.shell_allow (allowed: {allowed})"
+            )
+        missing = [
+            param.name
+            for param in definition.parameters
+            if param.required and not args.get(param.name)
+        ]
+        if missing:
+            raise ToolDenied(f"DENIED: {definition.name} needs: {', '.join(missing)}")
+        values = [str(args[param.name]) for param in definition.parameters if param.name in args]
+        try:
+            result = await asyncio.wait_for(
+                run_command(base[0], *base[1:], *values, cwd=context.root),
+                timeout=context.shell_seconds,
+            )
+        except TimeoutError:
+            raise ToolDenied(
+                f"DENIED: {definition.name} did not finish within {context.shell_seconds:.0f}s"
+            ) from None
+        except OSError as exc:
+            raise ToolDenied(f"DENIED: {definition.name} could not be started: {exc}") from exc
+        context.tally.reads += 1
+        body = _clip(result.output.rstrip(), context.limits, unit="lines")
+        return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
+
+    return Tool(
+        name=definition.name,
+        description=definition.description,
+        parameters=definition.parameters_schema(),
+        run=run,
+    )
 
 
 async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
