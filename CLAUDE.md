@@ -219,6 +219,17 @@ regresses.
     text has valid frontmatter and a body becomes a skill, written to disk and live in the registry
     immediately, no restart. A "skill builder" agent needs no new machinery at all — it is any agent
     already granted harness `write` access to `skills/`, with a purpose that says to write one.
+20. **A goal's cadence is its own, not the agent's.** `runtime.cycle_seconds` is per-agent and shared
+    by everything that agent does — every message, every other goal — so a command that changed it
+    to satisfy one goal needing only hourly attention would starve all the rest between checks.
+    Considered and rejected for exactly that reason: a `/cycle-interval <agent> <seconds>` command
+    that slowed the whole agent down. What shipped instead is `Goal.interval_seconds` and
+    `Goal.next_attempt_at`: when a cycle finishes a goal that carries an interval,
+    `AgentRuntime._apply` sets `next_attempt_at` that far in the future, and `Goal.is_open` returns
+    `False` until it passes — so `MindState.next_goal()` skips it for whatever else is open, with no
+    change to the agent's own tick. `/goal add <agent> "<text>" [priority] [interval_seconds]` sets
+    `recurring=True` whenever an interval is given, since a standing check that permanently fails
+    after `max_attempts` and never runs again defeats the reason it was given an interval at all.
 
 ## How a generation is authored
 

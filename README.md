@@ -11,7 +11,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.2.0-alpha.1 is an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.2.0-alpha.1 is an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence, file-backed agent memory, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -118,12 +118,14 @@ Every agent runs a cycle on an interval, not only when spoken to. One cycle is o
 The model is asked for a four-line answer (`STEP`, `RESULT`, `FACT`, `DONE`), which small models can actually produce; unformatted answers and `<think>` blocks are handled rather than discarded. A goal never closes on its first cycle, because a small model will rubber-stamp `DONE: yes` the first time it reads one. Goals marked recurring, including every system agent's standing goal and the purpose of an agent you create, never close at all.
 
 ```text
-/goals <agent>                     what it is working on
-/goal add <agent> "<text>" [prio]  give it something to do
-/cycle <agent>                     make it think right now
+/goals <agent>                                        what it is working on
+/goal add <agent> "<text>" [prio] [interval_seconds]  give it something to do
+/cycle <agent>                                         make it think right now
 ```
 
-Cadence and concurrency are controlled by `runtime.cycle_seconds` and `runtime.stagger_seconds`. Each agent serialises its own model calls, so a chat reply and a cycle never race for the same small model.
+Cadence and concurrency are controlled by `runtime.cycle_seconds` and `runtime.stagger_seconds`. Each agent serialises its own model calls, so a chat reply and a cycle never race for the same small model. That cadence is shared by everything the agent does — every message, every other goal — so it is per-agent, never per-goal.
+
+A goal given `interval_seconds` gets its own cadence instead: once it finishes a cycle, it will not be picked again until that many seconds have passed, regardless of how often the agent itself ticks. This is how you give one agent a goal that only needs hourly (or daily) attention without slowing down its handling of chat or its other goals — `/goal add "Scraper" "Check example.com for changes" 5 3600` stays out of the way between checks, while the agent still answers chat and works other goals at its normal `cycle_seconds`. It is automatically recurring, since a standing check that permanently fails after `max_attempts` and never runs again defeats the reason it was given an interval in the first place; drop it by hand with `/goal drop` if it should stop.
 
 ### Asking an agent what it is working on
 

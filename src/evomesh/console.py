@@ -34,7 +34,7 @@ HELP = """Commands:
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
   /intentions <agent>           What it committed to, and the plan it is running
-  /goal add <agent> "<text>" [priority]
+  /goal add <agent> "<text>" [priority] [interval_seconds]
   /goal done|drop <agent> <goal-id>
   /memory <agent>               Show the agent's memory.md
   /context <agent>|world        Show context.md
@@ -308,13 +308,28 @@ class ConsoleChannel:
 
     async def _command_goal(self, parts: list[str]) -> str:
         if len(parts) < 4:
-            return 'Usage: /goal add <agent> "<text>" [priority] | /goal done|drop <agent> <id>'
+            return (
+                'Usage: /goal add <agent> "<text>" [priority] [interval_seconds]'
+                "  |  /goal done|drop <agent> <id>"
+            )
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
         if action == "add":
             priority = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 5
-            goal = definition.mind.add_goal(parts[3], priority=priority)
+            interval = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None
+            # An interval implies recurring: a standing check that permanently
+            # gives up after max_attempts failures (hours or days apart, at a
+            # real interval) defeats the reason it was given one in the first
+            # place. Drop it by hand with /goal drop if it should stop.
+            goal = definition.mind.add_goal(
+                parts[3], priority=priority, interval_seconds=interval, recurring=bool(interval)
+            )
             message = f"Added goal {goal.id} to {definition.name}."
+            if interval:
+                message += (
+                    f" Re-checked every {interval}s, independent of the agent's own "
+                    f"cycle_seconds -- everything else it does keeps its normal pace."
+                )
         elif action in {"done", "drop"}:
             goal = definition.mind.goal(parts[3])
             goal.status = GoalStatus.DONE if action == "done" else GoalStatus.FAILED

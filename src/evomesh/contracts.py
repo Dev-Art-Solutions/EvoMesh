@@ -72,6 +72,14 @@ class Goal(BaseModel):
     attempts: int = 0
     max_attempts: int = 6
     recurring: bool = False
+    # How often this one goal is worth re-checking after it last finished,
+    # independent of the agent's own cycle_seconds. An agent's cycle rate is
+    # shared by everything it does -- messages, every other goal -- so
+    # slowing it down to satisfy one goal that only needs hourly attention
+    # would starve all the rest. This lets next_goal() skip a goal that is
+    # not due yet instead, so the agent's own heartbeat never has to change.
+    interval_seconds: int | None = None
+    next_attempt_at: datetime | None = None
     notes: list[str] = Field(default_factory=list)
     last_error: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -80,6 +88,8 @@ class Goal(BaseModel):
     @property
     def is_open(self) -> bool:
         if self.status not in OPEN_GOAL_STATUSES:
+            return False
+        if self.next_attempt_at is not None and now_utc() < self.next_attempt_at:
             return False
         # attempts is a failure budget, not a cycle counter, so a standing goal
         # such as Guardian's health sweep stays open indefinitely.
@@ -243,9 +253,19 @@ class MindState(BaseModel):
         raise KeyError(goal_id)
 
     def add_goal(
-        self, description: str, *, priority: int = 5, recurring: bool = False
+        self,
+        description: str,
+        *,
+        priority: int = 5,
+        recurring: bool = False,
+        interval_seconds: int | None = None,
     ) -> Goal:
-        goal = Goal(description=description.strip(), priority=priority, recurring=recurring)
+        goal = Goal(
+            description=description.strip(),
+            priority=priority,
+            recurring=recurring,
+            interval_seconds=interval_seconds,
+        )
         self.goals.append(goal)
         return goal
 

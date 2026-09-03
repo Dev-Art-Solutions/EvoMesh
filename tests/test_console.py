@@ -70,6 +70,28 @@ async def test_skill_install_adds_a_skill_from_a_local_file(tmp_path: Path) -> N
     await environment.stop()
 
 
+async def test_goal_add_with_an_interval_sets_recurring_automatically(tmp_path: Path) -> None:
+    """The command surface for the cadence feature: a human giving an
+    interval_seconds should never also have to remember --recurring, because
+    a standing check that permanently fails after max_attempts defeats the
+    reason it was given an interval in the first place."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Watcher", purpose="Watch things")
+    await environment.register_agent(agent)
+
+    result = await console.route('/goal add "Watcher" "Check example.com" 5 3600')
+
+    assert "Re-checked every 3600s" in result
+    assert "cycle_seconds" in result
+    goal = next(iter(agent.mind.goals))
+    assert goal.interval_seconds == 3600
+    assert goal.recurring is True
+    await environment.stop()
+
+
 async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

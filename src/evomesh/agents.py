@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from evomesh.bdi import ReflectiveBehavior
@@ -226,6 +227,13 @@ class AgentRuntime:
                 # Intentions belong to the BDI reasoner; recording one here
                 # would drop the agent's commitment on every single cycle.
                 goal.note(outcome.step)
+            if outcome.goal_done and goal.interval_seconds:
+                # Independent of whether this goal is recurring: a one-shot
+                # goal still only means "don't re-plan the instant this
+                # finishes" until this fires, and a recurring one is exactly
+                # what this exists for -- checked again in interval_seconds,
+                # not on the agent's very next tick.
+                goal.next_attempt_at = now_utc() + timedelta(seconds=goal.interval_seconds)
             if outcome.goal_done and not goal.recurring:
                 if worked_before:
                     goal.status = GoalStatus.DONE

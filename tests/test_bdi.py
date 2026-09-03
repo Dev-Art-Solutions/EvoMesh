@@ -1,5 +1,6 @@
 """What makes these agents BDI rather than a loop with nice field names."""
 
+from datetime import timedelta
 from pathlib import Path
 
 from evomesh.bdi import (
@@ -11,19 +12,22 @@ from evomesh.bdi import (
     StepResult,
     parse_plan,
 )
-from evomesh.cognition import CycleContext
+from evomesh.cognition import CycleContext, CycleOutcome
 from evomesh.config import EvolutionSettings, RuntimeSettings, Settings
 from evomesh.contracts import (
     AgentDefinition,
+    AgentPhase,
     AgentStatus,
     Belief,
     BeliefChange,
+    Goal,
     GoalStatus,
     Intention,
     IntentionStatus,
     MindState,
     PlanStep,
     StepStatus,
+    now_utc,
 )
 from evomesh.environment import Environment
 from evomesh.memory import AgentMemory, MemoryBudget
@@ -210,6 +214,60 @@ async def test_a_higher_priority_goal_takes_the_commitment(tmp_path: Path) -> No
     assert intention.goal_id == urgent.id
     dropped = [item for item in agent.mind.intentions if item.status is IntentionStatus.DROPPED]
     assert dropped, "the previous commitment was abandoned, not silently kept"
+    await environment.stop()
+
+
+# -- a goal's own cadence, independent of the agent's cycle_seconds -------
+
+
+def test_a_goal_in_cooldown_is_not_open() -> None:
+    """interval_seconds is not a cycle counter -- it is a real clock, checked
+    against next_attempt_at rather than counted in ticks, so it means the
+    same thing regardless of how fast the agent's own cycle_seconds runs."""
+    goal = Goal(description="Check example.com", recurring=True, interval_seconds=3600)
+    assert goal.is_open, "no cooldown set yet -- due immediately"
+
+    goal.next_attempt_at = now_utc() + timedelta(seconds=3600)
+    assert not goal.is_open, "still inside its own interval"
+
+    goal.next_attempt_at = now_utc() - timedelta(seconds=1)
+    assert goal.is_open, "the interval has passed"
+
+
+def test_next_goal_skips_a_cooldown_and_surfaces_other_work() -> None:
+    """The reason this exists at all: an agent with one goal on an hourly
+    cadence must not go quiet for everything else in between. A lower-
+    priority goal that is actually due gets the commitment instead of the
+    higher-priority one still in cooldown."""
+    mind = MindState()
+    hourly = mind.add_goal("Check example.com", priority=1, interval_seconds=3600)
+    hourly.next_attempt_at = now_utc() + timedelta(seconds=3600)
+    chat_reply = mind.add_goal("Answer what was asked", priority=5)
+
+    assert mind.next_goal() is chat_reply
+
+
+async def test_a_finished_goal_with_an_interval_waits_before_reopening(
+    tmp_path: Path,
+) -> None:
+    """Exercises the actual wiring in AgentRuntime._apply, not just the Goal
+    model in isolation: a real goal_done outcome sets next_attempt_at, and a
+    recurring goal stays open (not DONE) while it waits."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal(
+        "Check example.com", priority=1, recurring=True, interval_seconds=3600
+    )
+    runtime = environment.runtimes[agent.id]
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(summary="fetched it", goal_done=True, phase=AgentPhase.IDLE, worked=True),
+        goal,
+    )
+
+    assert goal.status is not GoalStatus.DONE
+    assert goal.next_attempt_at is not None
+    assert goal.next_attempt_at > now_utc()
+    assert not goal.is_open
     await environment.stop()
 
 
