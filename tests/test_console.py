@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -357,6 +358,45 @@ async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> N
     assert "status: READY" in str((await request("/status"))["output"])
     assert (await request("/exit"))["shutdown"] is True
     assert shutdown.is_set()
+    writer.close()
+    await writer.wait_closed()
+    await server.stop()
+    await environment.stop()
+
+
+async def test_ping_reports_a_stuck_agent(tmp_path: Path) -> None:
+    """/ping is the Control Center's health check -- it has to say more than
+    "the socket answered", or a mesh hung inside one agent's cycle looks
+    exactly like a healthy one to it."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    # Long enough that the agent's own loop cannot re-tick, and undo the
+    # staleness injected below, before the /ping round trip completes.
+    specialist = AgentDefinition(name="Specialist", purpose="Hang", cycle_seconds=300)
+    await environment.register_agent(specialist)
+    await environment.start_agent(specialist.id)
+    runtime = environment.runtimes[specialist.id]
+    # Cancelled before its own loop gets a turn: MockProvider is instant, so a
+    # real cycle racing the /ping below would complete and overwrite the
+    # staleness injected next, hiding exactly the bug this test is for.
+    for task in runtime._tasks:
+        task.cancel()
+    runtime._last_cycle_started = time.monotonic() - 10_000.0
+    runtime._last_cycle_finished = 0.0
+
+    shutdown = asyncio.Event()
+    server = ControlServer(environment, shutdown, port=0)
+    await server.start()
+    port = server._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write((json.dumps({"command": "/ping"}) + "\n").encode())
+    await writer.drain()
+    response = json.loads(await reader.readline())
+
+    assert response["output"] == "EvoMesh control ready"
+    assert response["stuck"].keys() == {"Specialist"}
+
     writer.close()
     await writer.wait_closed()
     await server.stop()

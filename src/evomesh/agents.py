@@ -31,6 +31,17 @@ logger = logging.getLogger(__name__)
 
 MAX_INBOX_HISTORY = 6
 
+# How long a cycle can run before it counts as stuck rather than merely slow.
+# The validate stage hands a multi-minute suite off to a background task and
+# returns the same cycle (see INSTANT_VALIDATION in behaviors.py), so a
+# healthy cycle -- evolution's included -- returns in well under a minute
+# even while a real suite is still running. A cycle still in flight past this
+# is not "a slow one", it is one caught on a blocking call nothing times out
+# on its own -- exactly what left a hung mesh answering /ping for twenty
+# minutes with no supervisor any the wiser.
+STUCK_CYCLE_MULTIPLE = 3.0
+STUCK_CYCLE_FLOOR = 600.0
+
 
 class AgentRegistry:
     def __init__(self) -> None:
@@ -90,6 +101,7 @@ class AgentRuntime:
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _inbox: list[Message] = field(default_factory=list, init=False)
     _last_cycle_started: float = field(default=0.0, init=False)
+    _last_cycle_finished: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         self.state = AgentRuntimeState(
@@ -203,15 +215,29 @@ class AgentRuntime:
 
     async def run_cycle(self) -> CycleOutcome:
         self._last_cycle_started = time.monotonic()
-        if self.definition.autonomy is Autonomy.REACTIVE:
-            self._refresh_goal()
-            return CycleOutcome.idle("Reactive agent: cycles only when messaged.")
-        async with self._lock:
-            goal = self.definition.mind.next_goal()
-            self.state.phase = AgentPhase.THINKING
-            outcome = await self.behavior.cycle(self._context())
-            await self._apply(outcome, goal)
-            return outcome
+        try:
+            if self.definition.autonomy is Autonomy.REACTIVE:
+                self._refresh_goal()
+                return CycleOutcome.idle("Reactive agent: cycles only when messaged.")
+            async with self._lock:
+                goal = self.definition.mind.next_goal()
+                self.state.phase = AgentPhase.THINKING
+                outcome = await self.behavior.cycle(self._context())
+                await self._apply(outcome, goal)
+                return outcome
+        finally:
+            # Recorded even on a raised exception: an agent that failed its
+            # cycle came back and is not the mesh this exists to catch --
+            # only one still inside behavior.cycle() past all reason is.
+            self._last_cycle_finished = time.monotonic()
+
+    def stuck_for(self) -> float | None:
+        """Seconds a cycle has been running past its own budget, or None if healthy."""
+        if self._last_cycle_started <= self._last_cycle_finished:
+            return None
+        running_for = time.monotonic() - self._last_cycle_started
+        threshold = max(STUCK_CYCLE_FLOOR, self.cycle_seconds * STUCK_CYCLE_MULTIPLE)
+        return running_for if running_for > threshold else None
 
     async def _apply(self, outcome: CycleOutcome, goal: Goal | None) -> None:
         worked_before = bool(goal.notes) if goal else False

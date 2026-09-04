@@ -14,7 +14,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     private const int RestartExitCode = 86;
 
     /// <summary>How often a connected mesh is asked whether it is still there.</summary>
-    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// How often a mesh that is *not* connected is looked for again. Without this
@@ -102,8 +102,12 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         {
             try
             {
-                await RequestAsync("/ping", cancellationToken);
+                var ping = await RequestAsync("/ping", cancellationToken);
                 await PollNotificationsAsync(cancellationToken);
+                if (ping.Stuck is { Count: > 0 } stuck)
+                {
+                    await ReactToStuckAgentsAsync(stuck, cancellationToken);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -127,6 +131,59 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         }
         LastHealthCheck = DateTimeOffset.Now;
         HealthChecked?.Invoke(IsRunning, LastHealthCheck.Value);
+    }
+
+    /// <summary>
+    /// A stuck agent is not a dead socket -- /ping keeps answering from its own
+    /// coroutine no matter what a specific agent's cycle is doing, so the mesh
+    /// that sat frozen for twenty minutes still looked "connected" the whole
+    /// time. This is the other half of the check: killing and restarting the
+    /// process this Control Center owns, since a mesh already caught on a
+    /// blocking call cannot be trusted to act on a graceful /restart either.
+    /// </summary>
+    private async Task ReactToStuckAgentsAsync(
+        IReadOnlyDictionary<string, double> stuck, CancellationToken cancellationToken)
+    {
+        var names = string.Join(", ", stuck.Select(pair => $"{pair.Key} ({pair.Value:F0}s)"));
+        if (_process is not { HasExited: false } || _restarting)
+        {
+            // Not a process this Control Center started (only attached to one
+            // already running), or already mid-restart: nothing safe to do but
+            // say so. Killing a process by PID we do not own is not a Control
+            // Center's call to make.
+            EmitAndLog($"[the mesh looks stuck ({names}) but is not this Control Center's process to restart]");
+            return;
+        }
+        EmitAndLog($"[the mesh looks stuck ({names}); killing and restarting it]");
+        _restarting = true;
+        try
+        {
+            Disconnect(notify: true);
+            var stuckProcess = _process;
+            _process = null;
+            try
+            {
+                stuckProcess.Kill(entireProcessTree: true);
+                await stuckProcess.WaitForExitAsync(cancellationToken);
+            }
+            finally
+            {
+                stuckProcess.Dispose();
+            }
+            // Same reason as RestartAsync's pause: the old process has to
+            // finish releasing the control port before the new one can bind it.
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            await StartAsync();
+            Emit("[the mesh is back up after a stuck restart]");
+        }
+        catch (Exception exc)
+        {
+            EmitAndLog($"[restarting the stuck mesh failed: {exc.Message}]");
+        }
+        finally
+        {
+            _restarting = false;
+        }
     }
 
     /// <summary>
@@ -503,5 +560,10 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         PropertyNameCaseInsensitive = true,
     };
 
-    private sealed record ControlResponse(string Output, bool Running, bool Shutdown = false, bool Error = false);
+    private sealed record ControlResponse(
+        string Output,
+        bool Running,
+        bool Shutdown = false,
+        bool Error = false,
+        Dictionary<string, double>? Stuck = null);
 }

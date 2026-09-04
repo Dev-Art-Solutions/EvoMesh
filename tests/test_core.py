@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 from pathlib import Path
 
 import httpx
@@ -154,6 +155,43 @@ async def test_each_agent_uses_its_configured_model(tmp_path: Path) -> None:
     )
     assert updated.model_name == "qwen3:32b"
     assert specialist.id in environment.runtimes
+    await environment.stop()
+
+
+async def test_stuck_agents_catches_what_ping_cannot(tmp_path: Path) -> None:
+    """A cycle in flight past its own budget is not the same as a dead socket.
+
+    The control port answers /ping from its own coroutine whether or not any
+    agent's cycle is making progress -- a mesh caught on a blocking call looks
+    exactly like a healthy one to that check alone. stuck_agents() is the
+    signal a supervisor needs instead.
+    """
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    specialist = AgentDefinition(name="Specialist", purpose="Hang", cycle_seconds=300)
+    await environment.register_agent(specialist)
+    await environment.start_agent(specialist.id)
+
+    assert environment.stuck_agents() == {}
+
+    runtime = environment.runtimes[specialist.id]
+    # Cancelled before its own loop gets a turn: MockProvider is instant, so a
+    # real cycle racing the checks below would complete and overwrite the
+    # staleness injected next, hiding exactly the bug this exists to catch.
+    for task in runtime._tasks:
+        task.cancel()
+    runtime._last_cycle_started = time.monotonic() - 10_000.0
+    runtime._last_cycle_finished = 0.0
+
+    stuck = environment.stuck_agents()
+    assert stuck.keys() == {"Specialist"}
+    assert stuck["Specialist"] == pytest.approx(10_000.0, abs=5.0)
+
+    # A cycle that came back, however late, is not stuck -- only one still
+    # running past the same budget is.
+    runtime._last_cycle_finished = time.monotonic()
+    assert environment.stuck_agents() == {}
     await environment.stop()
 
 

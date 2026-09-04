@@ -414,6 +414,21 @@ class Environment:
                 state.last_outcome = job.describe()
         return states
 
+    def stuck_agents(self) -> dict[str, float]:
+        """Name -> seconds, for every agent whose cycle is stuck rather than slow.
+
+        The control port answers /ping from its own coroutine regardless of
+        whether any agent's cycle is making progress, so a supervisor that
+        only checks the socket sees a mesh that has been frozen for twenty
+        minutes as perfectly healthy. This is what lets it tell the two apart.
+        """
+        stuck: dict[str, float] = {}
+        for runtime in self.runtimes.values():
+            seconds = runtime.stuck_for()
+            if seconds is not None:
+                stuck[runtime.definition.name] = seconds
+        return stuck
+
     # -- the harness worker ---------------------------------------------
 
     def _start_harness_workers(self) -> None:

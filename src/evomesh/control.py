@@ -56,7 +56,8 @@ class ControlServer:
             payload = json.loads(raw)
             command = str(payload.get("command", "")).strip()
             if command == "/ping":
-                return {"output": "EvoMesh control ready", "running": True}
+                stuck = self.environment.stuck_agents()
+                return {"output": "EvoMesh control ready", "running": True, "stuck": stuck}
             response = await channel.route(command)
             should_stop = command.lower() == "/exit"
             return {"output": response, "running": not should_stop, "shutdown": should_stop}
