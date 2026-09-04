@@ -713,12 +713,12 @@ async def test_a_validation_that_outruns_its_budget_is_blocked_not_failed(
     evolver, context, _ = await evolving(
         tmp_path, project, [MUTATION], Endless(), StubRepairer()  # type: ignore[arg-type]
     )
-    behavior = EvolverBehavior(auto_validate=True, validate_seconds=0.2)
+    behavior = EvolverBehavior(auto_validate=True, validate_seconds=1.0)
 
     await behavior.cycle(context)  # plan
     await behavior.cycle(context)  # propose
     await behavior.cycle(context)  # start the suite
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.2)
     blocked = await behavior.cycle(context)
 
     state = await evolver.pipeline_state()

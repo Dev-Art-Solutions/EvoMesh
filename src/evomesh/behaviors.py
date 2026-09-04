@@ -80,17 +80,24 @@ HEALTHY_PREFIXES = ("the model provider is ready", "all ")
 INVESTIGATE = "Investigate why "
 
 # How long the validate stage waits before deciding the suite is not instant.
-# Widened from 0.05s: passed locally every time, failed on GitHub Actions the
-# first time a test happened to add real subprocess work (a git status call)
-# to the cycle immediately before this wait, on a loaded runner. This only
-# ever matters for a scripted test validator that resolves in microseconds,
-# never for a real suite (minutes), so a wider margin costs nothing in
-# production. Capped below 0.2s: test_a_validation_that_outruns_its_budget
-# deliberately configures validate_seconds=0.2 to prove a slow suite is
-# "blocked", not "failed", and this window racing past that value would
-# retire the whole pipeline stage in the same cycle that started it --
-# exactly the one-stage-per-cycle promise (rule 7) the test exists to check.
-INSTANT_VALIDATION = 0.1
+# Widened twice already -- 0.05s, then 0.1s -- each passing locally every
+# time and failing on GitHub Actions the moment the runner was busy enough
+# that a scripted validator's task missed the window. record_mutation's
+# aiosqlite write runs on a real worker thread, not just another coroutine
+# turn, so a turn-counting loop (tried here and reverted) cannot substitute
+# for wall time: a burst of zero-cost event-loop iterations can complete
+# before the OS ever schedules that thread, which is worse under load than
+# the timeout it replaced. This only ever matters for a scripted test
+# validator, never for a real suite (minutes), so a wide margin costs
+# nothing in production. Boxed in on both sides by two tests, so it cannot
+# grow past either without them changing too: below, test_a_cycle_during_
+# validation_returns_at_once asserts a 3-second suite still returns in under
+# a second, and above, test_a_validation_that_outruns_its_budget's
+# validate_seconds=1.0 (scaled up with this constant) proves a slow suite is
+# "blocked", not "failed" -- either one racing past this window would retire
+# the whole pipeline stage in the same cycle that started it, breaking the
+# one-stage-per-cycle promise (rule 7) both tests exist to check.
+INSTANT_VALIDATION = 0.5
 
 
 class ArchitectBehavior(ReflectiveBehavior):
