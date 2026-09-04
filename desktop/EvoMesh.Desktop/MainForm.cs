@@ -34,6 +34,7 @@ internal sealed class MainForm : Form
     private Label _settingsNotice = null!;
     private ComboBox _agentProvider = null!;
     private ComboBox _agentModel = null!;
+    private CheckBox _autoPromote = null!;
     private CheckBox _autoRestart = null!;
     private TextBox _gitAuthorName = null!;
     private TextBox _gitAuthorEmail = null!;
@@ -379,10 +380,13 @@ internal sealed class MainForm : Form
         AddHeading(grid, "EVOLUTION & GIT", ref row);
         AddHelp(
             grid,
-            "A generation the mesh validates is committed, pushed to the remote, and the mesh " +
-            "restarts itself into it. Commits are authored by the identity below, so the agent's " +
-            "work is never mistaken for yours.",
+            "With promotion on, a generation the mesh validates is committed on its own verdict, " +
+            "pushed to the remote, and the mesh restarts itself into it. Off, it waits in the " +
+            "console for /evolution promote or discard. Commits are authored by the identity " +
+            "below, so the agent's work is never mistaken for yours.",
             ref row);
+        _autoPromote = AddCheck(grid, "Promote a validated generation automatically", 0, row);
+        row++;
         _autoRestart = AddCheck(grid, "Restart into a landed generation", 0, row);
         _gitAutoPush = AddCheck(grid, "Push a landed generation to the remote", 2, row);
         row++;
@@ -686,6 +690,7 @@ internal sealed class MainForm : Form
                     controls.NumCtx.Text = provider.NumCtx.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
             }
+            _autoPromote.Checked = settings.Evolution.AutoPromote;
             _autoRestart.Checked = settings.Evolution.AutoRestart;
             _gitAuthorName.Text = settings.Git.AuthorName;
             _gitAuthorEmail.Text = settings.Git.AuthorEmail;
@@ -755,8 +760,8 @@ internal sealed class MainForm : Form
     /// <remarks>
     /// Loading first is what keeps this honest: the tab does not show every
     /// setting the mesh has, and building a fresh object would quietly reset
-    /// each one it does not show -- the evolution objective, the promotion
-    /// policy, the prompt budgets -- to a default nobody asked for.
+    /// each one it does not show -- the evolution objective, the prompt
+    /// budgets -- to a default nobody asked for.
     /// </remarks>
     private void WriteSettings()
     {
@@ -766,6 +771,7 @@ internal sealed class MainForm : Form
         settings.GenerationPath = _generationPath.Text.Trim();
         settings.LogLevel = _logLevel.Text;
         settings.DefaultProvider = _defaultProvider.Text;
+        settings.Evolution.AutoPromote = _autoPromote.Checked;
         settings.Evolution.AutoRestart = _autoRestart.Checked;
         settings.Git.AuthorName = _gitAuthorName.Text.Trim();
         settings.Git.AuthorEmail = _gitAuthorEmail.Text.Trim();
