@@ -53,6 +53,7 @@ internal sealed class MainForm : Form
         _runtime = new EvoMeshRuntimeProcess(rootPath, uvExecutable);
         _configPath = Path.Combine(rootPath, "evomesh.yaml");
         Text = "EvoMesh Control Center";
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         MinimumSize = new Size(980, 680);
         Size = new Size(1200, 820);
         StartPosition = FormStartPosition.CenterScreen;
