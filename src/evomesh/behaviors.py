@@ -99,6 +99,26 @@ INVESTIGATE = "Investigate why "
 # one-stage-per-cycle promise (rule 7) both tests exist to check.
 INSTANT_VALIDATION = 0.5
 
+RATIONALE_MARKER = "RATIONALE:"
+
+
+def _extract_rationale(answer: str) -> str:
+    """Pull the one sentence HARNESS_RULES asks the model to end with.
+
+    A model that follows the instruction still wraps it in whatever else it
+    wanted to say first -- tool narration, a restated task, both. Keeping the
+    whole answer as the "rationale" made every generation's history read like
+    a transcript instead of an explanation. This takes the line starting with
+    the marker when there is one, and falls back to the full answer only when
+    the model never wrote it, so a model that ignores the instruction is no
+    worse off than before.
+    """
+    for line in answer.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith(RATIONALE_MARKER):
+            return stripped[len(RATIONALE_MARKER) :].strip()
+    return answer
+
 
 class ArchitectBehavior(ReflectiveBehavior):
     """Reactive only. The Architect must not invent agents nobody asked for."""
@@ -541,7 +561,8 @@ class EvolverBehavior(BDIBehavior):
                 summary=f"harness job {job.number} is still working: {job.describe()}",
                 phase=AgentPhase.AWAITING_HARNESS,
             )
-        rationale = job.result.answer.strip() if job.result else job.detail
+        answer = job.result.answer.strip() if job.result else job.detail
+        rationale = _extract_rationale(answer)
         touched = await evolver.record_harness_changes(
             generation, harness.changes(job), str(state.get("objective", "")), rationale, status
         )
@@ -709,14 +730,27 @@ class EvolverBehavior(BDIBehavior):
             # place, and a generation that passes while changing nothing is
             # the dead-module failure wearing a verdict, however it got there.
             await evolver.set_pipeline_state({**state, "stage": STAGE_REPORT, "passed": None})
-            return StepResult(
-                summary=(
-                    f"generation {generation.number} has nothing left to validate -- "
-                    f"the free repair undid the only change it had ({how})"
-                ),
-                fact=f"generation {generation.number} was repaired down to no change at all",
-                phase=AgentPhase.ACTING,
+            summary = (
+                f"generation {generation.number} has nothing left to validate -- "
+                f"the free repair undid the only change it had ({how})"
             )
+            fact = f"generation {generation.number} was repaired down to no change at all"
+            if self.auto_promote:
+                # Unlike a genuine "not validated" (host blocked the run, or
+                # validation is off), there is nothing here a human could lose:
+                # the candidate is byte-identical to its parent, so discarding
+                # it ships nothing and loses no work. Safe to decide on its own.
+                await evolver.finish_candidate(generation.number, passed=False)
+                decision = await self._decide(
+                    evolver, generation.number, passed=False, state=state
+                )
+                return StepResult(
+                    summary=f"{summary}; {decision.summary}",
+                    fact=decision.fact,
+                    phase=decision.phase,
+                    achieved=decision.achieved,
+                )
+            return StepResult(summary=summary, fact=fact, phase=AgentPhase.ACTING)
         await evolver.set_pipeline_state({**state, "stage": STAGE_VALIDATE})
         return StepResult(
             summary=(

@@ -292,7 +292,9 @@ async def test_the_backlog_index_lists_every_generation(tmp_path: Path) -> None:
 
     assert "# Evolution backlog" in index
     assert "[Generation 2](000002.md)" in index
-    assert "keep the mesh honest" in index
+    # The index heading is the model's own rationale for its edit, not the
+    # Evolver's standing goal repeated on every generation.
+    assert "flip it" in index
 
 
 async def test_the_backlog_records_the_verdict_and_the_repairs(tmp_path: Path) -> None:
@@ -321,7 +323,9 @@ async def test_the_backlog_records_the_verdict_and_the_repairs(tmp_path: Path) -
     assert "The suite **failed**" in text
     assert "| `uv run pytest` | 1 |" in text
     assert "assert 1 == 2" in text
-    assert "repaired itself **2 times**" in text
+    # The headline is the model's own reason for the edit, not the goal.
+    assert "**What it set out to do.** flip" in text
+    assert "*Standing goal: make the mesh honest*" in text
 
 
 async def test_a_generation_with_no_rationale_still_produces_a_readable_entry(
@@ -342,6 +346,11 @@ async def test_a_generation_with_no_rationale_still_produces_a_readable_entry(
     assert "src/app.py" in text
     assert "the model gave no rationale" in text
     assert "Validation did not run" in text
+    # The headline says so honestly instead of repeating the standing goal.
+    assert (
+        "**What it set out to do.** The model changed `src/app.py` but gave no "
+        "rationale for it" in text
+    )
 
 
 # -- Telegram ------------------------------------------------------------

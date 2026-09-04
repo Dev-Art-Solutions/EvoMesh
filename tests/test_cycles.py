@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from evomesh.behaviors import STAGE_REPAIR, EvolverBehavior, GuardianBehavior
+from evomesh.behaviors import STAGE_REPAIR, EvolverBehavior, GuardianBehavior, _extract_rationale
 from evomesh.cognition import CycleContext, parse_cycle_reply, strip_reasoning
 from evomesh.config import EvolutionSettings, RuntimeSettings, Settings
 from evomesh.console import ConsoleChannel
@@ -903,6 +903,23 @@ async def evolving(
     return evolver, context, harness
 
 
+def test_extract_rationale_takes_only_the_marked_sentence() -> None:
+    answer = (
+        "I read src/app.py and confirmed the flag was unused.\n"
+        "RATIONALE: flipped ACTIVE to False so the dead branch is reachable.\n"
+        "Done."
+    )
+    assert (
+        _extract_rationale(answer)
+        == "flipped ACTIVE to False so the dead branch is reachable."
+    )
+
+
+def test_extract_rationale_falls_back_to_the_whole_answer_when_unmarked() -> None:
+    answer = "flipped the flag because it looked wrong."
+    assert _extract_rationale(answer) == answer
+
+
 async def test_a_fixable_lint_failure_is_repaired_without_the_model(
     tmp_path: Path, project: Path
 ) -> None:
@@ -978,11 +995,39 @@ async def test_a_free_repair_that_undoes_everything_skips_validation(tmp_path: P
     # Not a second harness job: the free fix undid it, not the model.
     assert len(harness.objectives) == 1
 
-    report = await behavior.cycle(context)
-    assert report.phase is AgentPhase.WAITING_HUMAN
-    # passed=None reads as "not validated", not as a false "validation passed"
-    # for a candidate that was never actually run through the suite this time.
-    assert "not validated" in report.summary
+
+async def test_auto_promote_discards_a_candidate_repaired_down_to_no_change(
+    tmp_path: Path,
+) -> None:
+    """Unlike a genuinely unvalidated candidate (host blocked the run), one
+    repaired back to byte-identical-to-parent has nothing a human could lose
+    by discarding it -- auto_promote should not still stop and wait."""
+    project = await git_project(tmp_path / "project")
+    (project / ".gitignore").write_text(
+        "MUTATION_OBJECTIVE.md\nvalidation-result*.json\n", encoding="utf-8"
+    )
+    repo = GitRepository(project)
+    await repo.run("add", "-A")
+    await repo.run("commit", "-m", "gitignore")
+    validator = ScriptedValidator([failing("uv run ruff check .", RUFF_FIXABLE)])
+    repairer = UndoingRepairer("src/app.py", "ACTIVE = True\n")
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION], validator, repairer
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate (fails)
+        await behavior.cycle(context)
+    assert (await evolver.pipeline_state())["stage"] == "repair"
+
+    repaired = await behavior.cycle(context)
+
+    assert "nothing left to validate" in repaired.summary
+    assert "discarded generation" in repaired.summary
+    assert repaired.phase is AgentPhase.ACTING
+    assert (await evolver.pipeline_state())["stage"] == "plan"
+    assert "2" not in evolver.workspace.supervisor.metadata().get("candidates", {})
+    assert len(harness.objectives) == 1
 
 
 async def test_candidate_changed_nothing_ignores_an_unrelated_ancestor_repository(

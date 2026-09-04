@@ -44,6 +44,9 @@ HARNESS_RULES = "\n".join(
         "- Everything you touch must stay valid Python: ruff, pyright and pytest "
         "are run against your work as soon as you are finished.",
         "- Stay inside this directory. It is a disposable copy, not the running mesh.",
+        "- End your final answer with one sentence starting exactly with "
+        "'RATIONALE:' explaining what you changed and why -- it is the only "
+        "record of your reasoning that survives into this generation's history.",
     )
 )
 
@@ -895,6 +898,31 @@ class EnvironmentEvolver:
         self._reindex_backlog(directory)
         return entry
 
+    @staticmethod
+    def _generation_summary(generation: Generation) -> str:
+        """One line on what *this* generation is actually trying to do.
+
+        ``generation.objective`` is the Evolver's standing goal -- the same
+        sentence on every single generation, because it is the goal, not the
+        plan. Printing it under "Why this change" answered a question nobody
+        asked and left the one that matters ("why did it touch *this* file")
+        unanswered. The model's own rationale for its edit is what actually
+        varies generation to generation, so that is the headline now; the
+        standing goal moves to a quiet note underneath for context.
+        """
+        mutations = [change for change in generation.changes if change.kind != "repair"]
+        for change in mutations:
+            reason = change.rationale.strip()
+            if reason:
+                return f"**What it set out to do.** {reason}"
+        if mutations:
+            files = ", ".join(sorted({change.path for change in mutations}))
+            return (
+                f"**What it set out to do.** The model changed `{files}` but gave "
+                "no rationale for it -- see the diff below for what actually moved."
+            )
+        return "**What it set out to do.** No file changes were recorded."
+
     def render_backlog(self, generation: Generation, repairs: int = 0) -> str:
         validation = self.read_validation(generation)
         lines = [
@@ -906,7 +934,9 @@ class EnvironmentEvolver:
             "",
             "## Why this change",
             "",
-            f"**Objective.** {generation.objective or '(none recorded)'}",
+            self._generation_summary(generation),
+            "",
+            f"*Standing goal: {generation.objective or '(none recorded)'}*",
             "",
         ]
         if generation.changes:
@@ -977,8 +1007,8 @@ class EnvironmentEvolver:
         for path in entries:
             heading = ""
             for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                if line.startswith("**Objective.**"):
-                    heading = line.removeprefix("**Objective.**").strip()
+                if line.startswith("**What it set out to do.**"):
+                    heading = line.removeprefix("**What it set out to do.**").strip()
                     break
             rows.append(f"- [Generation {int(path.stem)}]({path.name}) — {heading or '-'}")
         (directory / "README.md").write_text(
