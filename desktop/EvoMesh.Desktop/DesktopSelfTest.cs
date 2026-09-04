@@ -125,4 +125,52 @@ internal static class DesktopSelfTest
             throw new InvalidOperationException("Control Center did not stop the mesh.");
         }
     }
+
+    /// <summary>
+    /// Found live: a mesh restarted from outside this Control Center (a
+    /// command sent straight to the control port, not this process's own
+    /// /restart button) exited normally, this Control Center had no Process
+    /// object to raise Exited on any more, and the health loop's reconnect
+    /// branch only ever tried to re-attach -- never to start one -- so the
+    /// mesh stayed dead all night. This proves the fix: once ever connected,
+    /// losing the mesh for *any* reason gets it started back up, not just
+    /// watched for.
+    /// </summary>
+    public static async Task RunHealthRecoveryAsync(string rootPath, string uvExecutable)
+    {
+        using var runtime = new EvoMeshRuntimeProcess(
+            rootPath,
+            uvExecutable,
+            controlPort: 18766,
+            pingInterval: TimeSpan.FromMilliseconds(500),
+            probeInterval: TimeSpan.FromMilliseconds(300));
+        await runtime.StartAsync();
+        if (!runtime.IsRunning)
+        {
+            throw new InvalidOperationException("Control Center did not connect to the mesh.");
+        }
+        runtime.StartHealthLoop();
+
+        // Simulate an unexpected crash, not a graceful /restart -- exit code 86
+        // already has its own, separately-tested recovery path.
+        runtime.KillUnderlyingProcessForTest();
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(60);
+        var everSeenDown = false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (!runtime.IsRunning)
+            {
+                everSeenDown = true;
+            }
+            else if (everSeenDown)
+            {
+                await runtime.StopAsync();
+                return;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+        }
+        throw new InvalidOperationException(
+            "The health loop did not bring the mesh back up after it was killed.");
+    }
 }

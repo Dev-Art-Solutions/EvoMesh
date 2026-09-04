@@ -13,17 +13,20 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     /// <summary>The mesh exits with this when it wants to come back up on new code.</summary>
     private const int RestartExitCode = 86;
 
-    /// <summary>How often a connected mesh is asked whether it is still there.</summary>
-    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(10);
+    /// <summary>Default: how often a connected mesh is asked whether it is still there.</summary>
+    private static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// How often a mesh that is *not* connected is looked for again. Without this
-    /// the Control Center answers the first probe at startup and then never asks
-    /// again, so it goes on reporting STOPPED at a mesh that is plainly running --
-    /// one started from the launcher script, or one that restarted itself into a
-    /// new generation.
+    /// Default: how often a mesh that is *not* connected is looked for again.
+    /// Without this the Control Center answers the first probe at startup and
+    /// then never asks again, so it goes on reporting STOPPED at a mesh that is
+    /// plainly running -- one started from the launcher script, or one that
+    /// restarted itself into a new generation.
     /// </summary>
-    private static readonly TimeSpan ProbeInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultProbeInterval = TimeSpan.FromSeconds(5);
+
+    private readonly TimeSpan _pingInterval;
+    private readonly TimeSpan _probeInterval;
 
     private readonly string _requestedUvExecutable;
     private readonly SemaphoreSlim _requestLock = new(1, 1);
@@ -40,6 +43,15 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     private bool _stopRequested;
 
     /// <summary>
+    /// Set the first time this Control Center is connected to a mesh, by
+    /// either starting or attaching to one. Distinguishes "never asked for a
+    /// mesh at all" (health loop should only watch passively, the way it
+    /// always has) from "was connected and lost it" (health loop should
+    /// actively bring it back) -- see the health-loop reconnect branch below.
+    /// </summary>
+    private bool _everConnected;
+
+    /// <summary>
     /// Cursor into the mesh's announcement log (goal progress, promotions,
     /// restarts). The control connection is request-response only -- one
     /// client's /restart reply must never carry another client's
@@ -48,12 +60,22 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     /// </summary>
     private long _lastNotificationId;
 
-    public EvoMeshRuntimeProcess(string rootPath, string uvExecutable, int controlPort = DefaultControlPort)
+    public EvoMeshRuntimeProcess(
+        string rootPath,
+        string uvExecutable,
+        int controlPort = DefaultControlPort,
+        TimeSpan? pingInterval = null,
+        TimeSpan? probeInterval = null)
     {
         RootPath = rootPath;
         _requestedUvExecutable = uvExecutable;
         _controlPort = controlPort;
         _logPath = Path.Combine(rootPath, ".runtime", "logs", "control-center.log");
+        // Only a self-test shortens these, to prove the health loop's recovery
+        // within seconds rather than minutes; production always gets the
+        // defaults above.
+        _pingInterval = pingInterval ?? DefaultPingInterval;
+        _probeInterval = probeInterval ?? DefaultProbeInterval;
     }
 
     public string RootPath { get; }
@@ -81,7 +103,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 try
                 {
-                    await Task.Delay(IsRunning ? PingInterval : ProbeInterval, cancellationToken);
+                    await Task.Delay(IsRunning ? _pingInterval : _probeInterval, cancellationToken);
                     await CheckHealthAsync(cancellationToken);
                 }
                 catch (OperationCanceledException)
@@ -119,6 +141,40 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
                 // pass of this same loop start looking for it again.
                 Disconnect(notify: true);
                 Emit("[the mesh stopped answering; watching for it to come back]");
+            }
+        }
+        else if (!_stopRequested && !_restarting && _everConnected)
+        {
+            // TryAttachAsync alone only notices a mesh that is already running
+            // somewhere; it never spawns one. That silently strands the mesh
+            // dead forever the moment this Control Center's own Process handle
+            // stops corresponding to a live process -- found live overnight: a
+            // mesh restarted from outside this Control Center (a command sent
+            // straight to the control port) exited normally, nothing here held
+            // a Process object to raise Exited on, and the health loop just
+            // kept polling attach against a port nothing was listening on,
+            // forever. Once this Control Center has been connected to a mesh
+            // at all, losing it means bringing one back, not just watching for
+            // one to reappear on its own -- which is what StartHealthLoop's own
+            // contract already claims to do. StartAsync tries the cheap attach
+            // first and only spawns if that fails, so this costs nothing when
+            // a mesh is genuinely still there under a transient ping hiccup.
+            _restarting = true;
+            try
+            {
+                await StartAsync();
+                if (IsRunning)
+                {
+                    Emit("[the mesh was down; brought it back up]");
+                }
+            }
+            catch (Exception exc)
+            {
+                Log($"Automatic recovery from the health loop failed: {exc.Message}");
+            }
+            finally
+            {
+                _restarting = false;
             }
         }
         else if (!_stopRequested)
@@ -240,6 +296,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             // cursor left over from a previous process would skip everything
             // until ids caught back up past it.
             _lastNotificationId = 0;
+            _everConnected = true;
             SetRunning(true);
             if (announce)
             {
@@ -376,6 +433,18 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             }
         }
         Disconnect(notify: true);
+    }
+
+    /// <summary>
+    /// Kills the underlying process out from under this Control Center without
+    /// going through StopAsync's own /exit -- i.e. exactly the shape of an
+    /// unexpected crash, not a graceful shutdown, so a self-test can confirm
+    /// the health loop's own recovery path rather than the already-covered
+    /// exit-86 restart. Not used by production code.
+    /// </summary>
+    internal void KillUnderlyingProcessForTest()
+    {
+        _process?.Kill(entireProcessTree: true);
     }
 
     public void Dispose()

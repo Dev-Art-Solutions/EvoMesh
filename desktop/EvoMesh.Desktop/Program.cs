@@ -17,6 +17,13 @@ internal static class Program
             DesktopSelfTest.RunControlAsync(testRoot, testUv).GetAwaiter().GetResult();
             return 0;
         }
+        if (args.Length > 0 && args[0] == "--health-recovery-self-test")
+        {
+            var testRoot = args.Length > 1 ? Path.GetFullPath(args[1]) : FindRepositoryRoot();
+            var testUv = args.Length > 2 ? args[2] : "uv";
+            DesktopSelfTest.RunHealthRecoveryAsync(testRoot, testUv).GetAwaiter().GetResult();
+            return 0;
+        }
         ApplicationConfiguration.Initialize();
         var root = args.Length > 0 ? Path.GetFullPath(args[0]) : FindRepositoryRoot();
         var uv = args.Length > 1 ? args[1] : "uv";
