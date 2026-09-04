@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .humanize import humanize_duration
+
 
 class HarnessSession:
     def __init__(self, path: Path | None) -> None:
@@ -32,6 +34,8 @@ class HarnessSession:
             "kind": kind,
             **fields,
         }
+        if "elapsed" in fields:
+            entry["humanize_duration"] = humanize_duration(fields["elapsed"])
         self.entries.append(entry)
         if self.path is not None:
             with self.path.open("a", encoding="utf-8") as handle:
