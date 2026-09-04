@@ -1379,6 +1379,37 @@ async def test_a_generation_is_never_applied_over_uncommitted_work(tmp_path: Pat
     assert (await evolver.pipeline_state())["stage"] == "await-human"
 
 
+async def test_parking_on_a_dirty_tree_retries_once_it_is_clean(tmp_path: Path) -> None:
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    # A human is midway through something in the checkout.
+    (project / "src" / "human.py").write_text("MINE = 1\n", encoding="utf-8")
+    parked = await behavior.cycle(context)
+    assert parked.phase is AgentPhase.WAITING_HUMAN
+    assert (await evolver.pipeline_state())["stage"] == "await-human"
+
+    # The human finishes and commits their own work; nobody runs
+    # /evolution promote. The next cycle should still land the candidate
+    # on its own, because auto_promote parked it for an environmental
+    # reason, not because it wanted a human's decision.
+    project_repo = GitRepository(project)
+    await project_repo.run("add", "-A")
+    await project_repo.run("commit", "-m", "human work")
+    landed = await behavior.cycle(context)
+
+    assert "promoted generation" in landed.summary
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = False\n"
+    assert evolver.workspace.supervisor.metadata()["active"] == 2
+    assert (await evolver.pipeline_state())["stage"] == "plan"
+
+
 async def test_reverting_puts_the_tree_back_on_the_replaced_commit(tmp_path: Path) -> None:
     project = await git_project(tmp_path / "project")
     validator = ScriptedValidator([passing()])

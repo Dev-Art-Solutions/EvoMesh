@@ -392,6 +392,18 @@ class EvolverBehavior(BDIBehavior):
         state = await evolver.pipeline_state()
         stage = str(state.get("stage", STAGE_PLAN))
         if stage == STAGE_AWAIT_HUMAN:
+            # Under auto_promote this stage is only ever entered two ways: no
+            # verdict to act on (state["error"] absent, state["passed"] is
+            # None), which genuinely needs a human, or _decide's tree-was-dirty
+            # GitError (state["error"] present), which is the environment's
+            # fault, not the candidate's. The second kind is worth retrying on
+            # its own -- a human fixing their working tree should not also have
+            # to remember to run /evolution promote.
+            if self.auto_promote and state.get("error") and state.get("passed") is not None:
+                number = int(state["generation"])
+                return await self._decide(
+                    evolver, number, passed=bool(state["passed"]), state=state
+                )
             holding = StepResult.waiting(
                 f"generation {state.get('generation')} is waiting for a human to "
                 f"promote or discard it ({self._verdict(state)})"
