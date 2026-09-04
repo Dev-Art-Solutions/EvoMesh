@@ -572,14 +572,12 @@ class EvolverBehavior(BDIBehavior):
             # generation that passes while changing nothing is the dead-module
             # failure wearing a verdict.
             await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT, "passed": None})
-            return StepResult(
-                summary=(
-                    f"harness job {job.number} finished without changing a file "
-                    f"({job.describe()}); there is nothing to validate"
-                ),
-                fact=f"generation {generation.number} was authored but changed nothing",
-                phase=AgentPhase.ACTING,
+            summary = (
+                f"harness job {job.number} finished without changing a file "
+                f"({job.describe()}); there is nothing to validate"
             )
+            fact = f"generation {generation.number} was authored but changed nothing"
+            return await self._discard_no_op_or_report(evolver, generation, moved, summary, fact)
         stage, extra = on_done(touched)
         await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
         return StepResult(
@@ -735,22 +733,7 @@ class EvolverBehavior(BDIBehavior):
                 f"the free repair undid the only change it had ({how})"
             )
             fact = f"generation {generation.number} was repaired down to no change at all"
-            if self.auto_promote:
-                # Unlike a genuine "not validated" (host blocked the run, or
-                # validation is off), there is nothing here a human could lose:
-                # the candidate is byte-identical to its parent, so discarding
-                # it ships nothing and loses no work. Safe to decide on its own.
-                await evolver.finish_candidate(generation.number, passed=False)
-                decision = await self._decide(
-                    evolver, generation.number, passed=False, state=state
-                )
-                return StepResult(
-                    summary=f"{summary}; {decision.summary}",
-                    fact=decision.fact,
-                    phase=decision.phase,
-                    achieved=decision.achieved,
-                )
-            return StepResult(summary=summary, fact=fact, phase=AgentPhase.ACTING)
+            return await self._discard_no_op_or_report(evolver, generation, state, summary, fact)
         await evolver.set_pipeline_state({**state, "stage": STAGE_VALIDATE})
         return StepResult(
             summary=(
@@ -763,6 +746,35 @@ class EvolverBehavior(BDIBehavior):
             ),
             phase=AgentPhase.ACTING,
         )
+
+    async def _discard_no_op_or_report(
+        self,
+        evolver: EnvironmentEvolver,
+        generation: Generation,
+        state: dict[str, Any],
+        summary: str,
+        fact: str,
+    ) -> StepResult:
+        """A candidate that ends up with no diff at all, from either D5 case
+        (the harness wrote nothing, or the free repair undid the only edit).
+
+        Unlike a genuine "not validated" (host blocked the run, or validation
+        is off), there is nothing here a human could lose: the candidate is
+        byte-identical to its parent, so discarding it ships nothing and loses
+        no work. Safe for auto_promote to decide on its own instead of parking
+        it in await-human next to a candidate that actually needs a human's
+        judgment.
+        """
+        if self.auto_promote:
+            await evolver.finish_candidate(generation.number, passed=False)
+            decision = await self._decide(evolver, generation.number, passed=False, state=state)
+            return StepResult(
+                summary=f"{summary}; {decision.summary}",
+                fact=decision.fact,
+                phase=decision.phase,
+                achieved=decision.achieved,
+            )
+        return StepResult(summary=summary, fact=fact, phase=AgentPhase.ACTING)
 
     async def _report(
         self, evolver: EnvironmentEvolver, state: dict[str, Any]

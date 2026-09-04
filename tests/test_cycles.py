@@ -1183,6 +1183,29 @@ async def test_an_unusable_repair_answer_still_reaches_the_human(
     assert len(evolver.workspace.supervisor.candidates()) == 1
 
 
+async def test_auto_promote_discards_a_candidate_the_harness_never_touched(
+    tmp_path: Path, project: Path
+) -> None:
+    """Same D5 no-op as the repair-stage case, just caught one stage earlier:
+    the harness job itself never wrote a file. Nothing shipped, nothing lost
+    -- auto_promote should not still park it in await-human."""
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [NOTHING], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    await behavior.cycle(context)  # plan
+    discarded = await behavior.cycle(context)  # propose: job wrote nothing
+
+    assert "finished without changing a file" in discarded.summary
+    assert "discarded generation" in discarded.summary
+    assert discarded.phase is AgentPhase.ACTING
+    assert (await evolver.pipeline_state())["stage"] == "plan"
+    assert "2" not in evolver.workspace.supervisor.metadata().get("candidates", {})
+    assert len(harness.objectives) == 1
+
+
 async def test_max_repairs_zero_keeps_the_single_shot_pipeline(
     tmp_path: Path, project: Path
 ) -> None:
