@@ -101,6 +101,10 @@ class EvolutionSettings(BaseModel):
     # A validation that outruns this is stopped and reported as blocked rather
     # than failed: the candidate never got a verdict.
     validate_seconds: float = 1800.0
+    # Off by default. Draft a plan, have it reviewed, and recursively split it
+    # into minimal work items before authoring anything, instead of asking the
+    # harness for one mutation directly. See EvolverBehavior.auto_plan.
+    auto_plan: bool = False
     objective: str | None = None
 
 

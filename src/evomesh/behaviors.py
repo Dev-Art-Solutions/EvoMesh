@@ -34,6 +34,7 @@ from evomesh.evolution import (
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
+    PlanNode,
     excerpt,
 )
 from evomesh.git import GitError
@@ -48,6 +49,9 @@ CANDIDATE_KEY = "evolution.candidate"
 VERDICT_KEY = "evolution.verdict"
 
 STAGE_PLAN = "plan"
+STAGE_DRAFT = "draft"
+STAGE_EVALUATE = "evaluate"
+STAGE_DECOMPOSE = "decompose"
 STAGE_PROPOSE = "propose"
 STAGE_VALIDATE = "validate"
 STAGE_REPAIR = "repair"
@@ -63,6 +67,31 @@ EVOLUTION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_VALIDATE, STAGE_REPAIR, STA
 EVOLUTION_STEPS = (
     "open an isolated candidate generation",
     "propose and apply one mutation",
+    "validate the candidate",
+    "repair the candidate while validation fails",
+    "hand the candidate to the human",
+)
+# With `auto_plan` on, three stages run between opening the candidate and
+# authoring anything: draft a plan, have it reviewed, and recursively split it
+# into minimal work items -- see `EvolverBehavior._draft_plan`/`_evaluate_plan`/
+# `_decompose`. `STAGE_PROPOSE` then loops once per work item instead of once
+# per generation (`_propose`'s `state["work_items"]` handling).
+EVOLUTION_STAGES_WITH_PLAN = (
+    STAGE_PLAN,
+    STAGE_DRAFT,
+    STAGE_EVALUATE,
+    STAGE_DECOMPOSE,
+    STAGE_PROPOSE,
+    STAGE_VALIDATE,
+    STAGE_REPAIR,
+    STAGE_REPORT,
+)
+EVOLUTION_STEPS_WITH_PLAN = (
+    "open an isolated candidate generation",
+    "draft a plan for the objective",
+    "have the plan reviewed",
+    "split the plan into minimal work items",
+    "propose and apply one work item",
     "validate the candidate",
     "repair the candidate while validation fails",
     "hand the candidate to the human",
@@ -302,6 +331,7 @@ class EvolverBehavior(BDIBehavior):
         auto_promote: bool = False,
         auto_restart: bool = True,
         validate_seconds: float = 1800.0,
+        auto_plan: bool = False,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -318,21 +348,28 @@ class EvolverBehavior(BDIBehavior):
         # run is stopped and reported as blocked -- the candidate got no verdict,
         # and a suite this machine could not finish is not its fault.
         self.validate_seconds = validate_seconds
+        # Off by default: draft/evaluate/decompose a plan before authoring
+        # anything, instead of asking the harness for one mutation directly.
+        # No revision or depth limit -- the model alone decides when a draft
+        # is approved and when an item is minimal (see docs/evolution/*.md
+        # generation history for why the flat rationale alone was not enough).
+        self.auto_plan = auto_plan
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
             return SKIP_VALIDATION_STAGES
+        stages = EVOLUTION_STAGES_WITH_PLAN if self.auto_plan else EVOLUTION_STAGES
         if not self.max_repairs:
-            return tuple(stage for stage in EVOLUTION_STAGES if stage != STAGE_REPAIR)
-        return EVOLUTION_STAGES
+            return tuple(stage for stage in stages if stage != STAGE_REPAIR)
+        return stages
 
     def _steps(self) -> tuple[str, ...]:
         if not self.auto_validate:
             steps = SKIP_VALIDATION_STEPS
-        elif not self.max_repairs:
-            steps = tuple(step for step in EVOLUTION_STEPS if not step.startswith("repair"))
         else:
-            steps = EVOLUTION_STEPS
+            steps = EVOLUTION_STEPS_WITH_PLAN if self.auto_plan else EVOLUTION_STEPS
+            if not self.max_repairs:
+                steps = tuple(step for step in steps if not step.startswith("repair"))
         if self.auto_promote:
             return (*steps[:-1], AUTO_PROMOTE_STEP)
         return steps
@@ -388,6 +425,9 @@ class EvolverBehavior(BDIBehavior):
         )
         return {
             STAGE_PLAN: "about to copy the mesh into a fresh candidate generation",
+            STAGE_DRAFT: "drafting a plan for the objective before writing any code",
+            STAGE_EVALUATE: "having the plan reviewed before it is split into work items",
+            STAGE_DECOMPOSE: "splitting the approved plan into minimal work items",
             STAGE_PROPOSE: "asking the model for one small, safe file change",
             STAGE_VALIDATE: "running sync, ruff, pyright, pytest and the smoke test",
             STAGE_REPAIR: "fixing what validation reported, with the linter or the model",
@@ -469,6 +509,12 @@ class EvolverBehavior(BDIBehavior):
     ) -> StepResult:
         if stage == STAGE_PLAN:
             return await self._open(evolver, objective)
+        if stage == STAGE_DRAFT:
+            return await self._draft_plan(context, evolver, state)
+        if stage == STAGE_EVALUATE:
+            return await self._evaluate_plan(context, evolver, state)
+        if stage == STAGE_DECOMPOSE:
+            return await self._decompose(context, evolver, state)
         if stage == STAGE_PROPOSE:
             return await self._propose(context, evolver, state)
         if stage == STAGE_VALIDATE:
@@ -481,9 +527,10 @@ class EvolverBehavior(BDIBehavior):
 
     async def _open(self, evolver: EnvironmentEvolver, objective: str) -> StepResult:
         generation = await evolver.create_candidate(objective)
+        next_stage = STAGE_DRAFT if self.auto_plan else STAGE_PROPOSE
         await evolver.set_pipeline_state(
             {
-                "stage": STAGE_PROPOSE,
+                "stage": next_stage,
                 "generation": generation.number,
                 "objective": objective,
                 "path": str(generation.path),
@@ -495,6 +542,111 @@ class EvolverBehavior(BDIBehavior):
             phase=AgentPhase.ACTING,
         )
 
+    async def _draft_plan(
+        self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
+    ) -> StepResult:
+        generation = evolver.candidate(int(state["generation"]))
+        objective = str(state["objective"])
+        revision = int(state.get("plan_revision", 0))
+        label = f"draft a plan (revision {revision + 1})" if revision else "draft a plan"
+        return await self._through_harness(
+            context,
+            evolver,
+            state,
+            generation,
+            build=lambda: evolver.draft_plan_objective_text(objective),
+            label=label,
+            status="planned",
+            record=evolver.record_plan_draft,
+            on_done=lambda touched: (STAGE_EVALUATE, {}),
+        )
+
+    async def _evaluate_plan(
+        self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
+    ) -> StepResult:
+        generation = evolver.candidate(int(state["generation"]))
+        root = evolver.current_plan_root(generation)
+        plan_text = root.reasoning if root is not None else ""
+
+        def on_done(touched: list[str]) -> tuple[str, dict[str, Any]]:
+            # Read `root` itself, not another `current_plan_root` lookup:
+            # `record_plan_eval` marks a rejected root superseded the moment
+            # it is rejected (so a human reading the plan mid-redraft never
+            # sees a plan that was already turned down), which means the
+            # lookup would no longer find it at all by the time this runs.
+            if root is not None and root.approved is False:
+                revision = int(state.get("plan_revision", 0)) + 1
+                return (STAGE_DRAFT, {"plan_revision": revision})
+            queue = [root.id] if root is not None else []
+            return (STAGE_DECOMPOSE, {"plan_queue": queue})
+
+        return await self._through_harness(
+            context,
+            evolver,
+            state,
+            generation,
+            build=lambda: evolver.evaluate_plan_objective_text(plan_text),
+            label="evaluate the plan",
+            status="evaluated",
+            record=evolver.record_plan_eval,
+            on_done=on_done,
+        )
+
+    async def _decompose(
+        self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
+    ) -> StepResult:
+        generation = evolver.candidate(int(state["generation"]))
+        queue = list(state.get("plan_queue", []))
+        if not queue:
+            root = evolver.current_plan_root(generation)
+            queue = [root.id] if root is not None else []
+        if not queue:
+            # Draft/evaluate produced no usable plan at all -- fall back to
+            # the flat path rather than getting stuck with nothing to split.
+            await evolver.set_pipeline_state({**state, "stage": STAGE_PROPOSE, "work_items": []})
+            return StepResult(
+                summary=(
+                    f"generation {generation.number} has no plan to decompose; "
+                    "proposing the standing objective directly"
+                ),
+                phase=AgentPhase.ACTING,
+            )
+        node_id = queue[0]
+        found = evolver.plan_node(generation, node_id)
+        if found is None:
+            await evolver.set_pipeline_state(
+                {**state, "stage": STAGE_DECOMPOSE, "plan_queue": queue[1:]}
+            )
+            return StepResult(
+                summary=f"work item {node_id} vanished from the plan; skipping it",
+                phase=AgentPhase.ACTING,
+            )
+        node: PlanNode = found
+
+        def on_done(touched: list[str]) -> tuple[str, dict[str, Any]]:
+            current = evolver.plan_node(generation, node_id)
+            remaining = queue[1:]
+            if current is not None and current.kind == "split":
+                children = [child.id for child in generation.plan if child.parent_id == node_id]
+                remaining = children + remaining
+            if remaining:
+                return (STAGE_DECOMPOSE, {"plan_queue": remaining})
+            leaves = [item.id for item in generation.plan if item.kind == "leaf"]
+            return (STAGE_PROPOSE, {"plan_queue": [], "work_items": leaves})
+
+        return await self._through_harness(
+            context,
+            evolver,
+            state,
+            generation,
+            build=lambda: evolver.decompose_plan_objective_text(node),
+            label=f"decompose {node_id}: {node.title}",
+            status="decomposed",
+            record=evolver.record_plan_decompose,
+            record_key=node_id,
+            on_done=on_done,
+        )
+
     async def _propose(
         self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
     ) -> StepResult:
@@ -503,20 +655,37 @@ class EvolverBehavior(BDIBehavior):
         Three possible cycles, one stage. The run itself happens in the worker,
         so a tick never becomes a ten-minute authoring session -- which is what
         lets rule 7 survive a model that reads twenty files before it edits one.
+
+        With a plan tree behind this generation, this stage runs once per
+        remaining work item in ``state["work_items"]`` instead of once for the
+        whole generation: it authors the first item, pops it off the queue
+        regardless of what validation later makes of it (repair already fixes
+        whatever it broke without needing to know which item produced it), and
+        ``_validate`` loops back here for the next item once the current one
+        passes.
         """
         generation = evolver.candidate(int(state["generation"]))
         objective = str(state["objective"])
+        work_items = list(state.get("work_items", []))
+        item = evolver.plan_node(generation, work_items[0]) if work_items else None
+        build = (lambda: evolver.leaf_objective(item)) if item is not None else (
+            lambda: evolver.mutation_objective(objective)
+        )
+        label = item.title if item is not None else objective
         return await self._through_harness(
             context,
             evolver,
             state,
             generation,
-            build=lambda: evolver.mutation_objective(objective),
-            label=objective,
+            build=build,
+            label=label,
             status="applied",
             on_done=lambda touched: (
                 STAGE_VALIDATE if self.auto_validate else STAGE_REPORT,
-                {"file": touched[0] if touched else ""},
+                {
+                    "file": touched[0] if touched else "",
+                    **({"work_items": work_items[1:]} if work_items else {}),
+                },
             ),
         )
 
@@ -531,7 +700,22 @@ class EvolverBehavior(BDIBehavior):
         label: str,
         status: str,
         on_done: Callable[[list[str]], tuple[str, dict[str, Any]]],
+        record: Callable[..., Any] | None = None,
+        record_key: str | None = None,
     ) -> StepResult:
+        """Submit a harness job, resume it across cycles, then record it.
+
+        ``record`` defaults to ``evolver.record_harness_changes``, the only
+        recorder that existed before the plan tree did; the draft/evaluate/
+        decompose stages pass their own (``record_plan_draft`` and siblings),
+        which read a fixed, known file back off disk instead of trusting a
+        diff to carry planning prose. ``record_key`` overrides what gets
+        passed as that recorder's ``objective`` argument -- every recorder
+        before this one used it for the generation's standing objective, but
+        `_decompose` needs to say *which node* it just asked the harness to
+        split, and the pipeline `state` dict that would otherwise carry it is
+        not part of a recorder's signature.
+        """
         harness = context.service("harness")
         if not isinstance(harness, HarnessGateway):
             return StepResult.blocked(
@@ -563,8 +747,11 @@ class EvolverBehavior(BDIBehavior):
             )
         answer = job.result.answer.strip() if job.result else job.detail
         rationale = _extract_rationale(answer)
-        touched = await evolver.record_harness_changes(
-            generation, harness.changes(job), str(state.get("objective", "")), rationale, status
+        recorder = record or evolver.record_harness_changes
+        standing_objective = str(state.get("objective", ""))
+        record_objective = record_key if record_key is not None else standing_objective
+        touched = await recorder(
+            generation, harness.changes(job), record_objective, rationale, status
         )
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
@@ -632,10 +819,17 @@ class EvolverBehavior(BDIBehavior):
         exhausted = repairs >= self.max_repairs and not free
         blocker = result.environment_blocker()
         repairing = not result.passed and not blocker and not stalled and not exhausted
+        # A passing leaf with more work items queued goes back to STAGE_PROPOSE
+        # for the next one instead of straight to STAGE_REPORT; a repair, a
+        # blocked run, or a stalled/exhausted failure never continues onto the
+        # next item -- there is no point building more on a foundation that
+        # just failed its own verdict.
+        more_work = result.passed and bool(state.get("work_items"))
+        next_stage = STAGE_REPAIR if repairing else (STAGE_PROPOSE if more_work else STAGE_REPORT)
         await evolver.set_pipeline_state(
             {
                 **state,
-                "stage": STAGE_REPAIR if repairing else STAGE_REPORT,
+                "stage": next_stage,
                 # A host failure is not a verdict on the candidate, so it is
                 # reported as unvalidated rather than failed. None is what the
                 # report stage already reads as "validation never happened".
@@ -868,6 +1062,7 @@ def default_behaviors(
     auto_promote: bool = False,
     auto_restart: bool = True,
     validate_seconds: float = 1800.0,
+    auto_plan: bool = False,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -878,6 +1073,8 @@ def default_behaviors(
             max_repairs=max_repairs,
             auto_promote=auto_promote,
             auto_restart=auto_restart,
+            validate_seconds=validate_seconds,
+            auto_plan=auto_plan,
         ),
     }
 

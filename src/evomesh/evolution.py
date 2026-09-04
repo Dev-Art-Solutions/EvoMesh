@@ -89,6 +89,140 @@ def harness_repair_objective(
     return "\n".join(part for part in parts if part)
 
 
+# Where a generation's plan lives, before any of it is code. Inside the
+# candidate for the same reason BACKLOG_DIR is: git add -A has to pick it up so
+# the reasoning behind the plan lands in the same commit as what it produced.
+PLAN_DIR = Path("docs") / "evolution" / "plans"
+PLAN_NODES_DIR = PLAN_DIR / "nodes"
+PLAN_FILE = "plan.md"
+PLAN_EVAL_FILE = "plan.eval.md"
+
+PLAN_DRAFT_RULES = "\n".join(
+    (
+        "Rules for this stage:",
+        f"- Do not touch any source file. Write exactly one file, "
+        f"`{(PLAN_DIR / PLAN_FILE).as_posix()}`, inside this candidate.",
+        "- State the goal, the approach you intend to take, and the reasoning "
+        "behind that approach -- specific enough that someone splitting it "
+        "into smaller work items later has something real to split.",
+        "- End your final answer with one sentence starting exactly with "
+        "'RATIONALE:' summarising the plan in one line.",
+    )
+)
+
+PLAN_EVAL_RULES = "\n".join(
+    (
+        "Rules for this stage:",
+        "- You are reviewing a plan someone else proposed. Do not touch any "
+        "source file.",
+        f"- Write exactly one file, `{(PLAN_DIR / PLAN_EVAL_FILE).as_posix()}`, "
+        "inside this candidate, holding your review.",
+        "- That file's last non-empty line must be exactly 'VERDICT: approve' "
+        "or 'VERDICT: reject: <one sentence reason>'.",
+        "- End your final answer with one sentence starting exactly with "
+        "'RATIONALE:' summarising your verdict.",
+    )
+)
+
+PLAN_DECOMPOSE_RULES = "\n".join(
+    (
+        "Rules for this stage:",
+        "- Do not touch any source file. Write exactly one file at the NODE "
+        "PATH given below, inside this candidate.",
+        "- Decide whether this item is already minimal -- one small change to "
+        "one module that already runs -- or whether it is still big enough to "
+        "split into several independent-ish smaller items.",
+        "- If it is minimal, the file's last non-empty line must be exactly "
+        "'LEAF'.",
+        "- If it should split, write one line per child, each in the exact "
+        "form '- <title> :: <reasoning>', optionally followed by "
+        "' :: depends on: <n>' naming an earlier child in this same list by "
+        "its 1-based position, when it can only be done after that one. Do "
+        "not force a binary split -- write as many or as few children as the "
+        "item actually needs.",
+        "- End your final answer with one sentence starting exactly with "
+        "'RATIONALE:' explaining your decision.",
+    )
+)
+
+
+def draft_plan_objective(objective: str, project: str, context: str = "") -> str:
+    """The harness job that drafts a plan for the objective, before any code."""
+    parts = (context, project, f"OBJECTIVE: {objective}", PLAN_DRAFT_RULES)
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def evaluate_plan_objective(plan_text: str, project: str) -> str:
+    """The harness job that reviews a drafted plan and writes a verdict."""
+    parts = (
+        project,
+        f"PLAN TO REVIEW:\n{plan_text}",
+        "Judge whether this is a real, groundable change to a module that "
+        "already runs, scoped small enough to be split into minimal work "
+        "items later. Reject it if it proposes a new file nothing will "
+        "import, or if it is too vague to split.",
+        PLAN_EVAL_RULES,
+    )
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def decompose_objective(node: PlanNode, project: str) -> str:
+    """The harness job that splits one plan item, or declares it minimal."""
+    parts = (
+        project,
+        f"NODE PATH: {(PLAN_NODES_DIR / f'{node.id}.md').as_posix()}",
+        f"ITEM TITLE: {node.title}",
+        f"ITEM REASONING SO FAR:\n{node.reasoning}",
+        PLAN_DECOMPOSE_RULES,
+    )
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def parse_plan_verdict(text: str) -> tuple[bool, str]:
+    """Pull the 'VERDICT: approve|reject: ...' line an evaluation ends with.
+
+    Defaults to reject when the line is missing, the same fail-closed choice
+    ``ENVIRONMENT_MARKERS`` makes elsewhere: a plan that cannot even be read
+    back as approved has not earned the work of decomposing it.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("VERDICT:"):
+            body = stripped.split(":", 1)[1].strip()
+            if body.lower().startswith("approve"):
+                return True, body
+            return False, body.split(":", 1)[1].strip() if ":" in body else body
+    return False, "no VERDICT line was found in the review"
+
+
+def parse_plan_children(text: str) -> list[dict[str, Any]] | None:
+    """Parse a decompose node's file: ``None`` for a declared leaf, else its
+    children as ``{"title", "reasoning", "depends_on"}`` dicts (``depends_on``
+    holding 1-based positions into this same list, resolved by the caller).
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if any(line.upper() == "LEAF" for line in lines):
+        return None
+    children: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.startswith("-"):
+            continue
+        segments = [segment.strip() for segment in line[1:].split("::")]
+        if len(segments) < 2:
+            continue
+        depends_on: list[int] = []
+        for extra in segments[2:]:
+            if extra.lower().startswith("depends on:"):
+                for token in extra.split(":", 1)[1].split(","):
+                    token = token.strip()
+                    if token.isdigit():
+                        depends_on.append(int(token))
+        children.append(
+            {"title": segments[0], "reasoning": segments[1], "depends_on": depends_on}
+        )
+    return children
+
+
 class GenerationStatus(StrEnum):
     ACTIVE = "active"
     CANDIDATE = "candidate"
@@ -108,6 +242,30 @@ class GenerationChange(BaseModel):
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class PlanNode(BaseModel):
+    """One node of a generation's plan tree: a draft, a split, or a leaf.
+
+    A flat list rather than a nested structure, so it round-trips through
+    ``model_dump(mode="json")`` the same way ``Generation.changes`` already
+    does -- ``parent_id`` alone encodes the tree, and ``None`` marks a root (a
+    plan draft; a redrafted plan appends a new root rather than overwriting
+    the old one, so a rejected draft is never lost, only superseded).
+    """
+
+    id: str
+    parent_id: str | None = None
+    title: str
+    reasoning: str
+    kind: str = "root"  # "root" | "split" | "leaf"
+    status: str = "open"  # "open" | "superseded" | "leaf" | "done"
+    depends_on: list[str] = Field(default_factory=list)
+    doc_path: str = ""
+    # Root nodes only: the Evaluator's verdict on this draft.
+    approved: bool | None = None
+    eval_reasoning: str = ""
+    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class Generation(BaseModel):
     number: int
     status: GenerationStatus
@@ -120,6 +278,10 @@ class Generation(BaseModel):
     # reasoning exists only in a database nobody opens is a change nobody can
     # review a month later.
     changes: list[GenerationChange] = Field(default_factory=list)
+    # The plan tree behind this generation's changes, when planning is on
+    # (``EvolverBehavior(auto_plan=True)``). Empty for a generation authored
+    # the old, flat way -- nothing here assumes it is populated.
+    plan: list[PlanNode] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -184,6 +346,15 @@ class ValidationResult(BaseModel):
             return ""
         raw = f"{failure.get('command')}\n{failure.get('output')}"
         return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _touched_paths(entries: Iterable[dict[str, Any]]) -> list[str]:
+    """The paths a harness job actually wrote, from its recorded entries."""
+    return [
+        str(entry["path"])
+        for entry in entries
+        if entry.get("kind") in ("edit", "write") and entry.get("path")
+    ]
 
 
 def excerpt(text: str, limit: int = 200) -> str:
@@ -646,6 +817,169 @@ class EnvironmentEvolver:
         """The harness job that fixes what validation reported."""
         return harness_repair_objective(failure, self.project_map(), touched)
 
+    def leaf_objective(self, node: PlanNode, context: str = "") -> str:
+        """The harness job that authors one minimal item from the plan tree."""
+        objective = f"{node.title}\n\n{node.reasoning}".strip()
+        return harness_objective(objective, self.project_map(), context)
+
+    def draft_plan_objective_text(self, objective: str, context: str = "") -> str:
+        return draft_plan_objective(objective, self.project_map(), context)
+
+    def evaluate_plan_objective_text(self, plan_text: str) -> str:
+        return evaluate_plan_objective(plan_text, self.project_map())
+
+    def decompose_plan_objective_text(self, node: PlanNode) -> str:
+        return decompose_objective(node, self.project_map())
+
+    # -- the plan tree ----------------------------------------------------
+
+    @staticmethod
+    def plan_node(generation: Generation, node_id: str) -> PlanNode | None:
+        return next((node for node in generation.plan if node.id == node_id), None)
+
+    @staticmethod
+    def current_plan_root(generation: Generation) -> PlanNode | None:
+        """The plan draft in force -- the newest one not superseded by a
+        revision -- or ``None`` when nothing has been drafted yet."""
+        roots = [
+            node
+            for node in generation.plan
+            if node.parent_id is None and node.status != "superseded"
+        ]
+        return roots[-1] if roots else None
+
+    async def record_plan_draft(
+        self,
+        generation: Generation,
+        entries: Iterable[dict[str, Any]],
+        objective: str,
+        rationale: str,
+        status: str = "planned",
+    ) -> list[str]:
+        """Record a drafted (or redrafted) plan as a new root ``PlanNode``.
+
+        A redraft appends rather than overwrites: ``record_plan_eval`` already
+        marked the rejected root superseded the moment it was rejected (not
+        here, or ``current_plan_root`` would keep answering with a plan a
+        human could see was already turned down, for the whole cycle it takes
+        the harness to redraft), so this only ever adds a new one.
+        """
+        touched = _touched_paths(entries)
+        plan_path = generation.path / PLAN_DIR / PLAN_FILE
+        if not plan_path.exists():
+            return touched
+        revision = sum(1 for node in generation.plan if node.parent_id is None) + 1
+        generation.plan.append(
+            PlanNode(
+                id=f"root-{revision}",
+                title=objective,
+                reasoning=plan_path.read_text(encoding="utf-8", errors="replace"),
+                kind="root",
+                status="open",
+                doc_path=(PLAN_DIR / PLAN_FILE).as_posix(),
+            )
+        )
+        self.workspace.supervisor.record_candidate(generation)
+        await self.repository.record_mutation(
+            {"generation": generation.number, "status": status, "rationale": rationale}
+        )
+        return touched
+
+    async def record_plan_eval(
+        self,
+        generation: Generation,
+        entries: Iterable[dict[str, Any]],
+        objective: str,
+        rationale: str,
+        status: str = "evaluated",
+    ) -> list[str]:
+        touched = _touched_paths(entries)
+        eval_path = generation.path / PLAN_DIR / PLAN_EVAL_FILE
+        if not eval_path.exists():
+            return touched
+        approved, reason = parse_plan_verdict(
+            eval_path.read_text(encoding="utf-8", errors="replace")
+        )
+        root = self.current_plan_root(generation)
+        if root is not None:
+            root.approved = approved
+            root.eval_reasoning = reason
+            if not approved:
+                # Superseded the moment it is turned down, not on the next
+                # draft: otherwise `current_plan_root` keeps answering with a
+                # plan already rejected for as long as the redraft takes.
+                root.status = "superseded"
+            self.workspace.supervisor.record_candidate(generation)
+        await self.repository.record_mutation(
+            {
+                "generation": generation.number,
+                "status": status,
+                "approved": approved,
+                "rationale": rationale,
+            }
+        )
+        return touched
+
+    async def record_plan_decompose(
+        self,
+        generation: Generation,
+        entries: Iterable[dict[str, Any]],
+        objective: str,
+        rationale: str,
+        status: str = "decomposed",
+    ) -> list[str]:
+        """Record a decomposition. ``objective`` is the id of the node being
+        split, not the generation's standing objective -- ``EvolverBehavior.
+        _decompose`` passes it through ``_through_harness``'s ``record_key``
+        override, since a decompose job's target varies node to node while
+        the recorder signature it shares with ``record_harness_changes``
+        does not carry the pipeline ``state`` to read it from otherwise.
+        """
+        node_id = objective
+        touched = _touched_paths(entries)
+        node = self.plan_node(generation, node_id)
+        if node is None:
+            return touched
+        doc_path = generation.path / PLAN_NODES_DIR / f"{node_id}.md"
+        if not doc_path.exists():
+            return touched
+        children = parse_plan_children(doc_path.read_text(encoding="utf-8", errors="replace"))
+        node.doc_path = (PLAN_NODES_DIR / f"{node_id}.md").as_posix()
+        if children is None:
+            node.kind = "leaf"
+            node.status = "leaf"
+        else:
+            node.kind = "split"
+            node.status = "done"
+            created: list[PlanNode] = [
+                PlanNode(
+                    id=f"{node_id}.{index}",
+                    parent_id=node_id,
+                    title=child["title"],
+                    reasoning=child["reasoning"],
+                    kind="split",
+                    status="open",
+                )
+                for index, child in enumerate(children, start=1)
+            ]
+            for child_node, child in zip(created, children, strict=True):
+                child_node.depends_on = [
+                    created[position - 1].id
+                    for position in child["depends_on"]
+                    if 1 <= position <= len(created) and created[position - 1] is not child_node
+                ]
+            generation.plan.extend(created)
+        self.workspace.supervisor.record_candidate(generation)
+        await self.repository.record_mutation(
+            {
+                "generation": generation.number,
+                "status": status,
+                "node": node_id,
+                "rationale": rationale,
+            }
+        )
+        return touched
+
     async def autofix(self, generation: Generation) -> dict[str, object]:
         outcome = await self.repairer.autofix(generation)
         await self.repository.record_mutation(
@@ -923,6 +1257,46 @@ class EnvironmentEvolver:
             )
         return "**What it set out to do.** No file changes were recorded."
 
+    @staticmethod
+    def _plan_children(nodes: list[PlanNode], parent_id: str | None) -> list[PlanNode]:
+        return [node for node in nodes if node.parent_id == parent_id]
+
+    def _render_plan_node(
+        self, nodes: list[PlanNode], node: PlanNode, depth: int, lines: list[str]
+    ) -> None:
+        indent = "  " * depth
+        tag = " (leaf)" if node.kind == "leaf" else ""
+        headline = node.reasoning.strip().splitlines()[0] if node.reasoning.strip() else ""
+        summary = f" — {excerpt(headline, 160)}" if headline else ""
+        lines.append(f"{indent}- **{node.title}**{tag}{summary}")
+        for child in self._plan_children(nodes, node.id):
+            self._render_plan_node(nodes, child, depth + 1, lines)
+
+    def _render_plan_tree(self, generation: Generation) -> list[str]:
+        """The plan behind this generation's changes, when it was planned.
+
+        Nothing here assumes ``generation.plan`` is populated -- a generation
+        authored the old, flat way (``auto_plan=False``) renders no section
+        at all, same as before this existed.
+        """
+        if not generation.plan:
+            return []
+        lines = ["## How it was planned", ""]
+        for root in self._plan_children(generation.plan, None):
+            state = " (superseded)" if root.status == "superseded" else ""
+            if root.approved is True:
+                verdict = " — approved"
+            elif root.approved is False:
+                reason = root.eval_reasoning.strip()
+                verdict = f" — rejected: {reason}" if reason else " — rejected"
+            else:
+                verdict = ""
+            lines.append(f"- **Plan draft**{state}{verdict}")
+            for child in self._plan_children(generation.plan, root.id):
+                self._render_plan_node(generation.plan, child, 1, lines)
+        lines.append("")
+        return lines
+
     def render_backlog(self, generation: Generation, repairs: int = 0) -> str:
         validation = self.read_validation(generation)
         lines = [
@@ -932,6 +1306,7 @@ class EnvironmentEvolver:
             f"- **Parent generation:** {generation.parent if generation.parent else '-'}",
             f"- **Author:** {self.identity}",
             "",
+            *self._render_plan_tree(generation),
             "## Why this change",
             "",
             self._generation_summary(generation),

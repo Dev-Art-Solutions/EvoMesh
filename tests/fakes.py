@@ -31,11 +31,19 @@ class FakeHarness(HarnessGateway):
     """
 
     def __init__(
-        self, batches: list[list[tuple[str, str]]], answer: str = "flip"
+        self,
+        batches: list[list[tuple[str, str]]],
+        answer: str = "flip",
+        answers: list[str] | None = None,
     ) -> None:
         super().__init__(HarnessQueue(), {})
         self.batches = batches
         self.answer = answer
+        # One answer per call, for a scripted sequence (a draft's RATIONALE,
+        # then an evaluation's VERDICT, then a decompose's LEAF/child list) --
+        # falls back to the single `answer` for every call when not given, so
+        # existing tests that only care about file contents are unaffected.
+        self.answers = answers
         self.objectives: list[str] = []
         self.labels: list[str] = []
 
@@ -55,11 +63,11 @@ class FakeHarness(HarnessGateway):
             target.write_text(content, encoding="utf-8")
             entries.append({"kind": "edit", "path": path, "diff": f"+{content.strip()}"})
         self.sessions[job.number] = entries
+        answer = self.answer
+        if self.answers:
+            answer = self.answers[min(len(self.objectives) - 1, len(self.answers) - 1)]
         self.queue.finish(
-            job,
-            HarnessResult(
-                outcome="answered", answer=self.answer, steps=3, edits=len(entries)
-            ),
+            job, HarnessResult(outcome="answered", answer=answer, steps=3, edits=len(entries))
         )
         return job
 

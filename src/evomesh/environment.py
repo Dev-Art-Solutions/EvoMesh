@@ -75,6 +75,7 @@ class Environment:
             settings.evolution.auto_promote,
             settings.evolution.auto_restart,
             settings.evolution.validate_seconds,
+            settings.evolution.auto_plan,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

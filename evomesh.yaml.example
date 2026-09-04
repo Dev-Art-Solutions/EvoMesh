@@ -47,6 +47,12 @@ evolution:
   # machine could not finish is not the candidate's fault. The suite runs off
   # the agent's cycle, so the Evolver keeps answering while it works.
   validate_seconds: 1800
+  # Draft a plan for the objective, have it reviewed, and recursively split it
+  # into minimal work items before authoring anything -- instead of asking the
+  # harness for one mutation directly. No revision or depth limit: the model
+  # alone decides when a draft is approved and when an item is minimal, so a
+  # generation with this on can take a lot longer than one without it.
+  auto_plan: false
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 
