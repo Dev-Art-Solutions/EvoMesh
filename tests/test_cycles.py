@@ -19,6 +19,7 @@ from evomesh.evolution import (
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
+    PlanNode,
     ValidationResult,
 )
 from evomesh.git import GitRepository
@@ -455,6 +456,245 @@ async def test_evolver_pipeline_advances_one_stage_per_cycle(
     parked = await behavior.cycle(context)
     assert parked.phase is AgentPhase.WAITING_HUMAN
     assert len(evolver.workspace.supervisor.candidates()) == 1
+
+
+async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
+    tmp_path: Path, project: Path
+) -> None:
+    """The full auto_plan path: draft -> evaluate -> decompose (into three,
+    not two, children -- nothing forces a binary split) -> propose/validate
+    once per leaf, in the order the leaves were discovered.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    validator = StubValidator()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        validator,  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    batches = [
+        [("docs/evolution/plans/plan.md", "Split health reporting into three parts.")],
+        [("docs/evolution/plans/plan.eval.md", "Looks groundable.\nVERDICT: approve\n")],
+        [
+            (
+                "docs/evolution/plans/nodes/root-1.md",
+                "- item A :: change alpha\n"
+                "- item B :: change beta\n"
+                "- item C :: change gamma\n",
+            )
+        ],
+        [("docs/evolution/plans/nodes/root-1.1.md", "LEAF\n")],
+        [("docs/evolution/plans/nodes/root-1.2.md", "LEAF\n")],
+        [("docs/evolution/plans/nodes/root-1.3.md", "LEAF\n")],
+        [("src/app.py", "ACTIVE = False\n")],
+        [("src/other.py", "OTHER = 1\n")],
+        [("src/third.py", "THIRD = 2\n")],
+    ]
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": FakeHarness(batches)},
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_plan=True)
+
+    await behavior.cycle(context)  # plan -> draft
+    assert (await evolver.pipeline_state())["stage"] == "draft"
+
+    await behavior.cycle(context)  # draft -> evaluate
+    assert (await evolver.pipeline_state())["stage"] == "evaluate"
+
+    await behavior.cycle(context)  # evaluate -> decompose
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "decompose"
+    assert state["plan_queue"] == ["root-1"]
+    generation = evolver.candidate(int(state["generation"]))
+    root = evolver.current_plan_root(generation)
+    assert root is not None
+    assert root.approved is True
+
+    await behavior.cycle(context)  # decompose root-1 -> three children, not two
+    state = await evolver.pipeline_state()
+    assert state["plan_queue"] == ["root-1.1", "root-1.2", "root-1.3"]
+    generation = evolver.candidate(int(state["generation"]))
+    root_1 = evolver.plan_node(generation, "root-1")
+    assert root_1 is not None
+    assert root_1.kind == "split"
+
+    await behavior.cycle(context)  # decompose root-1.1 -> leaf
+    await behavior.cycle(context)  # decompose root-1.2 -> leaf
+    await behavior.cycle(context)  # decompose root-1.3 -> leaf
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "propose"
+    assert state["work_items"] == ["root-1.1", "root-1.2", "root-1.3"]
+
+    for expected_file, remaining in (
+        ("src/app.py", ["root-1.2", "root-1.3"]),
+        ("src/other.py", ["root-1.3"]),
+        ("src/third.py", []),
+    ):
+        propose = await behavior.cycle(context)
+        assert expected_file in propose.summary.replace("\\", "/")
+        state = await evolver.pipeline_state()
+        assert state["work_items"] == remaining
+        assert state["stage"] == "validate"
+        validated = await behavior.cycle(context)
+        assert "passed" in validated.summary
+        state = await evolver.pipeline_state()
+        assert state["stage"] == ("propose" if remaining else "report")
+
+    report = await behavior.cycle(context)
+    assert report.phase is AgentPhase.WAITING_HUMAN
+    generation = evolver.candidate(int((await evolver.pipeline_state())["generation"]))
+    leaves = {node.id for node in generation.plan if node.kind == "leaf"}
+    assert leaves == {"root-1.1", "root-1.2", "root-1.3"}
+
+
+async def test_a_rejected_plan_is_superseded_not_discarded(
+    tmp_path: Path, project: Path
+) -> None:
+    """A reject sends the pipeline back to draft; the rejected root stays on
+    the generation, marked superseded, next to the reason it was rejected --
+    the whole point of the tree over one end-of-job rationale sentence.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    batches = [
+        [("docs/evolution/plans/plan.md", "v1: too vague on purpose")],
+        [
+            (
+                "docs/evolution/plans/plan.eval.md",
+                "Too vague to split.\nVERDICT: reject: too vague\n",
+            )
+        ],
+        [("docs/evolution/plans/plan.md", "v2: names the module and the change")],
+        [("docs/evolution/plans/plan.eval.md", "Groundable now.\nVERDICT: approve\n")],
+    ]
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": FakeHarness(batches)},
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_plan=True)
+
+    await behavior.cycle(context)  # plan -> draft
+    await behavior.cycle(context)  # draft -> evaluate (v1)
+    await behavior.cycle(context)  # evaluate -> draft (rejected)
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "draft"
+    assert state["plan_revision"] == 1
+    generation = evolver.candidate(int(state["generation"]))
+    first = next(node for node in generation.plan if node.id == "root-1")
+    assert first.status == "superseded"
+    assert first.approved is False
+    assert "too vague" in first.eval_reasoning
+
+    await behavior.cycle(context)  # draft (v2) -> evaluate
+    await behavior.cycle(context)  # evaluate -> decompose (approved)
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "decompose"
+    generation = evolver.candidate(int(state["generation"]))
+    second = evolver.current_plan_root(generation)
+    assert second is not None
+    assert second.id == "root-2"
+    assert second.approved is True
+
+
+async def test_a_leaf_repair_does_not_disturb_the_rest_of_the_queue(
+    tmp_path: Path, project: Path
+) -> None:
+    """Repair is scoped to whatever validation just reported -- it already
+    ignores which leaf produced the failure -- and the remaining work items
+    survive the repair loop untouched, in `state`, exactly as before.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    validator = ScriptedValidator([failing("uv run pytest", "boom"), passing(), passing()])
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        validator,  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    generation = await evolver.create_candidate("improve health reporting")
+    generation.plan = [
+        PlanNode(id="leafA", title="item A", reasoning="change alpha", kind="leaf", status="leaf"),
+        PlanNode(id="leafB", title="item B", reasoning="change beta", kind="leaf", status="leaf"),
+    ]
+    evolver.workspace.supervisor.record_candidate(generation)
+    await evolver.set_pipeline_state(
+        {
+            "stage": "propose",
+            "generation": generation.number,
+            "objective": "improve health reporting",
+            "path": str(generation.path),
+            "work_items": ["leafA", "leafB"],
+        }
+    )
+    batches = [MUTATION, REPAIR, [("src/other.py", "OTHER = 1\n")]]
+    answers = ["RATIONALE: a", "RATIONALE: fixed it", "RATIONALE: b"]
+    harness = FakeHarness(batches, answers=answers)
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": harness},
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    await behavior.cycle(context)  # propose leafA
+    state = await evolver.pipeline_state()
+    assert state["work_items"] == ["leafB"]
+
+    validated = await behavior.cycle(context)  # validate: fails
+    assert "failed" in validated.summary
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "repair"
+    assert state["work_items"] == ["leafB"]  # untouched by the failure
+
+    await behavior.cycle(context)  # repair
+    validated = await behavior.cycle(context)  # validate: passes, leafB still queued
+    assert "passed" in validated.summary
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "propose"
+    assert state["work_items"] == ["leafB"]
+
+    await behavior.cycle(context)  # propose leafB
+    state = await evolver.pipeline_state()
+    assert state["work_items"] == []
+    validated = await behavior.cycle(context)  # validate: passes, nothing left
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "report"
 
 
 async def test_evolution_console_commands_drive_the_pipeline(tmp_path: Path) -> None:
