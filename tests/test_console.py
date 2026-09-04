@@ -382,8 +382,11 @@ async def test_ping_reports_a_stuck_agent(tmp_path: Path) -> None:
     # staleness injected next, hiding exactly the bug this test is for.
     for task in runtime._tasks:
         task.cancel()
+    # Relative to `started`, not an absolute past value: time.monotonic() can
+    # start near zero (a fresh CI VM), and an absolute offset going negative
+    # broke the "still running" comparison against a 0.0 sentinel finish time.
     runtime._last_cycle_started = time.monotonic() - 10_000.0
-    runtime._last_cycle_finished = 0.0
+    runtime._last_cycle_finished = runtime._last_cycle_started - 1.0
 
     shutdown = asyncio.Event()
     server = ControlServer(environment, shutdown, port=0)
