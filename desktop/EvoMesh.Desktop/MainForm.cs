@@ -34,6 +34,8 @@ internal sealed class MainForm : Form
     private Label _settingsNotice = null!;
     private ComboBox _agentProvider = null!;
     private ComboBox _agentModel = null!;
+    private TextBox _runtimeCycleSeconds = null!;
+    private TextBox _evolutionCycleSeconds = null!;
     private CheckBox _autoPromote = null!;
     private CheckBox _autoRestart = null!;
     private TextBox _gitAuthorName = null!;
@@ -378,6 +380,18 @@ internal sealed class MainForm : Form
             row++;
         }
 
+        AddHeading(grid, "RUNTIME", ref row);
+        AddHelp(
+            grid,
+            "How often an agent's BDI cycle fires, and how often the Evolver advances one pipeline " +
+            "stage. Longer intervals mean less GPU load per hour -- a slower model, or a machine " +
+            "you need for other work at the same time, both call for raising these -- at the cost " +
+            "of the mesh reacting more slowly.",
+            ref row);
+        _runtimeCycleSeconds = AddField(grid, "Agent cycle seconds", 0, row);
+        _evolutionCycleSeconds = AddField(grid, "Evolver cycle seconds", 2, row);
+        row++;
+
         AddHeading(grid, "EVOLUTION & GIT", ref row);
         AddHelp(
             grid,
@@ -691,6 +705,8 @@ internal sealed class MainForm : Form
                     controls.NumCtx.Text = provider.NumCtx.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
             }
+            _runtimeCycleSeconds.Text = settings.Runtime.CycleSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _evolutionCycleSeconds.Text = settings.Evolution.CycleSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _autoPromote.Checked = settings.Evolution.AutoPromote;
             _autoRestart.Checked = settings.Evolution.AutoRestart;
             _gitAuthorName.Text = settings.Git.AuthorName;
@@ -772,6 +788,12 @@ internal sealed class MainForm : Form
         settings.GenerationPath = _generationPath.Text.Trim();
         settings.LogLevel = _logLevel.Text;
         settings.DefaultProvider = _defaultProvider.Text;
+        settings.Runtime.CycleSeconds = int.TryParse(_runtimeCycleSeconds.Text.Trim(), out var runtimeCycle) && runtimeCycle > 0
+            ? runtimeCycle
+            : settings.Runtime.CycleSeconds;
+        settings.Evolution.CycleSeconds = int.TryParse(_evolutionCycleSeconds.Text.Trim(), out var evolutionCycle) && evolutionCycle > 0
+            ? evolutionCycle
+            : settings.Evolution.CycleSeconds;
         settings.Evolution.AutoPromote = _autoPromote.Checked;
         settings.Evolution.AutoRestart = _autoRestart.Checked;
         settings.Git.AuthorName = _gitAuthorName.Text.Trim();
