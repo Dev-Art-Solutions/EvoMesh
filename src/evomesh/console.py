@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 from evomesh import cron
+from evomesh.agent_label import agent_label
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
 from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
@@ -173,7 +174,7 @@ class ConsoleChannel:
             state = states[agent.id]
             detail = state.last_error or state.last_outcome
             rows.append(
-                f"{agent.name} [{agent.type}] {agent.status}/{state.phase} "
+                f"{agent.name} [{agent_label(agent.type)}] {agent.status}/{state.phase} "
                 f"{agent.provider}:{agent.model_name} cycles={state.cycles}\n"
                 f"    goal: {state.goal or 'none'}\n"
                 f"    last: {detail or 'nothing yet'}"
