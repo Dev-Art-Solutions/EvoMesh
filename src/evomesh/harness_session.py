@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from .humanize import humanize_duration
+from .metrics import mean
 
 
 class HarnessSession:
     def __init__(self, path: Path | None) -> None:
         self.path = path
         self.entries: list[dict[str, Any]] = []
+        self.elapsed_values: list[float] = []
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("", encoding="utf-8")
@@ -35,7 +37,9 @@ class HarnessSession:
             **fields,
         }
         if "elapsed" in fields:
+            self.elapsed_values.append(float(fields["elapsed"]))
             entry["humanize_duration"] = humanize_duration(fields["elapsed"])
+            entry["mean_elapsed"] = humanize_duration(mean(self.elapsed_values))
         self.entries.append(entry)
         if self.path is not None:
             with self.path.open("a", encoding="utf-8") as handle:
