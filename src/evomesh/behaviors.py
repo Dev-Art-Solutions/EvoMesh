@@ -685,6 +685,23 @@ class EvolverBehavior(BDIBehavior):
             lambda: evolver.mutation_objective(objective)
         )
         label = item.title if item is not None else objective
+
+        async def on_no_op() -> tuple[str, dict[str, Any]] | None:
+            # No plan tree behind this generation: the harness job was its
+            # one piece of work, so nothing here changes -- fall through to
+            # the default whole-generation discard.
+            if not work_items:
+                return None
+            remaining = work_items[1:]
+            if remaining:
+                return (STAGE_PROPOSE, {"work_items": remaining})
+            # The queue is empty. If an earlier item in this same generation
+            # already validated, report that real, recorded work instead of
+            # discarding it over the one item that failed to author.
+            if state.get("passed") is True:
+                return (STAGE_REPORT, {"work_items": []})
+            return None
+
         return await self._through_harness(
             context,
             evolver,
@@ -700,6 +717,7 @@ class EvolverBehavior(BDIBehavior):
                     **({"work_items": work_items[1:]} if work_items else {}),
                 },
             ),
+            on_no_op=on_no_op,
         )
 
     async def _through_harness(
@@ -715,7 +733,7 @@ class EvolverBehavior(BDIBehavior):
         on_done: Callable[[list[str]], tuple[str, dict[str, Any]]],
         record: Callable[..., Any] | None = None,
         record_key: str | None = None,
-        on_no_op: Callable[[], Awaitable[tuple[str, dict[str, Any]]]] | None = None,
+        on_no_op: Callable[[], Awaitable[tuple[str, dict[str, Any]] | None]] | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -731,15 +749,20 @@ class EvolverBehavior(BDIBehavior):
         not part of a recorder's signature.
 
         ``on_no_op`` overrides what happens when the harness wrote nothing.
-        Left at its default (``None``), a no-op still discards the whole
-        generation (D5, below) -- exactly right for `_propose`/`_repair`,
-        where the harness job *is* the generation's one piece of work. Found
-        live: `_decompose` shares this same no-op path, but by the time it
-        runs there, a no-op job is one stuck node at the end of a queue that
-        may already hold a dozen siblings this generation successfully split
-        -- discarding the whole candidate over that one node threw away every
-        one of them. `_decompose` passes an override that marks the stuck
-        node a leaf and carries on with the rest of the queue instead.
+        Left at its default (``None``), or returning ``None`` itself, a no-op
+        discards the whole generation (D5, below) -- exactly right whenever
+        the harness job *is* the generation's one piece of work: `_repair`,
+        and `_propose` with no plan tree behind it or no validated progress
+        yet to lose. Found live, twice: `_decompose` shares this same no-op
+        path, but a no-op there is one stuck node at the end of a queue that
+        may already hold a dozen siblings this generation successfully split;
+        `_propose` shares it too, but with a plan tree, a no-op there is one
+        unauthored work item that may follow one already validated earlier in
+        the same generation. Discarding the whole candidate over either threw
+        away real, already-recorded progress. `_decompose` marks the stuck
+        node a leaf and carries on with the rest of the queue; `_propose`
+        skips to the next work item, or -- once the queue is empty -- reports
+        what already validated instead of discarding it.
         """
         harness = context.service("harness")
         if not isinstance(harness, HarnessGateway):
@@ -781,15 +804,17 @@ class EvolverBehavior(BDIBehavior):
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
             if on_no_op is not None:
-                stage, extra = await on_no_op()
-                await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
-                return StepResult(
-                    summary=(
-                        f"harness job {job.number} finished without changing a file "
-                        f"({job.describe()}); continuing with what was already decided"
-                    ),
-                    phase=AgentPhase.ACTING,
-                )
+                override = await on_no_op()
+                if override is not None:
+                    stage, extra = override
+                    await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
+                    return StepResult(
+                        summary=(
+                            f"harness job {job.number} finished without changing a file "
+                            f"({job.describe()}); continuing with what was already decided"
+                        ),
+                        phase=AgentPhase.ACTING,
+                    )
             # D5: a candidate that changed nothing would validate, and a
             # generation that passes while changing nothing is the dead-module
             # failure wearing a verdict.

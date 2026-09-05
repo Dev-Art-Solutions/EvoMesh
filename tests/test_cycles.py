@@ -761,6 +761,79 @@ async def test_a_leaf_repair_does_not_disturb_the_rest_of_the_queue(
     assert state["stage"] == "report"
 
 
+async def test_an_unauthored_work_item_reports_what_already_validated(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live: generation 80 authored and validated its first work item,
+    then the harness answered without writing anything for the second -- and
+    the whole generation was discarded, losing the first item's already-
+    validated change along with it. The second item failing to author should
+    not erase the first one passing.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    validator = ScriptedValidator([passing()])
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        validator,  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    generation = await evolver.create_candidate("improve health reporting")
+    generation.plan = [
+        PlanNode(id="leafA", title="item A", reasoning="change alpha", kind="leaf", status="leaf"),
+        PlanNode(id="leafB", title="item B", reasoning="change beta", kind="leaf", status="leaf"),
+    ]
+    evolver.workspace.supervisor.record_candidate(generation)
+    await evolver.set_pipeline_state(
+        {
+            "stage": "propose",
+            "generation": generation.number,
+            "objective": "improve health reporting",
+            "path": str(generation.path),
+            "work_items": ["leafA", "leafB"],
+        }
+    )
+    batches = [MUTATION, NOTHING]
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": FakeHarness(batches)},
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    await behavior.cycle(context)  # propose leafA -> writes src/app.py
+    state = await evolver.pipeline_state()
+    assert state["work_items"] == ["leafB"]
+
+    validated = await behavior.cycle(context)  # validate: passes
+    assert "passed" in validated.summary
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "propose"
+
+    stuck = await behavior.cycle(context)  # propose leafB -> answers, writes nothing
+    # The old behaviour discarded the generation here, taking leafA's
+    # already-validated change with it.
+    assert stuck.phase is not AgentPhase.WAITING_HUMAN
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "report"
+    assert state["passed"] is True
+    generation = evolver.candidate(int(state["generation"]))
+    assert any(change.path == "src/app.py" for change in generation.changes)
+
+    report = await behavior.cycle(context)
+    assert report.phase is AgentPhase.WAITING_HUMAN
+    assert "validation passed" in report.summary
+
+
 async def test_evolution_console_commands_drive_the_pipeline(tmp_path: Path) -> None:
     environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
     await environment.start()
