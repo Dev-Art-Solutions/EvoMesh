@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from evomesh.bdi import (
@@ -623,16 +623,28 @@ class EvolverBehavior(BDIBehavior):
             )
         node: PlanNode = found
 
+        def next_stage_after(remaining: list[str]) -> tuple[str, dict[str, Any]]:
+            if remaining:
+                return (STAGE_DECOMPOSE, {"plan_queue": remaining})
+            leaves = [item.id for item in generation.plan if item.kind == "leaf"]
+            return (STAGE_PROPOSE, {"plan_queue": [], "work_items": leaves})
+
         def on_done(touched: list[str]) -> tuple[str, dict[str, Any]]:
             current = evolver.plan_node(generation, node_id)
             remaining = queue[1:]
             if current is not None and current.kind == "split":
                 children = [child.id for child in generation.plan if child.parent_id == node_id]
                 remaining = children + remaining
-            if remaining:
-                return (STAGE_DECOMPOSE, {"plan_queue": remaining})
-            leaves = [item.id for item in generation.plan if item.kind == "leaf"]
-            return (STAGE_PROPOSE, {"plan_queue": [], "work_items": leaves})
+            return next_stage_after(remaining)
+
+        async def on_no_op() -> tuple[str, dict[str, Any]]:
+            # Found live: a decompose job that answers without writing its
+            # node file used to discard the whole generation (D5) -- losing
+            # every sibling a long-running decompose had already split, over
+            # one stuck node at the end of the queue. Marking it a leaf and
+            # moving on keeps that work instead of throwing it away.
+            await evolver.mark_plan_node_undecomposed(generation, node_id)
+            return next_stage_after(queue[1:])
 
         return await self._through_harness(
             context,
@@ -645,6 +657,7 @@ class EvolverBehavior(BDIBehavior):
             record=evolver.record_plan_decompose,
             record_key=node_id,
             on_done=on_done,
+            on_no_op=on_no_op,
         )
 
     async def _propose(
@@ -702,6 +715,7 @@ class EvolverBehavior(BDIBehavior):
         on_done: Callable[[list[str]], tuple[str, dict[str, Any]]],
         record: Callable[..., Any] | None = None,
         record_key: str | None = None,
+        on_no_op: Callable[[], Awaitable[tuple[str, dict[str, Any]]]] | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -715,6 +729,17 @@ class EvolverBehavior(BDIBehavior):
         `_decompose` needs to say *which node* it just asked the harness to
         split, and the pipeline `state` dict that would otherwise carry it is
         not part of a recorder's signature.
+
+        ``on_no_op`` overrides what happens when the harness wrote nothing.
+        Left at its default (``None``), a no-op still discards the whole
+        generation (D5, below) -- exactly right for `_propose`/`_repair`,
+        where the harness job *is* the generation's one piece of work. Found
+        live: `_decompose` shares this same no-op path, but by the time it
+        runs there, a no-op job is one stuck node at the end of a queue that
+        may already hold a dozen siblings this generation successfully split
+        -- discarding the whole candidate over that one node threw away every
+        one of them. `_decompose` passes an override that marks the stuck
+        node a leaf and carries on with the rest of the queue instead.
         """
         harness = context.service("harness")
         if not isinstance(harness, HarnessGateway):
@@ -755,6 +780,16 @@ class EvolverBehavior(BDIBehavior):
         )
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
+            if on_no_op is not None:
+                stage, extra = await on_no_op()
+                await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
+                return StepResult(
+                    summary=(
+                        f"harness job {job.number} finished without changing a file "
+                        f"({job.describe()}); continuing with what was already decided"
+                    ),
+                    phase=AgentPhase.ACTING,
+                )
             # D5: a candidate that changed nothing would validate, and a
             # generation that passes while changing nothing is the dead-module
             # failure wearing a verdict.

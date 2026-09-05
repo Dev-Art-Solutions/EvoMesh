@@ -980,6 +980,22 @@ class EnvironmentEvolver:
         )
         return touched
 
+    async def mark_plan_node_undecomposed(self, generation: Generation, node_id: str) -> None:
+        """A decompose job that answered without writing this node's file.
+
+        Found live: discarding the whole generation over one stuck node threw
+        away every sibling it had already split -- sometimes a dozen of them.
+        Treated as a leaf instead of lost: an item the model could not
+        classify inside its step budget is conservatively minimal, not
+        absent, and the queue can carry on around it.
+        """
+        node = self.plan_node(generation, node_id)
+        if node is None:
+            return
+        node.kind = "leaf"
+        node.status = "leaf"
+        self.workspace.supervisor.record_candidate(generation)
+
     async def autofix(self, generation: Generation) -> dict[str, object]:
         outcome = await self.repairer.autofix(generation)
         await self.repository.record_mutation(

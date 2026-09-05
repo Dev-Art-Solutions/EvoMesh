@@ -559,6 +559,70 @@ async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
     assert leaves == {"root-1.1", "root-1.2", "root-1.3"}
 
 
+async def test_a_stuck_decompose_node_falls_back_to_a_leaf_instead_of_losing_the_queue(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live: generation 66 split a plan into more than a dozen work
+    items, then one decompose job at the end of the queue answered without
+    writing its node file -- and the whole generation was discarded, losing
+    every sibling already split. A stuck node should fall back to a leaf and
+    let the rest of the queue carry on instead.
+    """
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    batches = [
+        [("docs/evolution/plans/plan.md", "Split health reporting into three parts.")],
+        [("docs/evolution/plans/plan.eval.md", "Looks groundable.\nVERDICT: approve\n")],
+        [
+            (
+                "docs/evolution/plans/nodes/root-1.md",
+                "- item A :: change alpha\n- item B :: change beta\n",
+            )
+        ],
+        [("docs/evolution/plans/nodes/root-1.1.md", "LEAF\n")],
+        NOTHING,  # root-1.2's decompose job answers without writing anything
+    ]
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": FakeHarness(batches)},
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_plan=True)
+
+    await behavior.cycle(context)  # plan -> draft
+    await behavior.cycle(context)  # draft -> evaluate
+    await behavior.cycle(context)  # evaluate -> decompose
+    await behavior.cycle(context)  # decompose root-1 -> root-1.1, root-1.2
+    await behavior.cycle(context)  # decompose root-1.1 -> leaf
+    stuck = await behavior.cycle(context)  # decompose root-1.2 -> answers, writes nothing
+
+    # The old behaviour discarded the generation here (D5's "nothing to
+    # validate" path) and every already-split sibling went with it.
+    assert stuck.phase is not AgentPhase.WAITING_HUMAN
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "propose"
+    assert state["work_items"] == ["root-1.1", "root-1.2"]
+    generation = evolver.candidate(int(state["generation"]))
+    stuck_node = evolver.plan_node(generation, "root-1.2")
+    assert stuck_node is not None
+    assert stuck_node.kind == "leaf"
+    assert stuck_node.status == "leaf"
+
+
 async def test_a_rejected_plan_is_superseded_not_discarded(
     tmp_path: Path, project: Path
 ) -> None:
