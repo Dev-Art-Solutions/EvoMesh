@@ -49,6 +49,11 @@ def humanize_duration(seconds: float) -> str:
     return " ".join(parts[:3])
 
 
+def humanize_bytes(num_bytes: int) -> str:
+    """Alias for :func:`humanize_size`, the byte-count formatter."""
+    return humanize_size(num_bytes)
+
+
 def humanize_timestamp(ts: float) -> str:
     """Format an epoch timestamp as a friendly relative description."""
     now = datetime.now().timestamp()
