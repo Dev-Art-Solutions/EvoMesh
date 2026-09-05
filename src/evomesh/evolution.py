@@ -1259,7 +1259,25 @@ class EnvironmentEvolver:
         unanswered. The model's own rationale for its edit is what actually
         varies generation to generation, so that is the headline now; the
         standing goal moves to a quiet note underneath for context.
+
+        A planned generation's headline comes from the plan itself when one
+        was approved: a leaf's own end-of-job ``RATIONALE:`` line answers "why
+        this file", one sentence at a time, and is exactly as likely to be
+        missing here as anywhere else in the harness -- the plan's prose is
+        the one place a human wrote (had the model write) a paragraph about
+        the whole generation before any of it existed, and it survives even
+        when every leaf's own rationale came back empty.
         """
+        approved_root = next(
+            (
+                node
+                for node in generation.plan
+                if node.parent_id is None and node.approved is True and node.reasoning.strip()
+            ),
+            None,
+        )
+        if approved_root is not None:
+            return f"**What it set out to do.** {excerpt(approved_root.reasoning, 400)}"
         mutations = [change for change in generation.changes if change.kind != "repair"]
         for change in mutations:
             reason = change.rationale.strip()
@@ -1308,6 +1326,15 @@ class EnvironmentEvolver:
             else:
                 verdict = ""
             lines.append(f"- **Plan draft**{state}{verdict}")
+            # The plan's own prose -- what the model actually wrote to justify
+            # this generation -- not just whether it passed review. Without
+            # this, the only trace of *why* a plan was drafted the way it was
+            # lived in a diff nobody reads a month later.
+            plan_text = root.reasoning.strip()
+            if plan_text:
+                lines.append("")
+                lines.extend(f"  > {line}" for line in clip(plan_text, 1500).splitlines())
+                lines.append("")
             for child in self._plan_children(generation.plan, root.id):
                 self._render_plan_node(generation.plan, child, 1, lines)
         lines.append("")

@@ -27,6 +27,7 @@ from evomesh.evolution import (
     CandidateWorkspace,
     EnvironmentEvolver,
     Generation,
+    PlanNode,
     ValidationResult,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
@@ -351,6 +352,54 @@ async def test_a_generation_with_no_rationale_still_produces_a_readable_entry(
         "**What it set out to do.** The model changed `src/app.py` but gave no "
         "rationale for it" in text
     )
+
+
+async def test_a_planned_generation_headlines_with_the_plans_own_prose(
+    tmp_path: Path,
+) -> None:
+    """The plan's prose survives even when the leaf that authored the change
+    came back with no ``RATIONALE:`` of its own -- the usual case, since a
+    leaf's end-of-job sentence is exactly as unreliable as anywhere else in
+    the harness. Human-written (or model-written, human-readable) paragraph
+    beats a diff nobody reads a month later.
+    """
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project, PublishPolicy(enabled=False))
+    generation = await evolver.create_candidate("improve health reporting")
+    generation.plan = [
+        PlanNode(
+            id="root-1",
+            title="improve health reporting",
+            reasoning=(
+                "The health endpoint silently swallows a timeout instead of "
+                "reporting it, so an operator sees 'healthy' during an outage. "
+                "This wires the existing timeout signal into the status field."
+            ),
+            kind="root",
+            status="open",
+            approved=True,
+        ),
+        PlanNode(
+            id="root-1.1",
+            parent_id="root-1",
+            title="wire the timeout signal",
+            reasoning="single field addition",
+            kind="leaf",
+            status="leaf",
+        ),
+    ]
+    evolver.workspace.supervisor.record_candidate(generation)
+    await change(evolver, generation, "improve health reporting", "")  # no leaf rationale
+
+    text = evolver.render_backlog(generation)
+
+    assert (
+        "**What it set out to do.** The health endpoint silently swallows a "
+        "timeout" in text
+    )
+    assert "## How it was planned" in text
+    assert "> The health endpoint silently swallows a timeout" in text
+    assert "**wire the timeout signal** (leaf)" in text
 
 
 # -- Telegram ------------------------------------------------------------
