@@ -45,10 +45,18 @@ async def application(
     log_file: Path | None = None,
 ) -> int:
     settings = load_settings(config)
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    # Headless is how the Windows Control Center launches this process, with
+    # its own console suppressed and stdout/stderr no longer piped to it (a
+    # redirected pipe would make the mesh's logging -- and so its single
+    # asyncio loop -- block whenever the Control Center's reader fell behind
+    # or stopped). A stdout handler in that mode has nothing valid to write
+    # to and no reader anyway; --log-file is the only sink that matters there.
+    handlers: list[logging.Handler] = [] if headless else [logging.StreamHandler()]
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    if not handlers:
+        handlers.append(logging.NullHandler())
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s"}',

@@ -35,6 +35,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     private readonly int _controlPort;
     private readonly CancellationTokenSource _healthCancellation = new();
     private Process? _process;
+    private CancellationTokenSource? _tailCancellation;
     private TcpClient? _client;
     private StreamReader? _reader;
     private StreamWriter? _writer;
@@ -324,16 +325,21 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         var uvExecutable = ResolveUvExecutable();
         var configPath = Path.Combine(RootPath, "evomesh.yaml");
         var meshLogPath = Path.Combine(RootPath, ".runtime", "logs", "mesh.log");
+        // Deliberately not redirecting stdout/stderr: a redirected pipe makes
+        // the mesh's own progress depend on this Control Center draining it.
+        // If the UI thread ever stalls (a slow dialog, a GC pause, the window
+        // being closed mid-read) the pipe's kernel buffer fills and the
+        // mesh's next log write blocks its single asyncio loop -- indistinguishable
+        // from the mesh itself being stuck. The mesh already writes everything
+        // to --log-file; that file is the one source of truth and is tailed
+        // below for the UI, which is read-only and can fall behind or stop
+        // without the mesh ever noticing.
         var startInfo = new ProcessStartInfo
         {
             FileName = uvExecutable,
             WorkingDirectory = RootPath,
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
             CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var argument in new[]
         {
@@ -351,8 +357,6 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
         Log($"Starting with: {uvExecutable}");
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        _process.OutputDataReceived += (_, args) => EmitAndLog(args.Data);
-        _process.ErrorDataReceived += (_, args) => EmitAndLog(args.Data);
         _process.Exited += (_, _) => OnProcessExited(_process?.ExitCode ?? -1);
 
         try
@@ -361,9 +365,8 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 throw new InvalidOperationException("Unable to start the EvoMesh process.");
             }
-            _process.BeginOutputReadLine();
-            _process.BeginErrorReadLine();
             Emit($"[started with {uvExecutable}]");
+            StartTailingMeshLog(meshLogPath);
 
             for (var attempt = 0; attempt < 80; attempt++)
             {
@@ -386,6 +389,65 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             Log($"Start failed: {exc}");
             throw new InvalidOperationException($"{exc.Message}{Environment.NewLine}Log: {_logPath}", exc);
         }
+    }
+
+    /// <summary>
+    /// Streams new lines appended to mesh.log into the UI, purely for
+    /// visibility -- this is the read-only replacement for piping the mesh's
+    /// stdout/stderr through this process. Starts at the file's current
+    /// length so a restart does not replay the mesh's entire history into
+    /// the output panel.
+    /// </summary>
+    private void StartTailingMeshLog(string meshLogPath)
+    {
+        _tailCancellation?.Cancel();
+        _tailCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _tailCancellation = cancellation;
+        var token = cancellation.Token;
+        _ = Task.Run(async () =>
+        {
+            long position = 0;
+            try
+            {
+                if (File.Exists(meshLogPath))
+                {
+                    position = new FileInfo(meshLogPath).Length;
+                }
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(500), token);
+                    if (!File.Exists(meshLogPath))
+                    {
+                        continue;
+                    }
+                    using var stream = new FileStream(
+                        meshLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    if (stream.Length < position)
+                    {
+                        // The log rolled over or was truncated; start from
+                        // the top rather than seeking past the end forever.
+                        position = 0;
+                    }
+                    stream.Seek(position, SeekOrigin.Begin);
+                    using var reader = new StreamReader(stream, Encoding.UTF8);
+                    string? line;
+                    while ((line = await reader.ReadLineAsync(token)) is not null)
+                    {
+                        Emit(line);
+                    }
+                    position = stream.Position;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopped by a restart, a stop, or Dispose -- nothing to report.
+            }
+            catch (Exception exc)
+            {
+                Log($"Log tail stopped: {exc.Message}");
+            }
+        }, token);
     }
 
     public async Task SendAsync(string command)
@@ -432,7 +494,15 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
                 await process.WaitForExitAsync();
             }
         }
+        StopTailingMeshLog();
         Disconnect(notify: true);
+    }
+
+    private void StopTailingMeshLog()
+    {
+        _tailCancellation?.Cancel();
+        _tailCancellation?.Dispose();
+        _tailCancellation = null;
     }
 
     /// <summary>
@@ -451,6 +521,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     {
         _healthCancellation.Cancel();
         _healthCancellation.Dispose();
+        StopTailingMeshLog();
         Disconnect(notify: false);
         if (_process is null || _process.HasExited)
         {
@@ -483,6 +554,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
                 _ = RestartAsync();
                 return;
             }
+            StopTailingMeshLog();
             EmitAndLog($"[runtime process exited with code {exitCode}]");
         }
         catch (Exception exc)
