@@ -11,6 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from evomesh import cron
+from evomesh.agent_label import agent_label
 
 
 def now_utc() -> datetime:
@@ -19,6 +20,19 @@ def now_utc() -> datetime:
 
 def _short_id() -> str:
     return uuid4().hex[:8]
+
+
+def label(name: str) -> str:
+    """Validate an agent label through the shared contract.
+
+    ``Agent.label`` is stored as a plain ``str`` and can be set directly, so the
+    type alone cannot stop a typo like ``"engineer"`` from reaching storage.
+    This factory runs the same ``agent_label`` check that the shared contract
+    exports and returns the canonical value, so a bad label raises at the point
+    of construction instead of being written out.
+    """
+
+    return agent_label(name)
 
 
 class AgentStatus(StrEnum):
