@@ -14,6 +14,8 @@ internal sealed class MainForm : Form
     ];
     private readonly EvoMeshRuntimeProcess _runtime;
     private readonly string _configPath;
+    private readonly NotifyIcon _trayIcon;
+    private bool _exitRequested;
     private readonly RichTextBox _output = new();
     private readonly TextBox _command = new();
     private readonly Label _status = new();
@@ -70,6 +72,24 @@ internal sealed class MainForm : Form
         EnsureConfiguration();
         LoadSettings();
         UpdateRuntimeState(false);
+
+        // The mesh's own "land a generation, restart into it" cycle only
+        // works while something is watching for its exit code -- that watcher
+        // is this process. The [X] button used to close the window outright,
+        // which ends the whole Control Center (Application.Run returns) and
+        // silently abandons the mesh: it keeps running orphaned until it next
+        // asks to restart, at which point nobody is left to bring it back.
+        // Minimizing to the tray instead keeps that watcher alive; a real
+        // exit is only ever the tray menu's "Exit" item.
+        _trayIcon = new NotifyIcon
+        {
+            Icon = Icon,
+            Text = "EvoMesh Control Center",
+            Visible = false,
+            ContextMenuStrip = BuildTrayMenu(),
+        };
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+
         Shown += async (_, _) =>
         {
             if (await _runtime.TryAttachAsync())
@@ -84,8 +104,41 @@ internal sealed class MainForm : Form
         };
     }
 
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Open Control Center", null, (_, _) => RestoreFromTray());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit (stops the mesh)", null, (_, _) =>
+        {
+            _exitRequested = true;
+            Close();
+        });
+        return menu;
+    }
+
+    private void RestoreFromTray()
+    {
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+        _trayIcon.Visible = false;
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (!_exitRequested && e.CloseReason == CloseReason.UserClosing && _runtime.IsRunning)
+        {
+            e.Cancel = true;
+            Hide();
+            _trayIcon.Visible = true;
+            _trayIcon.ShowBalloonTip(
+                4000,
+                "EvoMesh is still running",
+                "The mesh keeps evolving in the background. Use the tray icon to reopen it or exit.",
+                ToolTipIcon.Info);
+            return;
+        }
         base.OnFormClosing(e);
     }
 
@@ -93,6 +146,7 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _trayIcon.Dispose();
             _runtime.Dispose();
         }
         base.Dispose(disposing);
@@ -851,9 +905,25 @@ internal sealed class MainForm : Form
 
     private void UpdateRuntimeState(bool running)
     {
+        // Raised from a background health-loop/process-exit callback that is
+        // not wrapped in a Task -- an exception here (e.g. BeginInvoke on a
+        // window the user already closed) would kill the entire Control
+        // Center process, not just this UI update, taking down the only
+        // thing watching the mesh for its restart-on-new-generation exit
+        // code. A closed window means there is nothing to update; that is
+        // not a reason to stop supervising the mesh.
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
         if (InvokeRequired)
         {
-            BeginInvoke(() => UpdateRuntimeState(running));
+            try
+            {
+                BeginInvoke(() => UpdateRuntimeState(running));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
             return;
         }
         _running = running;
@@ -875,9 +945,18 @@ internal sealed class MainForm : Form
     /// </summary>
     private void ShowHealthCheck(bool running, DateTimeOffset when)
     {
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
         if (InvokeRequired)
         {
-            BeginInvoke(() => ShowHealthCheck(running, when));
+            try
+            {
+                BeginInvoke(() => ShowHealthCheck(running, when));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
             return;
         }
         _running = running;
@@ -894,9 +973,18 @@ internal sealed class MainForm : Form
 
     private void AppendOutput(string text)
     {
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
         if (InvokeRequired)
         {
-            BeginInvoke(() => AppendOutput(text));
+            try
+            {
+                BeginInvoke(() => AppendOutput(text));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
             return;
         }
         _output.AppendText(text + Environment.NewLine);

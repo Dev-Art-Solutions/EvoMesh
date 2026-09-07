@@ -467,14 +467,34 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     /// </summary>
     private void OnProcessExited(int exitCode)
     {
-        Disconnect(notify: true);
-        if (exitCode == RestartExitCode && !_stopRequested)
+        // This runs on a raw ThreadPool callback, not inside a Task -- an
+        // exception escaping it (e.g. a UI subscriber throwing because its
+        // window was already closed) terminates the whole Control Center
+        // process outright, taking the only thing watching for exit code 86
+        // down with it. The mesh then keeps running orphaned with nobody left
+        // to restart it into the generation it just asked to land. Swallowing
+        // here trades a lost UI update for keeping the supervisor alive.
+        try
         {
-            EmitAndLog("[the mesh landed a new generation and is restarting into it]");
-            _ = RestartAsync();
-            return;
+            Disconnect(notify: true);
+            if (exitCode == RestartExitCode && !_stopRequested)
+            {
+                EmitAndLog("[the mesh landed a new generation and is restarting into it]");
+                _ = RestartAsync();
+                return;
+            }
+            EmitAndLog($"[runtime process exited with code {exitCode}]");
         }
-        EmitAndLog($"[runtime process exited with code {exitCode}]");
+        catch (Exception exc)
+        {
+            Log($"OnProcessExited handler failed: {exc}");
+            if (exitCode == RestartExitCode && !_stopRequested)
+            {
+                // The failure above was in reporting the exit, not in the
+                // decision to restart -- still bring the mesh back up.
+                _ = RestartAsync();
+            }
+        }
     }
 
     private async Task RestartAsync()
