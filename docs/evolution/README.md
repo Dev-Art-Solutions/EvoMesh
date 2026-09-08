@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 251](000251.md) — The model changed `check_reach.py, src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 245](000245.md) — The model changed `src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 240](000240.md) — The model changed `run_checks.py, src/evomesh/harness_tools.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 236](000236.md) — The model changed `src/evomesh/harness_tools.py` but gave no rationale for it -- see the diff below for what actually moved.
