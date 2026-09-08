@@ -6,16 +6,20 @@ from enum import StrEnum
 
 
 class AgentPhase(StrEnum):
-    """Well-known agent phases in EvoMesh."""
+    """Well-known agent phases in EvoMesh.
 
+    Mirrors ``AgentPhase`` in :mod:`evomesh.contracts` so this module can
+    render whatever phase a live agent is currently in.
+    """
+
+    OFFLINE = "offline"
+    STARTING = "starting"
     IDLE = "idle"
-    PLANNING = "planning"
     THINKING = "thinking"
     ACTING = "acting"
-    VALIDATING = "validating"
-    REPAIRING = "repairing"
-    AWAITING_HUMAN = "awaiting_human"
-    DONE = "done"
+    AWAITING_HARNESS = "awaiting-harness"
+    WAITING_HUMAN = "waiting-human"
+    ERROR = "error"
 
     def label(self) -> str:
         """Return a short human-readable label for this phase."""
@@ -23,14 +27,14 @@ class AgentPhase(StrEnum):
 
 
 _LABELS: dict[str, str] = {
+    "offline": "Offline",
+    "starting": "Starting",
     "idle": "Idle",
-    "planning": "Planning",
     "thinking": "Thinking",
     "acting": "Acting",
-    "validating": "Validating",
-    "repairing": "Repairing",
-    "awaiting_human": "Awaiting human",
-    "done": "Done",
+    "awaiting-harness": "Awaiting harness",
+    "waiting-human": "Awaiting human",
+    "error": "Error",
 }
 
 
