@@ -112,6 +112,11 @@ class Goal(BaseModel):
     last_error: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
+    # Set once this goal closes DONE -- by default left None, since a
+    # one-shot that never succeeds never finishes. agents.py records it
+    # (see the DONE transition there) so the run's completion ledger,
+    # built from this field, knows exactly when each goal ended.
+    completed_at: datetime | None = None
 
     @property
     def is_open(self) -> bool:
