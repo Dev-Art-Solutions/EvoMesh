@@ -65,3 +65,19 @@ def make_id(*parts: str) -> AgentId:
         if not all(ch in _ALLOWED for ch in segment):
             raise ValueError(f"identifier segment has illegal characters: {segment!r}")
     return AgentId(_SEPARATOR.join(cleaned))
+
+
+_next_seq: int = 0
+
+
+def next_id(width: int = 4) -> str:
+    """Return the next zero-padded, monotonically increasing agent id.
+
+    The ids are stable, sortable as strings and always valid identifiers, so
+    they work as a drop-in default for freshly created agents.  Each call
+    advances the module-level counter, so consecutive agents get distinct
+    ids without any shared mutable default.
+    """
+    global _next_seq
+    _next_seq += 1
+    return f"{_next_seq:0{width}d}"
