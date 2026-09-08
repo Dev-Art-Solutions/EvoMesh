@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from evomesh import cron
 from evomesh.agent_label import agent_label
+from evomesh.phase_label import phase_label
 
 
 def now_utc() -> datetime:
@@ -450,7 +451,7 @@ class AgentRuntimeState(BaseModel):
     last_cycle_at: datetime | None = None
 
     def describe(self) -> str:
-        parts = [f"phase={self.phase}", f"cycles={self.cycles}"]
+        parts = [f"phase={phase_label(self.phase)}", f"cycles={self.cycles}"]
         if self.goal:
             parts.append(f"goal={self.goal}")
         if self.last_error:
