@@ -305,6 +305,8 @@ class MindState(BaseModel):
             notify=notify,
         )
         if cron_expression:
+            if not cron.is_valid_cron_expression(cron_expression):
+                raise ValueError(f"invalid cron expression: {cron_expression!r}")
             # A cron goal is an appointment, not a "do this now" -- unlike
             # interval_seconds, which is silent until the goal has run once,
             # this must not fire the moment it is created.

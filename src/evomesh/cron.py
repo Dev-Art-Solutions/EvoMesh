@@ -100,3 +100,12 @@ def next_after(expression: str, after: datetime) -> datetime:
                 continue
             return day.replace(hour=hour, minute=minute)
     raise InvalidCronError(f"cron expression never matches within four years: {expression!r}")
+
+
+def is_valid_cron_expression(expression: str) -> bool:
+    """Return True if ``expression`` is a valid 5-field cron expression."""
+    try:
+        parse(expression)
+    except InvalidCronError:
+        return False
+    return True
