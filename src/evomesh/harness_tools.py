@@ -390,7 +390,25 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
             )
         before = target.read_text(encoding="utf-8")
     diff = _announce(context, target, before, content, kind="write")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # exist_ok=True only forgives a parent that is already a directory. A
+        # generation once wrote a *file* at what should have been a directory
+        # component of this same tree (docs/evolution/plans, committed as a
+        # file holding the literal text "plan.md" -- the model meant to write
+        # docs/evolution/plans/plan.md and wrote the path itself instead), and
+        # every candidate since has inherited it from the checkout. Left
+        # uncaught this OSError crashes the whole harness job -- silently, from
+        # the model's side, since nothing here was its mistake to fix -- which
+        # is how every plan-drafting stage since kept losing its plan. Turned
+        # into a result instead, the model can see the conflict and route
+        # around it.
+        raise ToolDenied(
+            f"DENIED: cannot create the directory for {where}: {exc}. A path "
+            "component already exists as a plain file, not a directory -- "
+            "edit or delete that file, or write somewhere else."
+        ) from exc
     target.write_text(content, encoding="utf-8")
     context.tally.writes += 1
     verb = "replaced" if before else "created"

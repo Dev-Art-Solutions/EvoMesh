@@ -191,6 +191,26 @@ async def test_write_refuses_to_replace_an_existing_file_by_accident(project: Pa
     assert (project / "notes.md").read_text(encoding="utf-8") == "replaced\n"
 
 
+async def test_write_is_denied_not_crashed_when_a_parent_is_a_plain_file(
+    project: Path,
+) -> None:
+    """Found live: a generation once wrote a *file* at docs/evolution/plans
+    (meaning to write docs/evolution/plans/plan.md), and every candidate
+    since inherited it from the checkout -- mkdir(parents=True, exist_ok=True)
+    forgives an existing directory, not an existing file, so every later
+    attempt to write a file under that path raised a raw OSError that crashed
+    the whole harness job rather than reaching the model as a result."""
+    (project / "plans").write_text("plan.md\n", encoding="utf-8")
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "write", {"path": "plans/plan.md", "content": "# Plan\n"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert "plans" in result
+    assert not (project / "plans" / "plan.md").exists()
+
+
 async def test_a_write_outside_the_root_never_reaches_the_disk(project: Path) -> None:
     outside = project.parent / "escaped.py"
 
