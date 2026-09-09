@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from evomesh.codebase import new_orphans, project_map, stray_root_scripts
+from evomesh.codebase import fabricated_references, new_orphans, project_map, stray_root_scripts
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
 from evomesh.processes import run_command
@@ -873,6 +873,17 @@ class EnvironmentEvolver:
     def evaluate_plan_objective_text(self, plan_text: str) -> str:
         return evaluate_plan_objective(plan_text, self.project_map())
 
+    def fabricated_plan_references(self, plan_text: str) -> list[str]:
+        """``module.symbol`` mentions in the plan naming code that isn't there.
+
+        A mechanical stand-in for the one thing the plan evaluator has spent
+        this session rejecting plans for, over and over: a name the model
+        recalled instead of read. Checking it here costs a regex and an AST
+        lookup; checking it by handing the plan to the evaluator costs a whole
+        harness job for a verdict this already knows.
+        """
+        return fabricated_references(plan_text, self.workspace.repository_root)
+
     def decompose_plan_objective_text(self, node: PlanNode) -> str:
         return decompose_objective(node, self.project_map())
 
@@ -964,6 +975,30 @@ class EnvironmentEvolver:
             }
         )
         return touched
+
+    async def mechanical_reject_plan(self, generation: Generation, reasons: list[str]) -> None:
+        """Reject a plan without a harness job, for the fabrication check.
+
+        No ``plan.eval.md`` was ever written -- there is no harness job here to
+        write one -- so this does by hand what ``record_plan_eval`` does from
+        that file: mark the root rejected and superseded, so a human (or the
+        next redraft) sees the same shape of history either way.
+        """
+        root = self.current_plan_root(generation)
+        if root is None:
+            return
+        root.approved = False
+        root.eval_reasoning = "names code that does not exist: " + ", ".join(reasons)
+        root.status = "superseded"
+        self.workspace.supervisor.record_candidate(generation)
+        await self.repository.record_mutation(
+            {
+                "generation": generation.number,
+                "status": "evaluated",
+                "approved": False,
+                "rationale": f"mechanical check (no harness job): {', '.join(reasons)}",
+            }
+        )
 
     async def record_plan_decompose(
         self,

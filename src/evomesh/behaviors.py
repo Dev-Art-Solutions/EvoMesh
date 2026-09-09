@@ -568,6 +568,25 @@ class EvolverBehavior(BDIBehavior):
         root = evolver.current_plan_root(generation)
         plan_text = root.reasoning if root is not None else ""
 
+        fabricated = evolver.fabricated_plan_references(plan_text) if plan_text else []
+        if fabricated:
+            # Caught mechanically, before a harness job (and a whole model
+            # turn) is spent reaching the same verdict the evaluator would
+            # have given anyway -- every rejection tonight named exactly this.
+            await evolver.mechanical_reject_plan(generation, fabricated)
+            revision = int(state.get("plan_revision", 0)) + 1
+            await evolver.set_pipeline_state(
+                {**state, "stage": STAGE_DRAFT, "plan_revision": revision}
+            )
+            return StepResult(
+                summary=(
+                    f"generation {generation.number}'s plan names "
+                    f"{', '.join(fabricated)}, which do not exist -- rejected "
+                    "without spending a harness job"
+                ),
+                phase=AgentPhase.ACTING,
+            )
+
         def on_done(touched: list[str]) -> tuple[str, dict[str, Any]]:
             # Read `root` itself, not another `current_plan_root` lookup:
             # `record_plan_eval` marks a rejected root superseded the moment

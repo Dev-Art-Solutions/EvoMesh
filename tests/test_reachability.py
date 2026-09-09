@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from evomesh.codebase import (
+    fabricated_references,
     known_dead,
     new_orphans,
     orphans,
@@ -74,6 +77,25 @@ def test_the_map_names_what_is_load_bearing_and_what_is_dead() -> None:
     assert len(text) <= 1800
 
 
+def test_the_map_quotes_a_dead_modules_real_exports(tmp_path: Path) -> None:
+    """A dead module's real names have to be in the prompt, not just its name
+    and line count -- otherwise a plan drafted from this map has nothing to
+    stop it from inventing a plausible-sounding one instead."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "cycles.py").write_text(
+        '"""Cycle detection."""\n\ndef cycle_agents(x):\n    return x\n\n\n'
+        "class Detector:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    text = project_map(tmp_path)
+
+    assert "cycle_agents()" in text
+    assert "Detector" in text
+
+
 def test_a_module_nobody_imports_is_reported(tmp_path: Path) -> None:
     package = tmp_path / "src" / "evomesh"
     package.mkdir(parents=True)
@@ -126,3 +148,60 @@ def test_both_import_spellings_count_as_use(tmp_path: Path) -> None:
     )
 
     assert not {item.name for item in orphans(tmp_path)}
+
+
+@pytest.fixture
+def cycles_project(tmp_path: Path) -> Path:
+    """A minimal project with one real dead module, for the fabrication check."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "cycles.py").write_text(
+        '"""Cycle detection."""\n\n'
+        "def cycle_agents(dependencies):\n"
+        "    def strongconnect(node):\n"
+        "        pass\n"
+        "    return set()\n\n\n"
+        "class Detector:\n"
+        "    def run(self):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_a_fabricated_name_on_a_real_module_is_reported(cycles_project: Path) -> None:
+    plan = "Wire the dead `cycles.py` module in by calling `cycles.scc_find_cycles`."
+
+    assert fabricated_references(plan, cycles_project) == ["cycles.scc_find_cycles"]
+
+
+def test_a_real_top_level_name_is_not_flagged(cycles_project: Path) -> None:
+    plan = "Wire `cycles.cycle_agents` into the runtime."
+
+    assert fabricated_references(plan, cycles_project) == []
+
+
+def test_a_real_nested_or_method_name_is_not_flagged(cycles_project: Path) -> None:
+    """``all_names`` -- not just top-level ``exports`` -- backs this check, so
+    a real nested helper or class method is never treated as fabricated just
+    for not being defined at module level."""
+    plan = "Reuse `cycles.strongconnect` and `cycles.run` from the detector."
+
+    assert fabricated_references(plan, cycles_project) == []
+
+
+def test_naming_the_file_itself_is_not_flagged(cycles_project: Path) -> None:
+    """``cycles.py`` is how a plan almost always refers to the module by
+    name -- it must never be misread as a symbol called ``py``."""
+    plan = "Wire the dead `cycles.py` module into the runtime."
+
+    assert fabricated_references(plan, cycles_project) == []
+
+
+def test_an_unknown_module_name_is_never_flagged(cycles_project: Path) -> None:
+    """Only a module that actually exists in the project is checked -- this is
+    what keeps ``os.path`` or ``self.thing`` from ever being flagged."""
+    plan = "Use `os.path.join` and `self.thing` for this."
+
+    assert fabricated_references(plan, cycles_project) == []

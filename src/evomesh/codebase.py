@@ -11,6 +11,7 @@ candidate that creates one can be failed rather than shipped.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,15 @@ class Module:
     lines: int
     imports: frozenset[str]
     imported_by: frozenset[str]
+    # Top-level function/class names, formatted for a prompt (``"find_cycles()"``,
+    # ``"CycleSummary"``) -- what project_map shows so a plan can quote a real
+    # name instead of a plausible-sounding one.
+    exports: tuple[str, ...] = ()
+    # Every function/class name defined anywhere in the file, nested or not --
+    # broader than ``exports`` on purpose. This is what the fabrication check
+    # trusts, so a plan mentioning a real nested helper or a class method is
+    # never flagged just for not being a top-level name.
+    all_names: frozenset[str] = frozenset()
 
     @property
     def is_entry_point(self) -> bool:
@@ -76,12 +86,45 @@ def _imported_names(tree: ast.Module) -> set[str]:
     return found
 
 
+def _exported_signatures(tree: ast.Module) -> tuple[str, ...]:
+    """Top-level function and class names, for a model to quote instead of guess.
+
+    Bare names, not full signatures: project_map is a character budget for a
+    small local model's context, and the mistake seen all night wiring a dead
+    module in was never a wrong parameter -- it was a name that was never there
+    at all (``scc_find_cycles``, ``CycleCounter``, ``live_cycle_number``, none
+    of which exist). A verbatim name list closes off guessing at the source.
+    """
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.append(f"{node.name}()")
+        elif isinstance(node, ast.ClassDef):
+            names.append(node.name)
+    return tuple(names)
+
+
+def _all_defined_names(tree: ast.Module) -> frozenset[str]:
+    """Every function/class name anywhere in the file, nested included.
+
+    Broader than ``_exported_signatures`` on purpose -- it backs the
+    fabrication check (see ``fabricated_references``), where flagging a real
+    nested helper or class method just for not being top-level would be a
+    false positive, not a caught hallucination.
+    """
+    return frozenset(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    )
+
+
 def survey(root: Path) -> list[Module]:
     """Every module in the package, with who imports whom already resolved."""
     directory = package_root(root)
     if not directory.is_dir():
         return []
-    raw: dict[str, tuple[Path, str, int, set[str]]] = {}
+    raw: dict[str, tuple[Path, str, int, set[str], tuple[str, ...], frozenset[str]]] = {}
     for path in sorted(directory.glob("*.py")):
         source = path.read_text(encoding="utf-8", errors="replace")
         try:
@@ -89,12 +132,26 @@ def survey(root: Path) -> list[Module]:
         except SyntaxError:
             # A candidate mid-repair can hold a file that does not parse. That is
             # the linter's finding to report, not this module's to crash on.
-            raw[path.stem] = (path, "(does not parse)", len(source.splitlines()), set())
+            raw[path.stem] = (
+                path,
+                "(does not parse)",
+                len(source.splitlines()),
+                set(),
+                (),
+                frozenset(),
+            )
             continue
-        raw[path.stem] = (path, _summary(tree), len(source.splitlines()), _imported_names(tree))
+        raw[path.stem] = (
+            path,
+            _summary(tree),
+            len(source.splitlines()),
+            _imported_names(tree),
+            _exported_signatures(tree),
+            _all_defined_names(tree),
+        )
 
     importers: dict[str, set[str]] = {name: set() for name in raw}
-    for name, (_, _, _, imports) in raw.items():
+    for name, (_, _, _, imports, _, _) in raw.items():
         for target in imports:
             if target in importers and target != name:
                 importers[target].add(name)
@@ -107,8 +164,10 @@ def survey(root: Path) -> list[Module]:
             lines=lines,
             imports=frozenset(imports & raw.keys()) - {name},
             imported_by=frozenset(importers[name]),
+            exports=exports,
+            all_names=all_names,
         )
-        for name, (path, summary, lines, imports) in raw.items()
+        for name, (path, summary, lines, imports, exports, all_names) in raw.items()
     ]
 
 
@@ -161,6 +220,51 @@ def stray_root_scripts(root: Path) -> list[str]:
     return sorted(path.name for path in root.glob("*.py"))
 
 
+# Matches a whole backtick span shaped exactly like ``module.symbol`` or
+# ``module.symbol(...)`` -- a chained third segment (``evomesh.cycles.thing``)
+# or anything else inside the backticks is left alone rather than guessed at.
+_MODULE_SYMBOL_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?$"
+)
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+def fabricated_references(text: str, root: Path) -> list[str]:
+    """Backtick-quoted ``module.symbol`` mentions naming a real project module
+    but a symbol it never defines, anywhere -- top-level or nested.
+
+    Every plan rejection the evaluator ever wrote this session named exactly
+    this: a plausible-sounding function or class the model recalled instead of
+    read. Catching it here costs a regex and an AST lookup already computed by
+    ``survey``; catching it in ``docs/evolution/plans/plan.eval.md`` costs a
+    whole harness job and the model's own step budget to reach the same
+    verdict. This is deliberately narrow -- only a module name that actually
+    exists in the project is checked, so ``os.path`` or ``self.thing`` never
+    match at all -- a false negative here just falls through to the evaluator
+    that already catches it; a false positive would reject a real plan outright.
+    """
+    modules = {module.name: module for module in survey(root)}
+    if not modules:
+        return []
+    found: list[str] = []
+    for span in _BACKTICK_RE.findall(text):
+        match = _MODULE_SYMBOL_RE.match(span.strip())
+        if match is None:
+            continue
+        module_name, symbol = match.group(1), match.group(2)
+        if symbol == "py":
+            # `cycles.py` -- naming the file itself, not a symbol in it. This
+            # is how a plan almost always refers to a module by name.
+            continue
+        module = modules.get(module_name)
+        if module is None or symbol in module.all_names:
+            continue
+        label = f"{module_name}.{symbol}"
+        if label not in found:
+            found.append(label)
+    return found
+
+
 def project_map(root: Path, limit: int = 1800) -> str:
     """The package as a prompt, so a mutation targets code that actually runs.
 
@@ -176,7 +280,7 @@ def project_map(root: Path, limit: int = 1800) -> str:
         (item for item in modules if item.imported_by),
         key=lambda item: -len(item.imported_by),
     )[:12]
-    dead = sorted(item.name for item in modules if item.is_orphan)
+    dead = sorted((item for item in modules if item.is_orphan), key=lambda item: item.name)
     lines = ["THE PACKAGE AS IT STANDS (src/evomesh/)."]
     if live:
         lines.append("Load-bearing modules -- 'usedN' is how many modules import it:")
@@ -189,9 +293,13 @@ def project_map(root: Path, limit: int = 1800) -> str:
         lines.append(
             "DEAD modules -- nothing imports these, so none of their code ever runs. "
             "Wiring one into a load-bearing module above is real work; adding "
-            "another file like them is not:"
+            "another file like them is not. What each one actually exports, "
+            "verbatim -- never invent a name that is not listed here:"
         )
-        lines.append("- " + ", ".join(f"{name}.py" for name in dead))
+        lines += [
+            f"- {item.name}.py: {', '.join(item.exports) if item.exports else '(nothing exported)'}"
+            for item in dead
+        ]
     lines.append(
         "A file placed directly in the repository root (not under src/, tests/, "
         "tools/, scripts/, or docs/) is never a real answer -- it fails validation."

@@ -687,6 +687,71 @@ async def test_a_rejected_plan_is_superseded_not_discarded(
     assert second.approved is True
 
 
+async def test_a_plan_naming_a_fabricated_symbol_is_rejected_without_a_harness_job(
+    tmp_path: Path,
+) -> None:
+    """The mechanical check stands in for the evaluator on exactly the mistake
+    it spent this session rejecting plans for: a name the model recalled
+    instead of read. Caught here, a whole harness job (and the model's own
+    step budget) is never spent reaching the same verdict."""
+    from evomesh.storage import SQLiteRepository
+
+    root = tmp_path / "project"
+    package = root / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "cycles.py").write_text(
+        '"""Cycle detection."""\n\ndef cycle_agents(dependencies):\n    return set()\n',
+        encoding="utf-8",
+    )
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(root, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    batches = [
+        [
+            (
+                "docs/evolution/plans/plan.md",
+                "Wire the dead `cycles.py` module in by calling "
+                "`cycles.scc_find_cycles()` from the runtime.",
+            )
+        ],
+    ]
+    harness = FakeHarness(batches)
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "harness": harness},
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_plan=True)
+
+    await behavior.cycle(context)  # plan -> draft
+    await behavior.cycle(context)  # draft -> evaluate (writes the plan)
+    result = await behavior.cycle(context)  # evaluate -> mechanically rejected
+
+    assert "cycles.scc_find_cycles" in result.summary
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "draft"
+    assert state["plan_revision"] == 1
+    # Only the draft stage ever reached the harness -- the evaluate stage's
+    # verdict came from the mechanical check, not a second job.
+    assert len(harness.objectives) == 1
+    generation = evolver.candidate(int(state["generation"]))
+    root_node = next(node for node in generation.plan if node.id == "root-1")
+    assert root_node.approved is False
+    assert "cycles.scc_find_cycles" in root_node.eval_reasoning
+
+
 async def test_a_leaf_repair_does_not_disturb_the_rest_of_the_queue(
     tmp_path: Path, project: Path
 ) -> None:
