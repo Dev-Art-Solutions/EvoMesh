@@ -15,7 +15,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from evomesh.codebase import known_dead, new_orphans, orphans, project_map, survey
+from evomesh.codebase import (
+    known_dead,
+    new_orphans,
+    orphans,
+    project_map,
+    stray_root_scripts,
+    survey,
+)
 
 PROJECT = Path(__file__).resolve().parent.parent
 
@@ -84,6 +91,21 @@ def test_a_module_nobody_imports_is_reported(tmp_path: Path) -> None:
     found = {item.name for item in orphans(tmp_path)}
 
     assert found == {"lonely"}
+
+
+def test_no_stray_script_sits_in_this_repository_root() -> None:
+    """A dozen of exactly this kind of file accumulated here before this check
+    existed -- ``new_orphans`` only ever surveys ``src/evomesh/*.py``, so a
+    generation that could not invent a dead module there wrote a debugging
+    script at the root instead, and nothing failed it for that."""
+    assert not stray_root_scripts(PROJECT)
+
+
+def test_a_root_level_script_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "scratch.py").write_text("print('hi')\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+
+    assert stray_root_scripts(tmp_path) == ["scratch.py"]
 
 
 def test_both_import_spellings_count_as_use(tmp_path: Path) -> None:

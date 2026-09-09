@@ -444,6 +444,28 @@ def test_uv_on_path_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert uv_executable(tmp_path) == "C:/uv/uv.exe"
 
 
+async def test_validation_fails_fast_on_a_stray_script_without_running_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dead code used to reach validation-result.json marked passed: ruff,
+    pyright, pytest and the smoke check are all happy with a well-formed file
+    nobody calls, so nothing ever failed a candidate for shipping one."""
+
+    def unreachable(_start: Path) -> str:
+        raise AssertionError("the hygiene check should fail before uv is ever looked up")
+
+    monkeypatch.setattr("evomesh.evolution.uv_executable", unreachable)
+    candidate = tmp_path / "generations" / "1"
+    candidate.mkdir(parents=True)
+    (candidate / "scratch.py").write_text("print('debugging')\n", encoding="utf-8")
+    generation = Generation(number=1, status=GenerationStatus.CANDIDATE, path=candidate)
+
+    result = await CandidateValidator().validate(generation)
+
+    assert result.passed is False
+    assert "scratch.py" in str(result.commands[0]["output"])
+
+
 async def test_validation_fails_with_a_readable_reason_when_uv_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

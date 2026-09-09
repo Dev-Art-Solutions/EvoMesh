@@ -145,6 +145,22 @@ def new_orphans(root: Path) -> list[Module]:
     return [module for module in orphans(root) if module.name not in tolerated]
 
 
+def stray_root_scripts(root: Path) -> list[str]:
+    """Loose ``.py`` files sitting directly in the repository root.
+
+    Every real entry point lives under ``src/``, ``tests/``, ``tools/``, or
+    ``scripts/``; ``new_orphans`` only ever surveys ``src/evomesh/*.py``, so a
+    generation that cannot invent a dead module there (that check is a ratchet
+    now) can still invent a debugging script at the root instead -- ruff sees
+    it, but pyright and pytest do not, and a small print-and-exit script reads
+    as clean to all three. A dozen of exactly this kind of file accumulated
+    here across earlier generations before this existed. Nothing legitimate is
+    ever authored at this level, so the rule is absolute rather than a ratchet:
+    any match here is new litter, not tolerated legacy.
+    """
+    return sorted(path.name for path in root.glob("*.py"))
+
+
 def project_map(root: Path, limit: int = 1800) -> str:
     """The package as a prompt, so a mutation targets code that actually runs.
 
@@ -176,5 +192,9 @@ def project_map(root: Path, limit: int = 1800) -> str:
             "another file like them is not:"
         )
         lines.append("- " + ", ".join(f"{name}.py" for name in dead))
+    lines.append(
+        "A file placed directly in the repository root (not under src/, tests/, "
+        "tools/, scripts/, or docs/) is never a real answer -- it fails validation."
+    )
     text = "\n".join(lines)
     return text if len(text) <= limit else text[:limit] + "\n..."
