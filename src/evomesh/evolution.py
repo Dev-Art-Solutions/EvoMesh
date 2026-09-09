@@ -102,6 +102,11 @@ PLAN_DRAFT_RULES = "\n".join(
         "Rules for this stage:",
         f"- Do not touch any source file. Write exactly one file, "
         f"`{(PLAN_DIR / PLAN_FILE).as_posix()}`, inside this candidate.",
+        "- Before naming a function, class, or attribute the plan depends on, "
+        "read that file (or grep it) and copy the name exactly as it appears. "
+        "The map above gives a module's name and line count, not its contents "
+        "-- a plan that recalls a plausible-sounding name instead of the real "
+        "one reads fine here and gets rejected at the next stage regardless.",
         "- State the goal, the approach you intend to take, and the reasoning "
         "behind that approach -- specific enough that someone splitting it "
         "into smaller work items later has something real to split.",
