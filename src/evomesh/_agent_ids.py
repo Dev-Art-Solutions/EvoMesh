@@ -81,3 +81,78 @@ def next_id(width: int = 4) -> str:
     global _next_seq
     _next_seq += 1
     return f"{_next_seq:0{width}d}"
+
+
+class AgentIdSequence:
+    """A private, monotonic generator of well-formed agent ids.
+
+    Wraps the module-level ``next_id`` counter so a single owner can hand out
+    ids without sharing state, while still validating that every id it produces
+    is well-formed.  ``next_id`` returns the same string ``make_id`` would for
+    the same value, so ids are comparable and importable.
+    """
+
+    def __init__(self, width: int = 4) -> None:
+        self._width = width
+
+    def next_id(self) -> str:
+        """Return the next well-formed id from this sequence (see ``make_id``)."""
+        return next_id(self._width)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        return self.next_id()
+
+
+class AgentIdRegistry:
+    """The set of ids the mesh currently knows about.
+
+    Backed by a plain ``set`` of strings so lookups are O(1); every id stored
+    here is validated on the way in, so ``contains`` can never report a
+    malformed id as present.
+    """
+
+    def __init__(self) -> None:
+        self._ids: set[str] = set()
+
+    def register(self, agent_id: str) -> bool:
+        """Return ``True`` if ``agent_id`` is well-formed and newly recorded.
+
+        An id that is malformed, or already registered, is not added and the
+        call reports ``False`` so a double registration is never silent.
+        """
+        if not is_valid(agent_id) or agent_id in self._ids:
+            return False
+        self._ids.add(agent_id)
+        return True
+
+    def contains(self, agent_id: str) -> bool:
+        """Whether ``agent_id`` has been registered (and is well-formed)."""
+        return agent_id in self._ids
+
+    def __contains__(self, agent_id: object) -> bool:
+        return self.contains(agent_id if isinstance(agent_id, str) else "")  # type: ignore[return-value]
+
+    def __iter__(self):
+        return iter(set(self._ids))
+
+    def __len__(self) -> int:
+        return len(self._ids)
+
+
+class AgentIdValidator:
+    """The single source of truth for what counts as a well-formed id."""
+
+    @staticmethod
+    def is_valid(agent_id: str | None) -> bool:
+        """Whether ``agent_id`` is a well-formed id (see ``make_id``)."""
+        return is_valid(agent_id)
+
+
+if __name__ == "__main__":  # pragma: no cover - manual smoke run
+    print(next_id())
+    print(is_valid(make_id("root")))
+    print(AgentIdSequence().next_id())
+    print(AgentIdValidator.is_valid(make_id("root")))

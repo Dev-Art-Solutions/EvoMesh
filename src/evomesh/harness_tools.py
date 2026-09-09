@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from evomesh._agent_ids import AgentIdValidator
 from evomesh.harness_session import HarnessSession
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.processes import run_command
@@ -136,6 +137,19 @@ def _resolve(context: ToolContext, raw: str) -> Path:
     if target != root and root not in target.parents:
         raise ToolDenied(f"DENIED: {raw} is outside the job root {root}")
     return target
+
+
+def valid_id(agent_id: str) -> bool:
+    """Whether ``agent_id`` is one the harness will answer about.
+
+    The harness only ever touches a fixed, well-formed id space. Anything that
+    breaks the ``<namespace>:<name>`` shape -- or, for namespaces, the
+    ``<namespace>/<name>`` shape -- is rejected out of hand, so a malformed id
+    from a model never reaches the file policy. The shape check itself lives in
+    :class:`evomesh._agent_ids.AgentIdValidator`; this function is the harness's
+    view of that single source of truth.
+    """
+    return AgentIdValidator.is_valid(agent_id)
 
 
 def _inside(root: Path, path: Path) -> tuple[str, ...]:

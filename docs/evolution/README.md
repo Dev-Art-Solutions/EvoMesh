@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 271](000271.md) — # Plan: Introduce a stable AgentId service ## Goal Give EvoMesh a single, shared, stable identity service for agents instead of the current ad-hoc, per-site id assignment. Today an agent's `id` is a `str(uuid4())` generated at different times in different places (`environment.py` at roster build, `harness_session.py` at session start), and the one library that actually implements agent-id concepts...
 - [Generation 261](000261.md) — The model changed `test_syntax.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 256](000256.md) — The model changed `_run_check.py, src/evomesh/harness_session.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 251](000251.md) — The model changed `check_reach.py, src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
