@@ -19,6 +19,7 @@ from typing import Any
 
 from .humanize import humanize_duration
 from .metrics import mean
+from .verdict_label import VERDICT_LABELS
 
 
 class HarnessSession:
@@ -40,6 +41,8 @@ class HarnessSession:
             self.elapsed_values.append(float(fields["elapsed"]))
             entry["humanize_duration"] = humanize_duration(fields["elapsed"])
             entry["mean_elapsed"] = humanize_duration(mean(self.elapsed_values))
+        if kind == "verdict" and "code" in fields:
+            entry["label"] = VERDICT_LABELS.get(fields["code"], fields["code"])
         self.entries.append(entry)
         if self.path is not None:
             with self.path.open("a", encoding="utf-8") as handle:
