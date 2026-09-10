@@ -88,7 +88,11 @@ class EvolutionSettings(BaseModel):
     auto_validate: bool = True
     # How many times the Evolver may fix its own candidate before a failure
     # becomes the human's problem. Zero reports the first failure as final.
-    max_repairs: int = 2
+    # Raised from 2 after a whole session's logs showed several generations
+    # validate real, useful leaves and then lose the entire candidate on
+    # repair attempt 2 of 2 for the last one -- one more attempt is cheap
+    # next to discarding work already proven.
+    max_repairs: int = 3
     # Let the verdict decide: promote what validated, discard what did not, and
     # move on without asking. A run with no verdict still stops for a human.
     auto_promote: bool = False
@@ -123,9 +127,14 @@ class HarnessSettings(BaseModel):
     # quietly grants it the ability to edit the checkout.
     allow_write: bool = False
     # Steps, not tool calls: one step is one model turn, which may ask for
-    # several tools at once.
-    max_steps: int = 24
-    max_seconds: float = 300.0
+    # several tools at once. Raised from 24/300 after a session's logs showed
+    # 204 of 276 discarded generations (74%) were a job hitting the step cap
+    # having written nothing at all -- not a bad plan, just cut off
+    # mid-thought, on a model slow enough that its worst capped run already
+    # spent 290 of the 300 available seconds getting there. max_seconds is
+    # raised in proportion so it does not just become the next cap.
+    max_steps: int = 40
+    max_seconds: float = 600.0
     # What the model may be sent in one turn. The tools cap their own output;
     # this caps the pile of it, which is the part that grows without asking and
     # is dropped by the model server from the oldest end -- where the objective

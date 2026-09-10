@@ -28,7 +28,10 @@ evolution:
   # When validation fails, how many times the Evolver may fix its own candidate
   # before handing the failure to you. It tries ruff's own autofix first and only
   # spends a model call on what survives it. 0 reports the first failure as final.
-  max_repairs: 2
+  # Raised from 2 -- a session's logs showed generations validate several real
+  # leaves and then lose the whole candidate on repair attempt 2 of 2 for the
+  # last one; one more attempt is cheap next to discarding proven work.
+  max_repairs: 3
   # Decide each candidate from its verdict instead of parking on you: promote
   # what validated, discard what did not, then start the next pass. A run with
   # no verdict -- auto_validate off, or this machine blocking the suite -- still
@@ -68,9 +71,11 @@ evolution:
 #   allow_write: false
 #   # One step is one model turn, which may ask for several tools at once. The
 #   # caps are what turn a model that keeps asking for one more file into a job
-#   # that ends and says why.
-#   max_steps: 24
-#   max_seconds: 300
+#   # that ends and says why -- 40/600 is tuned for a small local model that
+#   # needs the room; a session's logs found 74% of discarded generations were
+#   # a job hitting the old 24-step cap having written nothing at all.
+#   max_steps: 40
+#   max_seconds: 600
 #   # What the model may be sent in one turn. Over this, the oldest tool results
 #   # are dropped with a marker saying so -- because the alternative is the model
 #   # server dropping the oldest end of the prompt, where the objective lives.
