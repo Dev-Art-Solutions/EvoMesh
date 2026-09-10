@@ -41,6 +41,11 @@ HARNESS_RULES = "\n".join(
         "work, and is worth more than another new file.",
         "- Read a file before you change it. Use edit, not write, for a file that "
         "already exists, and keep each change as small as the objective allows.",
+        "- If you created a file that turns out to be wrong -- a scratch script, "
+        "a false start, a file the hygiene check names -- use delete to remove "
+        "it. Leaving it behind is not an option: a candidate cannot land code "
+        "nothing runs, so the file has to go, or be wired into something that "
+        "already does.",
         "- Everything you touch must stay valid Python: ruff, pyright and pytest "
         "are run against your work as soon as you are finished.",
         "- Stay inside this directory. It is a disposable copy, not the running mesh.",
@@ -74,16 +79,24 @@ def harness_repair_objective(
     the model reads the rest for itself.
     """
     changed = ", ".join(touched)
+    is_hygiene = failure.get("command") == "evomesh codebase hygiene check"
     parts = (
         project,
         f"The validation command `{failure.get('command')}` failed with exit "
         f"code {failure.get('exit_code')}.",
         f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
         f"Files this generation has already changed: {changed}" if changed else "",
-        "Read the files involved, then fix the failure and nothing else. If the "
-        "output says a module is unreachable, the fix is to edit a module that "
-        "already runs so that it imports and uses it -- never to rewrite the "
-        "unreachable file again.",
+        (
+            "The file(s) named above in the OUTPUT are litter this generation "
+            "created and cannot land: call delete on each of them by the exact "
+            "path shown. Only wire one in instead if it is genuinely worth "
+            "keeping and you can do that in the steps you have left."
+            if is_hygiene
+            else "Read the files involved, then fix the failure and nothing else. "
+            "If the output says a module is unreachable, the fix is to edit a "
+            "module that already runs so that it imports and uses it -- never "
+            "to rewrite the unreachable file again."
+        ),
         HARNESS_RULES,
     )
     return "\n".join(part for part in parts if part)
@@ -358,7 +371,7 @@ def _touched_paths(entries: Iterable[dict[str, Any]]) -> list[str]:
     return [
         str(entry["path"])
         for entry in entries
-        if entry.get("kind") in ("edit", "write") and entry.get("path")
+        if entry.get("kind") in ("edit", "write", "delete") and entry.get("path")
     ]
 
 
@@ -1150,7 +1163,7 @@ class EnvironmentEvolver:
         generation.objective = generation.objective or objective
         touched: list[str] = []
         for entry in entries:
-            if entry.get("kind") not in ("edit", "write"):
+            if entry.get("kind") not in ("edit", "write", "delete"):
                 continue
             path = str(entry.get("path") or "")
             if not path:

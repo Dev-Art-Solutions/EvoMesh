@@ -222,6 +222,46 @@ async def test_a_write_outside_the_root_never_reaches_the_disk(project: Path) ->
     assert not outside.exists()
 
 
+async def test_delete_removes_a_file_and_records_a_diff(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "delete", {"path": "notes.md"}
+    )
+
+    assert result.startswith("deleted")
+    assert not (project / "notes.md").exists()
+    assert "-nothing to see" in result
+
+
+async def test_delete_refuses_a_directory(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "delete", {"path": "src"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert (project / "src").is_dir()
+
+
+async def test_delete_refuses_a_missing_path(project: Path) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project), "delete", {"path": "never-existed.txt"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert "does not exist" in result
+
+
+async def test_delete_outside_the_root_never_reaches_the_disk(project: Path) -> None:
+    outside = project.parent / "escaped.py"
+    outside.write_text("x", encoding="utf-8")
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project / "src"), "delete", {"path": "../../escaped.py"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert outside.exists()
+
+
 async def test_a_read_only_job_names_the_setting_that_would_allow_writing(project: Path) -> None:
     result = await ToolRegistry(ALL_TOOLS).invoke(
         ToolContext(root=project),
@@ -1236,6 +1276,7 @@ def test_a_read_only_runner_is_not_even_given_the_write_tools(project: Path) -> 
 
     assert "edit" not in runner.registry.tools
     assert "write" not in runner.registry.tools
+    assert "delete" not in runner.registry.tools
 
 
 def test_a_runner_is_constructible_without_the_helper(project: Path) -> None:

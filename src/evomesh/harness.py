@@ -129,6 +129,7 @@ class HarnessResult:
     reads: int = 0
     edits: int = 0
     writes: int = 0
+    deletes: int = 0
     # Everything the tools produced, and the largest transcript the model was
     # actually sent. The second is what says whether this job would survive on a
     # smaller model, and it is otherwise invisible.
@@ -137,7 +138,7 @@ class HarnessResult:
 
     @property
     def changed_files(self) -> int:
-        return self.edits + self.writes
+        return self.edits + self.writes + self.deletes
 
     def summary(self) -> str:
         where = f", session: {self.session_path}" if self.session_path else ""
@@ -235,6 +236,7 @@ class HarnessRunner:
                 and step > self.max_steps // 2
                 and not self.context.tally.edits
                 and not self.context.tally.writes
+                and not self.context.tally.deletes
             ):
                 nudged = True
                 self.session.record("budget", step=step, limit=self.max_steps)
@@ -416,6 +418,7 @@ class HarnessRunner:
             reads=tally.reads,
             edits=tally.edits,
             writes=tally.writes,
+            deletes=tally.deletes,
         )
         self.session.record(
             "end",
@@ -427,6 +430,7 @@ class HarnessRunner:
             reads=result.reads,
             edits=result.edits,
             writes=result.writes,
+            deletes=result.deletes,
         )
         return result
 

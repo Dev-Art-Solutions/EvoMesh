@@ -74,6 +74,7 @@ class ToolTally:
     reads: int = 0
     edits: int = 0
     writes: int = 0
+    deletes: int = 0
 
 
 @dataclass
@@ -429,6 +430,37 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
     return f"{verb} {where} ({len(content)} bytes)\n{diff}" if diff else f"{verb} {where}"
 
 
+async def tool_delete(context: ToolContext, args: dict[str, Any]) -> str:
+    """Remove one file. There was no way to do this before.
+
+    Found live: a generation caught by the codebase hygiene check -- a stray
+    script at the repository root, or a new module nothing imports -- goes to
+    repair with instructions to "wire it in, or delete the file", and every
+    repair job that chose delete had no tool that could. `edit` replaces text
+    inside a file that already exists; `write` refuses to touch one. Neither
+    removes anything, so every hygiene-triggered repair was structurally
+    unwinnable, no matter how clearly the model understood the fix.
+
+    Deliberately narrow: one existing file, never a directory -- there is no
+    reason for a job authoring one generation to remove a whole tree, and
+    refusing it outright is cheaper than reasoning about what it might take
+    with it.
+    """
+    _writable(context)
+    target = _resolve(context, str(args.get("path", "")))
+    await _permit(context, target, "write")
+    where = "/".join(_inside(context.root, target))
+    if not target.exists():
+        raise ToolDenied(f"DENIED: {where} does not exist")
+    if target.is_dir():
+        raise ToolDenied(f"DENIED: {where} is a directory, delete only removes one file")
+    before = target.read_text(encoding="utf-8", errors="replace")
+    diff = _announce(context, target, before, "", kind="delete")
+    target.unlink()
+    context.tally.deletes += 1
+    return f"deleted {where}\n{diff}" if diff else f"deleted {where}"
+
+
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     """Run one allowed program in the job root. The only tool that can do harm.
 
@@ -736,6 +768,22 @@ WRITE_TOOLS: tuple[Tool, ...] = (
             "required": ["path", "content"],
         },
         run=tool_write,
+    ),
+    Tool(
+        name="delete",
+        description=(
+            "Remove one file. Refuses a directory or a path that does not "
+            "exist. The only way to undo a write or fix a hygiene check that "
+            "flagged something you created."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path relative to the job root."},
+            },
+            "required": ["path"],
+        },
+        run=tool_delete,
     ),
 )
 

@@ -1295,6 +1295,63 @@ async def test_a_repair_objective_carries_the_real_failure(tmp_path: Path) -> No
     assert "already changed: src/app.py" in objective
 
 
+async def test_a_hygiene_repair_objective_points_at_delete(tmp_path: Path) -> None:
+    """The hygiene check has always said 'wire it in, or delete the file' --
+    this is the repair prompt actually saying which one and naming the tool,
+    now that there is a delete tool for the model to reach for."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(tmp_path / "source", tmp_path / "generations"), repository
+    )
+
+    objective = evolver.repair_objective(
+        {
+            "command": "evomesh codebase hygiene check",
+            "exit_code": 1,
+            "output": "stray file(s) in the repository root: check.py",
+        },
+        ["check.py"],
+    )
+
+    assert "call delete on each of them" in objective
+    assert "check.py" in objective
+
+
+async def test_a_delete_entry_is_recorded_as_a_real_change(
+    tmp_path: Path, project: Path
+) -> None:
+    """record_harness_changes only ever recognised edit/write -- a repair job
+    that deleted the stray file the hygiene check flagged would delete it on
+    disk (git would see the removal) but the generation's own history, and
+    `_touched_paths`, would show nothing happened."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository
+    )
+    generation = await evolver.create_candidate("clean up a stray file")
+    (generation.path / "check.py").write_text("print(1)\n", encoding="utf-8")
+    (generation.path / "check.py").unlink()
+
+    touched = await evolver.record_harness_changes(
+        generation,
+        [{"kind": "delete", "path": "check.py", "diff": "-print(1)"}],
+        "clean up a stray file",
+        "deleted the scratch script the hygiene check flagged",
+        "repaired",
+    )
+
+    assert touched == ["check.py"]
+    assert len(generation.changes) == 1
+    assert generation.changes[0].path == "check.py"
+    assert generation.changes[0].kind == "repair"
+
+
 # -- self-repair ---------------------------------------------------------
 
 RUFF_FIXABLE = (
