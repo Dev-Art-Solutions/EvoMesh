@@ -4,6 +4,8 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 356](000356.md) — -
+- [Generation 355](000355.md) — # Plan ## Title Wire the dead `cycles` module (cycle detection) into the runtime so the agent dependency graph actually runs. ## Why this and not the others The audit named four dead modules. `cycles.py` is the cheapest real win: it is two tiny pure functions (`cycle_agents`, `explain_not_running`) that take a `Mapping[str, Iterable[str]]` and return a `set[str]` or a `str`. Wiring them in needs n...
 - [Generation 271](000271.md) — # Plan: Introduce a stable AgentId service ## Goal Give EvoMesh a single, shared, stable identity service for agents instead of the current ad-hoc, per-site id assignment. Today an agent's `id` is a `str(uuid4())` generated at different times in different places (`environment.py` at roster build, `harness_session.py` at session start), and the one library that actually implements agent-id concepts...
 - [Generation 261](000261.md) — The model changed `test_syntax.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 256](000256.md) — The model changed `_run_check.py, src/evomesh/harness_session.py` but gave no rationale for it -- see the diff below for what actually moved.
