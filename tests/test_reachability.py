@@ -23,7 +23,7 @@ from evomesh.codebase import (
     new_orphans,
     orphans,
     project_map,
-    stray_root_scripts,
+    stray_root_files,
     survey,
 )
 
@@ -115,19 +115,36 @@ def test_a_module_nobody_imports_is_reported(tmp_path: Path) -> None:
     assert found == {"lonely"}
 
 
-def test_no_stray_script_sits_in_this_repository_root() -> None:
+def test_no_stray_file_sits_in_this_repository_root() -> None:
     """A dozen of exactly this kind of file accumulated here before this check
     existed -- ``new_orphans`` only ever surveys ``src/evomesh/*.py``, so a
     generation that could not invent a dead module there wrote a debugging
     script at the root instead, and nothing failed it for that."""
-    assert not stray_root_scripts(PROJECT)
+    assert not stray_root_files(PROJECT)
 
 
 def test_a_root_level_script_is_reported(tmp_path: Path) -> None:
     (tmp_path / "scratch.py").write_text("print('hi')\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
 
-    assert stray_root_scripts(tmp_path) == ["scratch.py"]
+    assert stray_root_files(tmp_path) == ["scratch.py"]
+
+
+def test_a_non_python_stray_file_is_also_reported(tmp_path: Path) -> None:
+    """Found live: a single evaluate job wrote eleven scratch files at the
+    candidate root in one turn, most of them ``.txt`` -- the ``*.py``-only
+    check missed every one that wasn't a script."""
+    (tmp_path / "inspection_out.txt").write_text("scratch\n", encoding="utf-8")
+    (tmp_path / "tiny.txt").write_text("x\n", encoding="utf-8")
+
+    assert stray_root_files(tmp_path) == ["inspection_out.txt", "tiny.txt"]
+
+
+def test_known_root_files_are_never_flagged(tmp_path: Path) -> None:
+    for name in ("README.md", "pyproject.toml", ".gitignore", "uv.lock"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    assert stray_root_files(tmp_path) == []
 
 
 def test_both_import_spellings_count_as_use(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from evomesh.codebase import fabricated_references, new_orphans, project_map, stray_root_scripts
+from evomesh.codebase import fabricated_references, new_orphans, project_map, stray_root_files
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
 from evomesh.processes import run_command
@@ -631,10 +631,10 @@ class CandidateValidator:
     def _hygiene_failure(path: Path) -> dict[str, object] | None:
         """Dead code the model shipped, caught before any subprocess runs.
 
-        ``new_orphans``/``stray_root_scripts`` used to be advisory only: their
+        ``new_orphans``/``stray_root_files`` used to be advisory only: their
         output fed the prompt but nothing ever failed a candidate over them, so
         a model that could not find real work to do had no reason not to invent
-        a module nobody calls or a scratch script at the repository root -- both
+        a module nobody calls or a scratch file at the repository root -- both
         pass ruff, pyright and pytest without complaint. This runs first,
         against the tree on disk rather than a subprocess, so that kind of
         no-op generation fails fast instead of spending a full validation run
@@ -646,9 +646,9 @@ class CandidateValidator:
                 "new dead module(s) nothing imports: "
                 + ", ".join(f"{module.name}.py" for module in orphans)
             )
-        if stray := stray_root_scripts(path):
+        if stray := stray_root_files(path):
             problems.append(
-                "stray script(s) in the repository root: " + ", ".join(stray)
+                "stray file(s) in the repository root: " + ", ".join(stray)
             )
         if not problems:
             return None

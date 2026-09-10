@@ -204,20 +204,50 @@ def new_orphans(root: Path) -> list[Module]:
     return [module for module in orphans(root) if module.name not in tolerated]
 
 
-def stray_root_scripts(root: Path) -> list[str]:
-    """Loose ``.py`` files sitting directly in the repository root.
+# The literal set of files this project actually keeps at its root. Anything
+# else sitting there is scratch work that escaped a subdirectory -- checked in
+# once this project started existing, not something a generation ever adds to.
+KNOWN_ROOT_FILES = frozenset(
+    (
+        ".editorconfig",
+        ".gitignore",
+        ".python-version",
+        "CHANGELOG.md",
+        "CLAUDE.md",
+        "LICENSE",
+        "NuGet.config",
+        "README.md",
+        "evomesh.yaml",
+        "evomesh.yaml.example",
+        "pyproject.toml",
+        "start-evomesh-console.bat",
+        "start-evomesh.bat",
+        "uv.lock",
+    )
+)
+
+
+def stray_root_files(root: Path) -> list[str]:
+    """Any file sitting directly in the repository root that isn't supposed to.
 
     Every real entry point lives under ``src/``, ``tests/``, ``tools/``, or
     ``scripts/``; ``new_orphans`` only ever surveys ``src/evomesh/*.py``, so a
     generation that cannot invent a dead module there (that check is a ratchet
     now) can still invent a debugging script at the root instead -- ruff sees
     it, but pyright and pytest do not, and a small print-and-exit script reads
-    as clean to all three. A dozen of exactly this kind of file accumulated
-    here across earlier generations before this existed. Nothing legitimate is
-    ever authored at this level, so the rule is absolute rather than a ratchet:
-    any match here is new litter, not tolerated legacy.
+    as clean to all three. Restricting this to ``*.py`` closed that gap but
+    opened the next one: a single evaluate job was found live writing eleven
+    scratch files at once, most of them ``.txt``, none of them caught. Checking
+    every file rather than one extension is what actually matches the rule
+    already printed in ``project_map`` -- nothing legitimate is ever authored at
+    this level -- so this is absolute rather than a ratchet: any match here is
+    new litter, not tolerated legacy.
     """
-    return sorted(path.name for path in root.glob("*.py"))
+    return sorted(
+        path.name
+        for path in root.iterdir()
+        if path.is_file() and path.name not in KNOWN_ROOT_FILES
+    )
 
 
 # Matches a whole backtick span shaped exactly like ``module.symbol`` or
