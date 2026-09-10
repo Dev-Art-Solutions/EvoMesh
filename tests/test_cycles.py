@@ -1375,6 +1375,16 @@ async def test_a_fixable_lint_failure_is_repaired_without_the_model(
     await behavior.cycle(context)
     await behavior.cycle(context)
     failed = await behavior.cycle(context)
+    if (await evolver.pipeline_state())["stage"] == "validate":
+        # ScriptedValidator's own record_mutation write crosses a real worker
+        # thread (aiosqlite), not just another coroutine turn, so under CI
+        # contention it can occasionally miss the in-cycle INSTANT_VALIDATION
+        # window and this cycle reports "started" instead of the verdict.
+        # Found live on a Linux runner; passed every time locally. One more
+        # cycle picks up the already-finished result rather than widening a
+        # constant two other tests are already tuned against (see its own
+        # comment in behaviors.py).
+        failed = await behavior.cycle(context)
     assert "repairing it (attempt 1 of 2)" in failed.summary
     assert (await evolver.pipeline_state())["stage"] == "repair"
 
