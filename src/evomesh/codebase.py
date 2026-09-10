@@ -223,6 +223,18 @@ KNOWN_ROOT_FILES = frozenset(
         "start-evomesh-console.bat",
         "start-evomesh.bat",
         "uv.lock",
+        # This check also runs against a candidate generation's root, not
+        # just the project's -- and a candidate is never quite the same tree.
+        # `git worktree add` leaves `.git` as a plain *file* there (a pointer
+        # to the real gitdir, not a directory, so `path.is_file()` catches
+        # it), `CandidateWorkspace.create` writes `MUTATION_OBJECTIVE.md`, and
+        # `CandidateValidator` writes `validation-result.json` after every
+        # run. None of the three is model output; flagging them turned every
+        # single validation from 74ea2be until this fix into an unwinnable
+        # hygiene failure regardless of what the model actually did.
+        ".git",
+        "MUTATION_OBJECTIVE.md",
+        "validation-result.json",
     )
 )
 

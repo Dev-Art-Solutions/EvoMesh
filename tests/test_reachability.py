@@ -147,6 +147,22 @@ def test_known_root_files_are_never_flagged(tmp_path: Path) -> None:
     assert stray_root_files(tmp_path) == []
 
 
+def test_a_candidates_own_scaffolding_is_never_flagged(tmp_path: Path) -> None:
+    """Found live: every validation from the day this check stopped being
+    *.py-only failed hygiene, because a candidate's root is never quite the
+    project's -- `git worktree add` leaves `.git` as a plain file here (not a
+    directory), and the pipeline itself writes MUTATION_OBJECTIVE.md before
+    authoring anything and validation-result.json after every validation run.
+    None of the three is something a model wrote."""
+    (tmp_path / ".git").write_text(
+        "gitdir: ../../.git/worktrees/000340-candidate\n", encoding="utf-8"
+    )
+    (tmp_path / "MUTATION_OBJECTIVE.md").write_text("objective\n", encoding="utf-8")
+    (tmp_path / "validation-result.json").write_text("{}", encoding="utf-8")
+
+    assert stray_root_files(tmp_path) == []
+
+
 def test_both_import_spellings_count_as_use(tmp_path: Path) -> None:
     """``from evomesh import x`` keeps a module alive just as ``evomesh.x`` does.
 
