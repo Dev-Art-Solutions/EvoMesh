@@ -1956,6 +1956,41 @@ async def test_a_generation_is_never_applied_over_uncommitted_work(tmp_path: Pat
     assert (await evolver.pipeline_state())["stage"] == "await-human"
 
 
+async def test_auto_promote_discards_a_candidate_that_no_longer_applies(
+    tmp_path: Path,
+) -> None:
+    """A cherry-pick conflict is a fact about the candidate (the tree moved
+    on since it was drafted), not about a human's uncommitted work -- unlike
+    test_a_generation_is_never_applied_over_uncommitted_work, auto_promote
+    should decide this one on its own rather than park it."""
+    project = await git_project(tmp_path / "project")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(3):  # plan, propose, validate
+        await behavior.cycle(context)
+    # The tree moved on since the candidate was drafted -- a committed change
+    # to the exact line the candidate also touches, so cherry-pick conflicts
+    # on content rather than merely finding the tree dirty.
+    checkout = GitRepository(project)
+    (project / "src" / "app.py").write_text("ACTIVE = None\n", encoding="utf-8")
+    await checkout.run("commit", "-am", "an unrelated change to the same line")
+
+    decided = await behavior.cycle(context)
+
+    assert "could not be applied" in decided.summary
+    assert "discarded" in decided.summary
+    assert decided.phase is AgentPhase.ACTING
+    assert (await evolver.pipeline_state())["stage"] == "plan"
+    assert "2" not in evolver.workspace.supervisor.metadata().get("candidates", {})
+    # Untouched: the conflicting cherry-pick was aborted, not left half-applied.
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "ACTIVE = None\n"
+    assert evolver.workspace.supervisor.metadata()["active"] == 1
+
+
 async def test_parking_on_a_dirty_tree_retries_once_it_is_clean(tmp_path: Path) -> None:
     project = await git_project(tmp_path / "project")
     validator = ScriptedValidator([passing()])

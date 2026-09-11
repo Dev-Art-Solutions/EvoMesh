@@ -1081,6 +1081,33 @@ class EvolverBehavior(BDIBehavior):
                 number, promote=passed, objective=str(state.get("objective", ""))
             )
         except GitError as exc:
+            # Uncommitted human work in the checkout is never this pipeline's
+            # call to make, auto_promote or not: the risk there is clobbering
+            # work a human has not committed, which has nothing to do with
+            # whether this candidate is any good. Every other GitError here --
+            # a cherry-pick conflict because the tree moved on, or a candidate
+            # that turned out to change nothing to apply -- is a fact about
+            # the CANDIDATE, the exact kind of verdict auto_promote already
+            # decides on its own.
+            blocked_by_human_work = "uncommitted changes" in str(exc)
+            if self.auto_promote and not blocked_by_human_work:
+                # The candidate is fine, the place it was going is not, and it
+                # is a copy on disk -- discarding it loses nothing a fresh
+                # candidate against the tree as it now stands would not redo
+                # anyway, so this parks for nobody rather than sitting idle
+                # for a human to make exactly this call by hand.
+                evolver.workspace.supervisor.discard(number)
+                await evolver.reset_pipeline()
+                return StepResult(
+                    summary=(
+                        f"generation {number} validated but could not be applied to "
+                        f"the working tree ({exc}); discarded rather than parked, "
+                        "since auto_promote means this pipeline decides for itself"
+                    ),
+                    fact=f"generation {number} discarded: could not be applied to the tree",
+                    phase=AgentPhase.ACTING,
+                    achieved=True,
+                )
             # The tree would not take it -- a human's uncommitted work is in the
             # way, or the change does not apply. Park rather than discard: the
             # candidate is fine, the place it was going is not.
