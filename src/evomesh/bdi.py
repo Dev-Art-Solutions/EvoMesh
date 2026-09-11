@@ -24,6 +24,7 @@ steps cost no model call at all.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -82,6 +83,12 @@ HARNESS_VERBS = (
     "locate",
     "diagnose",
 )
+
+# How long a reactive chat question may wait on a harness job before falling
+# back to answering from memory -- comfortably under the console's own 300s
+# reply wait, so a human sees some answer rather than only ever a timeout.
+HARNESS_RESPOND_TIMEOUT_SECONDS = 180.0
+HARNESS_RESPOND_POLL_SECONDS = 0.5
 
 RECONSIDER_NO_INTENTION = "nothing committed yet"
 RECONSIDER_PLAN_DONE = "the plan finished"
@@ -464,6 +471,8 @@ class BDIBehavior:
         return ""
 
     async def respond(self, context: CycleContext, message: Message) -> str:
+        if answer := await self._respond_through_harness(context, message):
+            return answer
         instruction = (
             "Answer the last INBOX message directly, in at most four sentences. "
             "Use BELIEFS, MEMORY and YOUR WORKING NOTES as established fact. "
@@ -474,6 +483,51 @@ class BDIBehavior:
         if detail := await self.status(context):
             context.work = f"{context.work}\n{detail}".strip()
         return await context.think(instruction)
+
+    async def _respond_through_harness(
+        self, context: CycleContext, message: Message
+    ) -> str | None:
+        """Let a direct question actually call a tool, not just answer from
+        memory -- the same capability gap through_harness() closes for a plan
+        step, closed here for a human's own question.
+
+        Only for an agent already granted harness access: that is the
+        existing, deliberate capability grant (see AgentDefinition.harness_root),
+        not a new one this method invents. None return here means "answer from
+        memory instead", the previous behavior -- an agent with no harness
+        grant, or one already mid-job on something else, is unaffected.
+        """
+        root = context.definition.harness_root
+        harness = context.service("harness")
+        if not root or harness is None or not isinstance(harness, HarnessGateway):
+            return None
+        if harness.open_job_for(context.definition.id) is not None:
+            # Already has a job in flight for something else -- answering from
+            # memory this once beats hijacking that job or queuing a second one
+            # (the queue allows only one open job per agent anyway).
+            return None
+        job = harness.submit(
+            f"Answer this question directly: {message.content.strip()}\n\n"
+            "Use a tool only if you actually need to -- if you already know "
+            "the answer, or the question needs no live data, just answer.",
+            agent_id=context.definition.id,
+            root=Path(root),
+            label=message.content.strip()[:80],
+        )
+        elapsed = 0.0
+        while job.open and elapsed < HARNESS_RESPOND_TIMEOUT_SECONDS:
+            await asyncio.sleep(HARNESS_RESPOND_POLL_SECONDS)
+            elapsed += HARNESS_RESPOND_POLL_SECONDS
+        if job.open:
+            return (
+                f"Still working on that (harness job {job.number}) -- ask again "
+                "in a moment, or check /harness status."
+            )
+        if job.result is None:
+            return f"The harness job did not finish: {job.detail or 'unknown error'}"
+        if job.result.outcome == "answered":
+            return job.result.answer.strip() or "The harness job found nothing to report."
+        return f"[{job.result.outcome}] {job.result.detail}"
 
 
 class ReflectiveBehavior(BDIBehavior):

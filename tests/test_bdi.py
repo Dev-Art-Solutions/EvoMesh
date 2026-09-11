@@ -24,12 +24,14 @@ from evomesh.contracts import (
     GoalStatus,
     Intention,
     IntentionStatus,
+    Message,
     MindState,
     PlanStep,
     StepStatus,
     now_utc,
 )
 from evomesh.environment import Environment
+from evomesh.harness_queue import HarnessQueue
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.models import MockProvider
 
@@ -706,3 +708,87 @@ async def test_a_waiting_evolver_keeps_its_commitment_instead_of_re_adopting(
     assert intention.cursor == 0, "a held step is not consumed"
     # With validation off, the plan never advertises a step that will not run.
     assert "validate the candidate" not in [step.description for step in intention.steps]
+
+
+async def test_a_reactive_question_calls_a_tool_through_the_harness_when_granted(
+    tmp_path: Path,
+) -> None:
+    """A direct chat question must not just answer from memory when the agent
+    has real tool access -- the same gap through_harness() closes for a plan
+    step, closed here for a human's own question."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="Trader", purpose="Trade", harness_root=str(tmp_path)
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="Balance is 10247.53, equity 10251.88.")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    answer = await BDIBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id=definition.id, content="What is my balance?"),
+    )
+
+    assert answer == "Balance is 10247.53, equity 10251.88."
+    assert harness.objectives and "What is my balance?" in harness.objectives[0]
+
+
+async def test_a_reactive_question_answers_from_memory_without_harness_access(
+    tmp_path: Path,
+) -> None:
+    """No harness_root granted -- unchanged behavior, answer from the model."""
+    definition = AgentDefinition(name="Architect", purpose="Draft agents")
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["From memory: no tool access here."]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={},
+    )
+
+    answer = await BDIBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id=definition.id, content="What is my balance?"),
+    )
+
+    assert answer == "From memory: no tool access here."
+
+
+async def test_a_reactive_question_answers_from_memory_when_a_job_is_already_open(
+    tmp_path: Path,
+) -> None:
+    """An agent already mid-job on something else must not have that job
+    hijacked (or a second one queued) by an unrelated question."""
+    from evomesh.harness_queue import HarnessGateway
+
+    definition = AgentDefinition(
+        name="Trader", purpose="Trade", harness_root=str(tmp_path)
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = HarnessGateway(HarnessQueue(), {})
+    harness.submit("investigate something else entirely", agent_id=definition.id, root=tmp_path)
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["Answering from memory instead."]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    answer = await BDIBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id=definition.id, content="What is my balance?"),
+    )
+
+    assert answer == "Answering from memory instead."
