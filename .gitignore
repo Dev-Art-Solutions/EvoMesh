@@ -20,6 +20,10 @@ desktop/**/.vs/
 .runtime/
 dist/
 
+# A watcher's own remembered state (equity highs, already-reported links) --
+# runtime state like data/ or workspace/, not source.
+**/.watch_state.json
+
 # Per-candidate scratch: the objective lives in the commit message, and a
 # validation record belongs to the generation that produced it.
 MUTATION_OBJECTIVE.md

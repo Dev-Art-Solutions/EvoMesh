@@ -8,14 +8,11 @@ purpose: >
   keyword (e.g. "gold"/XAUUSD) appears in a new one.
 autonomy: cyclic
 cycle_seconds: 120
-goals:
-  - text: Fetch the latest financial headlines with news_fetch and check them against the watchlist in config.json; report only a genuine new match
-    priority: 4
-    recurring: true
-    interval_seconds: 180
-    notify: true
 skills: [news-triage]
 tools: [news_fetch]
+watch:
+  command: python "{template_dir}/scripts/watch_news.py"
+  interval_seconds: 300
 ---
 
 A human reading this: edit `config.json` beside this AGENT.md to set
@@ -34,9 +31,16 @@ for, e.g. `["gold", "XAUUSD"]`):
 ```
 
 Ask directly for "the 10 latest news" any time -- that answers immediately
-and does not wait for the watchlist goal. The watchlist goal itself only
-speaks up (and only through `goal notify`, wired to this agent's own
-Telegram bot if it has one) when a headline actually matches a keyword.
+through the agent's own conversation, not the watcher.
+
+The watchlist itself is a deterministic watcher (`scripts/watch_news.py`,
+polled every `interval_seconds`, 300s by default), not a BDI goal -- it never
+touches a model and never reports "still checking" progress. It only prints
+a line (which becomes an announcement, to this agent's own Telegram bot if
+it has one) the first time a headline matching a configured keyword is seen;
+already-seen matches are remembered in `scripts/.watch_state.json` beside
+this file and never repeated. If `keywords` is empty, the watcher stays
+completely silent -- there is nothing to match against.
 
 Give this agent its own Telegram bot with `/telegram set news-watcher
 <token>` (or `--telegram <token>` when spawning it) to talk to it directly,
