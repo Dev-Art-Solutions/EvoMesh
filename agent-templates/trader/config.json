@@ -1,0 +1,6 @@
+{
+  "bridge_url": "http://127.0.0.1:8200",
+  "equity_floor": null,
+  "equity_drop_percent": 5.0,
+  "max_position_loss": null
+}

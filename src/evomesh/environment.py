@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -9,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.behaviors import default_behaviors
@@ -34,6 +36,7 @@ from evomesh.models import ModelProvider, OllamaProvider, OpenAICompatibleProvid
 from evomesh.permissions import FilesystemPolicy
 from evomesh.skills import SkillRegistry
 from evomesh.storage import SQLiteRepository
+from evomesh.watchers import AgentWatcher
 from evomesh.tools import ToolRegistry as CustomToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,7 @@ class Environment:
         self.permissions = FilesystemPolicy(self.repository)
         self.skills = SkillRegistry(self.project_root)
         self.tools = CustomToolRegistry(self.project_root)
+        self.agent_templates = AgentTemplateRegistry(self.project_root)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
@@ -98,6 +102,17 @@ class Environment:
         # only what it was asked. Telegram registers one; the console does not,
         # because it is already printing the cycle summaries.
         self.notifiers: list[Callable[[str], Awaitable[None]]] = []
+        # Same idea, scoped to one agent's own private Telegram bot -- a goal
+        # finishing for agent X must not spill into agent Y's private chat,
+        # so this is keyed by agent id rather than shared like notifiers above.
+        self.agent_notifiers: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
+        # One TelegramChannel task per agent that declares its own bot, keyed
+        # by agent id. Held here, not just in self.channels, because starting
+        # or stopping an agent has to cancel exactly this task.
+        self._agent_telegram_tasks: dict[str, asyncio.Task[None]] = {}
+        # One deterministic watcher per agent that declares watch_command --
+        # see watchers.py for why this is never the agent's own LLM cycle.
+        self._agent_watchers: dict[str, AgentWatcher] = {}
         # The same announcements, kept for a channel with no push of its own:
         # the control port is request-response only (one client's /restart
         # must not leak into another's next reply), so the desktop Control
@@ -149,6 +164,66 @@ class Environment:
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
                 logger.exception("A notification channel failed")
 
+    async def announce_agent(self, agent_id: str, text: str) -> None:
+        """Like announce(), plus that one agent's own private bot, if any."""
+        await self.announce(text)
+        for notify in list(self.agent_notifiers.get(agent_id, [])):
+            try:
+                await notify(text)
+            except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
+                logger.exception("A per-agent notification channel failed")
+
+    async def start_agent_telegram(self, definition: AgentDefinition) -> None:
+        """Start a private Telegram bot for one agent, if it has one configured.
+
+        Deferred import: telegram.py imports Environment to talk to the mesh,
+        so importing it back at module load time here would be circular.
+        """
+        settings = definition.telegram
+        if settings is None or not settings.enabled or not settings.token.strip():
+            return
+        if definition.id in self._agent_telegram_tasks:
+            return
+        from evomesh.telegram import TelegramChannel
+
+        channel = TelegramChannel(
+            self, settings, locked_agent_id=definition.id, locked_agent_name=definition.name
+        )
+        self.channels[f"telegram:{definition.id}"] = channel
+        self._agent_telegram_tasks[definition.id] = asyncio.create_task(
+            channel.run(), name=f"telegram:{definition.slug}"
+        )
+
+    async def stop_agent_telegram(self, agent_id: str) -> None:
+        channel = self.channels.pop(f"telegram:{agent_id}", None)
+        if channel is not None:
+            channel.stop()
+        task = self._agent_telegram_tasks.pop(agent_id, None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def start_agent_watcher(self, definition: AgentDefinition) -> None:
+        if not definition.watch_command.strip() or definition.id in self._agent_watchers:
+            return
+        watcher = AgentWatcher(
+            definition.watch_command,
+            interval_seconds=definition.watch_interval_seconds or 5.0,
+            notify=functools.partial(self.announce_agent, definition.id),
+            cwd=self.default_harness_root(definition),
+        )
+        watcher.start()
+        self._agent_watchers[definition.id] = watcher
+
+    async def stop_agent_watcher(self, agent_id: str) -> None:
+        watcher = self._agent_watchers.pop(agent_id, None)
+        if watcher is not None:
+            await watcher.stop()
+
     def _build_providers(self) -> dict[str, ModelProvider]:
         result: dict[str, ModelProvider] = {}
         for name, config in self.settings.models.providers.items():
@@ -172,6 +247,7 @@ class Environment:
         await self.repository.initialize()
         await self.skills.load()
         await self.tools.load()
+        await self.agent_templates.load()
         stored = await self.repository.load_agents()
         default_name = self.settings.models.default_provider
         provider_config = self.settings.models.providers.get(default_name)
@@ -293,6 +369,10 @@ class Environment:
         for runtime in list(self.runtimes.values()):
             await runtime.stop(persist_status=False)
         self.runtimes.clear()
+        for agent_id in list(self._agent_telegram_tasks):
+            await self.stop_agent_telegram(agent_id)
+        for agent_id in list(self._agent_watchers):
+            await self.stop_agent_watcher(agent_id)
         self.health_state = HealthState.STOPPED
 
     # -- agents ---------------------------------------------------------
@@ -374,17 +454,21 @@ class Environment:
             start_delay=start_delay,
             services=self._services,
             world_context=self._world_snapshot,
-            announce=self.announce,
+            announce=functools.partial(self.announce_agent, definition.id),
         )
         await runtime.start()
         self.runtimes[agent_id] = runtime
         self._offline.pop(agent_id, None)
+        await self.start_agent_telegram(definition)
+        self.start_agent_watcher(definition)
 
     async def stop_agent(self, agent_id: str, *, persist_status: bool = True) -> None:
         runtime = self.runtimes.pop(agent_id, None)
         if runtime:
             await runtime.stop(persist_status=persist_status)
             self._mark_offline(runtime.definition, "stopped by request")
+        await self.stop_agent_telegram(agent_id)
+        await self.stop_agent_watcher(agent_id)
 
     async def cycle_agent(self, agent_id_or_name: str) -> CycleOutcome:
         definition = self.registry.get(agent_id_or_name)

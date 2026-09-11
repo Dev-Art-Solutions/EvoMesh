@@ -10,9 +10,10 @@ import httpx
 
 from evomesh import cron
 from evomesh.agent_label import agent_label
+from evomesh.agent_templates import InvalidAgentTemplateError, MissingAgentTemplateError
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
-from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message
+from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message, TelegramSettings
 from evomesh.environment import Environment
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
@@ -31,6 +32,11 @@ HELP = """Commands:
   /tools [query]                  Search installed custom tools by name or description
   /tool show <name>               Preview a custom tool's TOOL.md
   /tool install <path-or-url-or-directory>  A named, described tool over one allow-listed command
+  /agent-templates [query]         Search installed agent templates
+  /agent-template show <name>      Preview a template's AGENT.md
+  /agent-template install <directory>  A bundle: AGENT.md, plus skills/*, tools/*
+  /agent-template spawn <template> [name] [--provider p] [--model m] [--telegram token]
+                                    Instantiate a template into a live, running agent
   /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
   /model <agent> <model> [prov] Change one agent's provider/model
@@ -60,9 +66,11 @@ HELP = """Commands:
   /harness grant <agent> [path] Let it use the harness; no path defaults to
                                 its own playground (the project root for system agents)
   /harness revoke <agent>       Take it away
-  /telegram status              Whether the bot is connected, and who may use it
-  /telegram test                Ask Telegram whether the configured token works
-  /telegram allow|revoke <id>   Manage which chats may talk to the mesh
+  /telegram status [agent]       Whether the bot is connected, and who may use it
+  /telegram test [agent]         Ask Telegram whether the configured token works
+  /telegram allow|revoke <id> [agent]  Manage which chats may talk to it
+  /telegram set <agent> <token>  Give one agent its own private Telegram bot
+  /telegram unset <agent>        Take that agent's private bot away
   /restart                      Restart the mesh into the code now in the tree
   /exit                         Stop EvoMesh
 """
@@ -79,10 +87,20 @@ def _directory(raw: str) -> Path | None:
 
 
 class ConsoleChannel:
-    def __init__(self, environment: Environment, output: Output | None = None) -> None:
+    def __init__(
+        self,
+        environment: Environment,
+        output: Output | None = None,
+        *,
+        locked_agent_id: str | None = None,
+    ) -> None:
         self.environment = environment
         self.output = output or Output()
-        self.selected_agent = "architect"
+        # A private per-agent bot passes its own agent id here: the
+        # conversation can never be pointed at a different agent, and there is
+        # no Architect draft flow -- the agent already exists.
+        self.locked_agent_id = locked_agent_id
+        self.selected_agent = locked_agent_id or "architect"
         self.architect = ArchitectInterview()
         self.running = True
 
@@ -131,7 +149,7 @@ class ConsoleChannel:
     # -- conversation ---------------------------------------------------
 
     async def _talk(self, text: str) -> str:
-        if self.selected_agent == "architect":
+        if self.selected_agent == "architect" and not self.locked_agent_id:
             if not self.architect.answers:
                 provider, model = self._default_model()
                 self.architect.available_skills = {
@@ -282,12 +300,83 @@ class ConsoleChannel:
             )
         return usage
 
+    def _command_agent_templates(self, parts: list[str]) -> str:
+        query = " ".join(parts[1:])
+        found = self.environment.agent_templates.discover(query)
+        if not found:
+            return "No agent templates match." if query else "No agent templates installed."
+        return "\n".join(f"{item.name}: {item.description}" for item in found)
+
+    async def _command_agent_template(self, parts: list[str]) -> str:
+        usage = (
+            "Usage: /agent-template show <name>  |  /agent-template install <directory>  |  "
+            "/agent-template spawn <template> [name] [--provider p] [--model m] "
+            "[--telegram token]"
+        )
+        if len(parts) < 3:
+            return usage
+        action, target = parts[1].lower(), parts[2]
+        if action == "show":
+            try:
+                template = self.environment.agent_templates.get(target)
+            except MissingAgentTemplateError:
+                return f"There is no agent template called {target}."
+            return await asyncio.to_thread(
+                (self.environment.agent_templates.root / template.path).read_text, encoding="utf-8"
+            )
+        if action == "install":
+            source = Path(target)
+            if not await asyncio.to_thread(source.is_dir):
+                return f"{target} is not a directory."
+            try:
+                template = await self.environment.agent_templates.install_directory(
+                    source, created_by="console"
+                )
+            except (InvalidAgentTemplateError, OSError, UnicodeDecodeError) as exc:
+                return f"Could not install the agent template: {describe(exc)}"
+            return f"Installed template '{template.name}': {template.description} ({template.path})"
+        if action == "spawn":
+            options = {"provider": None, "model": None, "telegram": ""}
+            positional: list[str] = []
+            index = 3
+            while index < len(parts):
+                token = parts[index]
+                if token in {"--provider", "--model", "--telegram"} and index + 1 < len(parts):
+                    options[token[2:]] = parts[index + 1]
+                    index += 2
+                else:
+                    positional.append(token)
+                    index += 1
+            agent_name = positional[0] if positional else None
+            try:
+                definition = await self.environment.agent_templates.instantiate(
+                    self.environment,
+                    target,
+                    agent_name=agent_name,
+                    provider=options["provider"],
+                    model=options["model"],
+                    telegram_token=options["telegram"] or "",
+                )
+            except MissingAgentTemplateError:
+                return f"There is no agent template called {target}."
+            started = definition.id in self.environment.runtimes
+            bot = " with its own Telegram bot" if definition.telegram else ""
+            return (
+                f"Agent '{definition.name}' spawned from template '{target}'{bot}, "
+                f"using {definition.provider}:{definition.model_name}. "
+                f"{'Its cycle loop is running.' if started else 'It is not running yet.'}"
+            )
+        return usage
+
     async def _command_models(self, parts: list[str]) -> str:
         provider = parts[1] if len(parts) > 1 else self._default_model()[0]
         models = await self.environment.available_models(provider)
         return f"Models on {provider}:\n" + "\n".join(models)
 
     def _command_chat(self, parts: list[str]) -> str:
+        if self.locked_agent_id:
+            agent = self.environment.registry.get(self.locked_agent_id)
+            return f"This bot only talks to {agent.name}."
         if len(parts) != 2:
             return "Usage: /chat <agent>"
         agent = self.environment.registry.get(parts[1])
@@ -708,22 +797,63 @@ class ConsoleChannel:
         return "Usage: /evolution status|start <objective>|promote [n]|discard [n]|rollback"
 
     async def _command_telegram(self, parts: list[str]) -> str:
-        """Report and manage the Telegram bot without opening a config file.
+        """Report and manage Telegram bots without opening a config file.
 
         The Control Center drives this, because the two questions a human
         actually has -- is my token any good, and who can talk to the mesh --
         cannot be answered by the settings file. A chat adopted at runtime is
         stored in the database, and a token is only good if Telegram says so.
+
+        With no agent named, every subcommand acts on the mesh-wide bot, same
+        as always. Naming an agent (as the last word) acts on that agent's own
+        private bot instead -- `/telegram status trader`, `/telegram set
+        trader <token>`, `/telegram allow 123456 trader`.
         """
-        settings = self.environment.settings.telegram
-        channel = self.environment.channels.get("telegram")
         action = parts[1].lower() if len(parts) > 1 else "status"
 
+        if action == "set":
+            if len(parts) != 4:
+                return "Usage: /telegram set <agent> <token>"
+            definition = self.environment.registry.get(parts[2])
+            await self.environment.stop_agent_telegram(definition.id)
+            definition.telegram = (definition.telegram or TelegramSettings()).model_copy(
+                update={"enabled": True, "token": parts[3]}
+            )
+            definition.touch()
+            await self.environment.repository.save_agent(definition)
+            if definition.id in self.environment.runtimes:
+                await self.environment.start_agent_telegram(definition)
+            return f"{definition.name} now has its own Telegram bot."
+
+        if action == "unset":
+            if len(parts) != 3:
+                return "Usage: /telegram unset <agent>"
+            definition = self.environment.registry.get(parts[2])
+            await self.environment.stop_agent_telegram(definition.id)
+            definition.telegram = None
+            definition.touch()
+            await self.environment.repository.save_agent(definition)
+            return f"{definition.name} no longer has a private Telegram bot."
+
+        agent_name = parts[-1] if action in {"status", "test", "allow", "revoke"} and (
+            (action in {"status", "test"} and len(parts) == 3)
+            or (action in {"allow", "revoke"} and len(parts) == 4)
+        ) else None
+        if agent_name:
+            definition = self.environment.registry.get(agent_name)
+            settings = definition.telegram
+            channel = self.environment.channels.get(f"telegram:{definition.id}")
+            label = f"{definition.name}'s bot"
+        else:
+            settings = self.environment.settings.telegram
+            channel = self.environment.channels.get("telegram")
+            label = "the mesh-wide bot"
+
         if action == "status":
-            if not settings.enabled:
-                return "Telegram is switched off. Enable it in the Control Center."
+            if settings is None or not settings.enabled:
+                return f"{label} is switched off."
             if not settings.token.strip():
-                return "Telegram is enabled but has no bot token yet."
+                return f"{label} is enabled but has no token yet."
             connected = bool(getattr(channel, "running", False))
             identity = str(getattr(channel, "identity", "") or "not connected yet")
             chats = list(getattr(channel, "allowed_chats", settings.allowed_chat_ids))
@@ -737,34 +867,38 @@ class ConsoleChannel:
 
         if action == "test":
             if channel is None:
-                return "Telegram is not running in this process."
+                return f"{label} is not running in this process."
             ok, detail = await channel.check()
             if ok:
                 return f"Telegram accepted the token: {detail}"
             return f"Telegram refused it: {detail}"
 
-        if action in {"allow", "revoke"} and len(parts) > 2:
+        if action in {"allow", "revoke"}:
             if channel is None:
-                return "Telegram is not running in this process."
+                return f"{label} is not running in this process."
+            chat_arg = parts[2]
             try:
-                chat_id = int(parts[2])
+                chat_id = int(chat_arg)
             except ValueError:
-                return f"'{parts[2]}' is not a chat id."
+                return f"'{chat_arg}' is not a chat id."
             if action == "allow":
                 added = await channel.allow(chat_id)
                 return (
-                    f"Chat {chat_id} may now talk to the mesh."
+                    f"Chat {chat_id} may now talk to {label}."
                     if added
                     else f"Chat {chat_id} was already allowed."
                 )
             removed = await channel.revoke(chat_id)
             return (
-                f"Chat {chat_id} can no longer talk to the mesh."
+                f"Chat {chat_id} can no longer talk to {label}."
                 if removed
                 else f"Chat {chat_id} was not on the list."
             )
 
-        return "Usage: /telegram status|test|allow <chat-id>|revoke <chat-id>"
+        return (
+            "Usage: /telegram status|test [agent]  |  /telegram allow|revoke <chat-id> [agent]"
+            "  |  /telegram set <agent> <token>  |  /telegram unset <agent>"
+        )
 
     def _command_restart(self, parts: list[str]) -> str:
         """Ask whoever owns this process to bring it back on the current tree.

@@ -16,13 +16,16 @@ from typing import Any
 
 import httpx
 
-from evomesh.config import TelegramSettings
 from evomesh.console import ConsoleChannel
+from evomesh.contracts import TelegramSettings
 from evomesh.environment import Environment
 
 logger = logging.getLogger(__name__)
 
 API_ROOT = "https://api.telegram.org"
+# The mesh-wide bot keeps the original, unsuffixed keys so an upgrade never
+# loses its offset or allow-list. A per-agent bot's keys are namespaced by
+# agent id so two bots polling the same repository never share state.
 OFFSET_STATE_KEY = "telegram.offset"
 ALLOWED_STATE_KEY = "telegram.allowed_chats"
 
@@ -59,6 +62,9 @@ class TelegramChannel:
         environment: Environment,
         settings: TelegramSettings,
         client: httpx.AsyncClient | None = None,
+        *,
+        locked_agent_id: str | None = None,
+        locked_agent_name: str | None = None,
     ) -> None:
         self.environment = environment
         self.settings = settings
@@ -69,6 +75,30 @@ class TelegramChannel:
         self._offset = 0
         self._running = False
         self.identity = ""
+        # None: the mesh-wide bot, talking to whichever agent /chat selected.
+        # Set: a private bot for exactly one agent -- no /chat, no switching.
+        self.locked_agent_id = locked_agent_id
+        self.locked_agent_name = locked_agent_name or locked_agent_id or ""
+
+    @property
+    def _offset_key(self) -> str:
+        return OFFSET_STATE_KEY if not self.locked_agent_id else f"{OFFSET_STATE_KEY}.{self.locked_agent_id}"
+
+    @property
+    def _allowed_key(self) -> str:
+        return ALLOWED_STATE_KEY if not self.locked_agent_id else f"{ALLOWED_STATE_KEY}.{self.locked_agent_id}"
+
+    def _welcome(self) -> str:
+        if not self.locked_agent_id:
+            return WELCOME
+        return (
+            f"This is {self.locked_agent_name}'s private line.\n\n"
+            "Just send a message -- everything you type goes straight to this "
+            "agent, no other agent can be reached from here.\n"
+            "/status - environment and provider health\n"
+            "/help - every command\n\n"
+            "Stopping the mesh is deliberately not possible from here."
+        )
 
     @property
     def configured(self) -> bool:
@@ -143,7 +173,7 @@ class TelegramChannel:
             logger.info("Telegram connected as %s", self.identity)
             await self._restore()
             if self.settings.announcements:
-                self.environment.notifiers.append(self.announce)
+                self._register_listener()
             await self._poll()
         except asyncio.CancelledError:
             raise
@@ -153,18 +183,33 @@ class TelegramChannel:
             logger.warning("Telegram is not available: %s", exc)
         finally:
             self._running = False
-            if self.announce in self.environment.notifiers:
-                self.environment.notifiers.remove(self.announce)
+            self._unregister_listener()
             if self._owns_client:
                 await client.aclose()
 
+    def _register_listener(self) -> None:
+        if self.locked_agent_id:
+            self.environment.agent_notifiers.setdefault(self.locked_agent_id, []).append(
+                self.announce
+            )
+        else:
+            self.environment.notifiers.append(self.announce)
+
+    def _unregister_listener(self) -> None:
+        if self.locked_agent_id:
+            listeners = self.environment.agent_notifiers.get(self.locked_agent_id, [])
+            if self.announce in listeners:
+                listeners.remove(self.announce)
+        elif self.announce in self.environment.notifiers:
+            self.environment.notifiers.remove(self.announce)
+
     async def _restore(self) -> None:
-        stored_offset = await self.environment.repository.load_state(OFFSET_STATE_KEY)
+        stored_offset = await self.environment.repository.load_state(self._offset_key)
         if isinstance(stored_offset, int):
             # Picking up where the last process stopped is what keeps an
             # automatic restart from replaying the commands that caused it.
             self._offset = stored_offset
-        stored_chats = await self.environment.repository.load_state(ALLOWED_STATE_KEY)
+        stored_chats = await self.environment.repository.load_state(self._allowed_key)
         if isinstance(stored_chats, list):
             self._allowed |= {int(item) for item in stored_chats if isinstance(item, int | str)}
 
@@ -190,7 +235,7 @@ class TelegramChannel:
 
     async def _consume(self, update: dict[str, Any]) -> None:
         self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
-        await self.environment.repository.save_state(OFFSET_STATE_KEY, self._offset)
+        await self.environment.repository.save_state(self._offset_key, self._offset)
         message = update.get("message") or {}
         chat_id = int((message.get("chat") or {}).get("id", 0))
         text = str(message.get("text", "")).strip()
@@ -216,10 +261,12 @@ class TelegramChannel:
             return "Stopping the mesh is only possible from the Control Center."
         command = text.split()[0].lower()
         if command in {"/start", "/start@evomesh"}:
-            return WELCOME
+            return self._welcome()
+        if self.locked_agent_id and command in {"/chat"}:
+            return f"This bot only talks to {self.locked_agent_name}."
         console = self._consoles.get(chat_id)
         if console is None:
-            console = ConsoleChannel(self.environment)
+            console = ConsoleChannel(self.environment, locked_agent_id=self.locked_agent_id)
             self._consoles[chat_id] = console
         return await console.route(text)
 
@@ -240,7 +287,7 @@ class TelegramChannel:
 
     async def _persist_allowed(self) -> None:
         await self.environment.repository.save_state(
-            ALLOWED_STATE_KEY, sorted(self._allowed)
+            self._allowed_key, sorted(self._allowed)
         )
 
     # -- sending --------------------------------------------------------

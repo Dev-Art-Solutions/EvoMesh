@@ -6,6 +6,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from evomesh.contracts import TelegramSettings
 from evomesh.git import (
     DEFAULT_AUTHOR_EMAIL,
     DEFAULT_AUTHOR_NAME,
@@ -14,6 +15,8 @@ from evomesh.git import (
 )
 from evomesh.harness_tools import ToolLimits
 from evomesh.memory import MemoryBudget
+
+__all__ = ["Settings", "TelegramSettings", "load_settings"]
 
 
 class ProviderSettings(BaseModel):
@@ -212,26 +215,6 @@ class GitSettings(BaseModel):
 
     def publish_policy(self) -> PublishPolicy:
         return PublishPolicy(enabled=self.auto_push, remote=self.remote, branch=self.branch)
-
-
-class TelegramSettings(BaseModel):
-    """A Telegram bot as a second console onto the same mesh.
-
-    ``token`` is the string BotFather hands back. ``allowed_chat_ids`` is the
-    allow-list; leaving it empty and keeping ``adopt_first_chat`` on lets the
-    first person who says /start claim the bot, which is the only way to learn
-    a chat id without asking a human to go find it.
-    """
-
-    enabled: bool = False
-    token: str = ""
-    allowed_chat_ids: list[int] = Field(default_factory=list)
-    adopt_first_chat: bool = True
-    # Long-poll window. Telegram holds the request open this long when idle.
-    poll_timeout_seconds: int = 30
-    # Announce what the mesh does on its own -- promotions, restarts -- rather
-    # than only answering when spoken to.
-    announcements: bool = True
 
 
 class Settings(BaseModel):

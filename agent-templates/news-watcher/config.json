@@ -1,0 +1,8 @@
+{
+  "feeds": [
+    "https://www.investing.com/rss/news_25.rss",
+    "https://www.forexlive.com/feed/news"
+  ],
+  "keywords": [],
+  "limit": 10
+}

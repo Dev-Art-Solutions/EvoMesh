@@ -266,6 +266,28 @@ class BeliefChange:
         return bool(self.added or self.updated)
 
 
+class TelegramSettings(BaseModel):
+    """A Telegram bot as a second console onto the mesh -- or, on an
+    AgentDefinition, a private bot onto one agent only.
+
+    ``token`` is the string BotFather hands back. ``allowed_chat_ids`` is the
+    allow-list; leaving it empty and keeping ``adopt_first_chat`` on lets the
+    first person who says /start claim the bot, which is the only way to learn
+    a chat id without asking a human to go find it.
+    """
+
+    enabled: bool = False
+    token: str = ""
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+    adopt_first_chat: bool = True
+    # Long-poll window. Telegram holds the request open this long when idle.
+    poll_timeout_seconds: int = 30
+    # Announce what the mesh does on its own -- promotions, restarts -- rather
+    # than only answering when spoken to. On an agent's own bot this covers
+    # only that agent's own goal progress, not the whole mesh's chatter.
+    announcements: bool = True
+
+
 class MindState(BaseModel):
     beliefs: list[Belief] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
@@ -422,6 +444,18 @@ class AgentDefinition(BaseModel):
     # something every agent has because the mesh has it.
     harness_root: str = ""
     cycle_seconds: int | None = None
+    # A private Telegram bot for this agent alone -- its own BotFather token,
+    # separate from the mesh-wide bot in Settings.telegram. None means this
+    # agent is only reachable through the mesh-wide bot (or the console).
+    telegram: TelegramSettings | None = None
+    # A command run on its own short, fixed interval, outside this agent's
+    # cognition cycle entirely -- for state that moves on a scale of seconds
+    # (open orders, account equity) where an LLM turn every few seconds would
+    # mean a model call just to notice nothing changed. Empty means no watcher.
+    # A non-empty line of the command's stdout becomes an announcement to this
+    # agent's own channels; silence means nothing crossed a threshold.
+    watch_command: str = ""
+    watch_interval_seconds: float | None = None
     # Overrides the provider's num_ctx for this one agent. None defers to
     # ProviderSettings.num_ctx for whatever provider/model this agent runs.
     num_ctx: int | None = None
