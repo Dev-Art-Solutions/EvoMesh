@@ -54,7 +54,11 @@ def _fake_news_fetch_module(config: dict):
 
             root = ET.fromstring(raw)
             return [
-                {"title": item.find("title").text, "link": item.find("link").text, "published": ""}
+                {
+                    "title": item.findtext("title") or "",
+                    "link": item.findtext("link") or "",
+                    "published": "",
+                }
                 for item in root.iter("item")
             ]
 
