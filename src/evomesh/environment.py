@@ -36,8 +36,8 @@ from evomesh.models import ModelProvider, OllamaProvider, OpenAICompatibleProvid
 from evomesh.permissions import FilesystemPolicy
 from evomesh.skills import SkillRegistry
 from evomesh.storage import SQLiteRepository
-from evomesh.watchers import AgentWatcher
 from evomesh.tools import ToolRegistry as CustomToolRegistry
+from evomesh.watchers import AgentWatcher
 
 logger = logging.getLogger(__name__)
 

@@ -25,8 +25,8 @@ for, e.g. `["gold", "XAUUSD"]`):
 ```json
 {
   "feeds": [
-    "https://www.investing.com/rss/news_25.rss",
-    "https://www.forexlive.com/feed/news"
+    "https://finance.yahoo.com/",
+    "https://www.forexfactory.com/news"
   ],
   "keywords": ["gold", "XAUUSD"],
   "limit": 10

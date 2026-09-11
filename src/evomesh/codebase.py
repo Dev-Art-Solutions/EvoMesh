@@ -212,6 +212,7 @@ KNOWN_ROOT_FILES = frozenset(
         ".editorconfig",
         ".gitignore",
         ".python-version",
+        "AGENTS.md",
         "CHANGELOG.md",
         "CLAUDE.md",
         "LICENSE",

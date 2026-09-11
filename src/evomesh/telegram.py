@@ -82,11 +82,15 @@ class TelegramChannel:
 
     @property
     def _offset_key(self) -> str:
-        return OFFSET_STATE_KEY if not self.locked_agent_id else f"{OFFSET_STATE_KEY}.{self.locked_agent_id}"
+        if not self.locked_agent_id:
+            return OFFSET_STATE_KEY
+        return f"{OFFSET_STATE_KEY}.{self.locked_agent_id}"
 
     @property
     def _allowed_key(self) -> str:
-        return ALLOWED_STATE_KEY if not self.locked_agent_id else f"{ALLOWED_STATE_KEY}.{self.locked_agent_id}"
+        if not self.locked_agent_id:
+            return ALLOWED_STATE_KEY
+        return f"{ALLOWED_STATE_KEY}.{self.locked_agent_id}"
 
     def _welcome(self) -> str:
         if not self.locked_agent_id:

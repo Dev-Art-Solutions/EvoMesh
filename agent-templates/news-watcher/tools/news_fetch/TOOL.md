@@ -1,6 +1,6 @@
 ---
 name: news_fetch
-description: Fetch the most recent financial news headlines from RSS feeds. Optionally pass a JSON object to override the configured feeds, filter by keyword, or change how many headlines come back.
+description: Fetch the most recent financial news headlines -- RSS/Atom where a source has a feed, and a small site-specific HTML scrape for finance.yahoo.com and forexfactory.com, which do not. Optionally pass a JSON object to override the configured feeds, filter by keyword, or change how many headlines come back.
 command: python "{tool_dir}/scripts/news_fetch.py"
 parameters:
   - name: request

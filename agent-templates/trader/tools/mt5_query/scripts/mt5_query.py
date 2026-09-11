@@ -33,7 +33,8 @@ def main() -> int:
         with urllib.request.urlopen(request, timeout=10) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        print(f"bridge returned HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:500]}")
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        print(f"bridge returned HTTP {exc.code}: {detail}")
         return 1
     except urllib.error.URLError as exc:
         print(f"could not reach the MT5 Execution Bridge at {url}: {exc.reason}")

@@ -64,7 +64,8 @@ def main() -> int:
     try:
         accepted = _request("POST", f"{base}/api/signals", signal)
     except urllib.error.HTTPError as exc:
-        print(f"bridge rejected the signal (HTTP {exc.code}): {exc.read().decode('utf-8', errors='replace')[:500]}")
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        print(f"bridge rejected the signal (HTTP {exc.code}): {detail}")
         return 1
     except urllib.error.URLError as exc:
         print(f"could not reach the MT5 Execution Bridge at {base}: {exc.reason}")

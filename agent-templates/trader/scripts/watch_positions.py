@@ -10,7 +10,6 @@ silence as silence, not as a failure.
 from __future__ import annotations
 
 import json
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path

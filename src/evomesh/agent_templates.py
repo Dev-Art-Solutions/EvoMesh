@@ -90,7 +90,9 @@ def parse_agent_template(
         raise InvalidAgentTemplateError(f"{path}: missing YAML frontmatter (a leading '---' block)")
     end = text.find("\n---", 3)
     if end == -1:
-        raise InvalidAgentTemplateError(f"{path}: frontmatter is opened but never closed with '---'")
+        raise InvalidAgentTemplateError(
+            f"{path}: frontmatter is opened but never closed with '---'"
+        )
     try:
         meta = yaml.safe_load(text[3:end].strip("\n")) or {}
     except yaml.YAMLError as exc:
@@ -108,7 +110,9 @@ def parse_agent_template(
         raise InvalidAgentTemplateError(f"{path}: 'goals' must be a list")
     try:
         goals = [
-            TemplateGoal.model_validate(item) if isinstance(item, dict) else TemplateGoal(text=str(item))
+            TemplateGoal.model_validate(item)
+            if isinstance(item, dict)
+            else TemplateGoal(text=str(item))
             for item in raw_goals
         ]
         autonomy = Autonomy(str(meta.get("autonomy") or "cyclic").strip().lower())
@@ -132,7 +136,9 @@ def parse_agent_template(
             tools=tools,
             watch_command=str(watch.get("command") or "").strip(),
             watch_interval_seconds=(
-                float(watch["interval_seconds"]) if watch.get("interval_seconds") is not None else None
+                float(watch["interval_seconds"])
+                if watch.get("interval_seconds") is not None
+                else None
             ),
             path=path,
             created_by=created_by,
@@ -200,7 +206,9 @@ class AgentTemplateRegistry:
         target = self.templates_dir / definition.name
         await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
         await asyncio.to_thread(shutil.copytree, source, target)
-        installed = definition.model_copy(update={"path": (target / AGENT_FILENAME).relative_to(self.root)})
+        installed = definition.model_copy(
+            update={"path": (target / AGENT_FILENAME).relative_to(self.root)}
+        )
         self._templates[installed.name] = installed
         return installed
 
@@ -232,9 +240,13 @@ class AgentTemplateRegistry:
             if await asyncio.to_thread(bundled.is_dir):
                 await environment.tools.install_directory(bundled, created_by="agent-template")
 
-        default_provider = provider or template.provider or environment.settings.models.default_provider
+        default_provider = (
+            provider or template.provider or environment.settings.models.default_provider
+        )
         provider_config = environment.settings.models.providers.get(default_provider)
-        default_model = model or template.model or (provider_config.model if provider_config else "local-model")
+        default_model = model or template.model or (
+            provider_config.model if provider_config else "local-model"
+        )
 
         definition = AgentDefinition(
             name=agent_name or template.identity,

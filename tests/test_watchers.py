@@ -7,26 +7,18 @@ import asyncio
 import shlex
 import sys
 
-import pytest
-
 from evomesh.watchers import AgentWatcher
 
 PYTHON = shlex.quote(sys.executable)
 
 
-async def _wait_for(predicate, timeout: float = 2.0) -> None:
-    async def poll() -> None:
-        while not predicate():
-            await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(poll(), timeout=timeout)
-
-
 async def test_a_watcher_announces_only_nonempty_output() -> None:
     seen: list[str] = []
+    announced = asyncio.Event()
 
     async def notify(text: str) -> None:
         seen.append(text)
+        announced.set()
 
     script = "import sys; print('alert: equity below floor')"
     watcher = AgentWatcher(
@@ -34,7 +26,8 @@ async def test_a_watcher_announces_only_nonempty_output() -> None:
     )
     watcher.start()
     try:
-        await _wait_for(lambda: bool(seen))
+        async with asyncio.timeout(2.0):
+            await announced.wait()
     finally:
         await watcher.stop()
 
