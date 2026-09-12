@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from .mesh import Mesh
+
 
 class ModelUnavailableError(RuntimeError):
     pass
@@ -405,3 +407,38 @@ class MockProvider:
             raise ToolsUnsupportedError("mock model has no tool calling")
         self.chats.append(list(messages))
         return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
+
+
+class NetworkModel:
+    """The graph view the agents reason over, backed by a :class:`Mesh`.
+
+    The agents never touch the mesh directly -- they reason through the nodes
+    and edges they can see. ``NetworkModel`` is that single entry point: it
+    holds a ``self.mesh`` and passes every graph question straight through to
+    it, keyed on the same string node ids, while still keeping ``self.edges``
+    as an additional view of the same graph.
+
+    These are thin pass-throughs to ``self.mesh``; nothing here computes a
+    degree or a neighbour list, so the model can never drift out of sync with
+    the mesh it reflects.
+    """
+
+    def __init__(self, mesh: Mesh) -> None:
+        self.mesh = mesh
+
+    @property
+    def edges(self) -> dict[str, dict[str, str]]:
+        """The graph's edges, as a view of ``self.mesh.edges``."""
+        return self.mesh.edges
+
+    def neighbours(self, node: str) -> list[str]:
+        """The nodes ``node`` is connected to, straight from ``self.mesh``."""
+        return self.mesh.neighbours(node)
+
+    def out_degree(self, node: str) -> int:
+        """How many edges leave ``node``, straight from ``self.mesh``."""
+        return self.mesh.out_degree(node)
+
+    def in_degree(self, node: str) -> int:
+        """How many edges enter ``node``, straight from ``self.mesh``."""
+        return self.mesh.in_degree(node)
