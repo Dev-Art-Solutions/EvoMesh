@@ -97,6 +97,11 @@ regresses.
    `options.num_ctx` on every `/api/generate` and `/api/chat` call) is what makes the budget
    authoritative instead of aspirational; size it above the largest thing actually sent — the
    harness's `transcript_chars` is usually the biggest — not above the per-cycle prompt alone.
+   The "30-35B class this project targets" is a *total-weight* size, not a reasoning-depth one:
+   an MoE model such as `ornith-1.5:35b-128k` has ~35B total parameters but only ~3B active per
+   token, so it needs the VRAM of a much bigger model while reasoning, per single-shot judgment
+   call, closer to a small one — size `num_ctx` for its real window (128K), but do not lean on
+   `evolution.auto_plan`'s open-ended plan-evaluate judgment expecting dense-35B reliability from it.
    Resolution checks three places in order: an agent's own `num_ctx` (`AgentDefinition.num_ctx`,
    `AgentModelSettings.num_ctx` in `system_agents`, settable live with `/num-ctx <agent> <n>|clear`
    and in the Control Center's Settings tab), then the provider's `model_num_ctx` for that model

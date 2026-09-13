@@ -135,8 +135,19 @@ PLAN_EVAL_RULES = "\n".join(
         "source file.",
         f"- Write exactly one file, `{(PLAN_DIR / PLAN_EVAL_FILE).as_posix()}`, "
         "inside this candidate, holding your review.",
-        "- That file's last non-empty line must be exactly 'VERDICT: approve' "
-        "or 'VERDICT: reject: <one sentence reason>'.",
+        "- Answer each of these three checks with YES or NO, one per line, "
+        "before anything else -- do not skip a check or merge them into one "
+        "sentence:",
+        "  NAMES A REAL MODULE: <YES|NO> (the plan names a file that already "
+        "exists and is imported somewhere, not a new file nothing loads yet)",
+        "  NO UNTETHERED FILE: <YES|NO> (the plan does not propose a brand "
+        "new file as its only deliverable)",
+        "  SMALL ENOUGH TO SPLIT: <YES|NO> (the plan is concrete enough that "
+        "someone could break it into a few minimal work items right now)",
+        "- Then write exactly one line, 'VERDICT: approve' if all three "
+        "checks are YES, otherwise 'VERDICT: reject: <one sentence reason>' "
+        "naming the check that failed. That line must be the file's last "
+        "non-empty line.",
         "- End your final answer with one sentence starting exactly with "
         "'RATIONALE:' summarising your verdict.",
     )
@@ -171,14 +182,21 @@ def draft_plan_objective(objective: str, project: str, context: str = "") -> str
 
 
 def evaluate_plan_objective(plan_text: str, project: str) -> str:
-    """The harness job that reviews a drafted plan and writes a verdict."""
+    """The harness job that reviews a drafted plan and writes a verdict.
+
+    Three separate yes/no checks, not one holistic judgment -- a single
+    open-ended "is this plan good" call is the shape of question a model
+    with a small active reasoning path answers least reliably; naming the
+    checks up front gives it something concrete to answer instead.
+    """
     parts = (
         project,
         f"PLAN TO REVIEW:\n{plan_text}",
-        "Judge whether this is a real, groundable change to a module that "
-        "already runs, scoped small enough to be split into minimal work "
-        "items later. Reject it if it proposes a new file nothing will "
-        "import, or if it is too vague to split.",
+        "Check the plan against these three things, in this order: does it "
+        "name a module that already exists and is imported somewhere (not a "
+        "new file nothing loads yet); does it avoid proposing a brand new "
+        "untethered file as its only deliverable; is it concrete enough to "
+        "split into a few minimal work items right now.",
         PLAN_EVAL_RULES,
     )
     return "\n\n".join(part for part in parts if part).strip()

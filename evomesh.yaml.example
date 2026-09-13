@@ -54,7 +54,12 @@ evolution:
   # into minimal work items before authoring anything -- instead of asking the
   # harness for one mutation directly. No revision or depth limit: the model
   # alone decides when a draft is approved and when an item is minimal, so a
-  # generation with this on can take a lot longer than one without it.
+  # generation with this on can take a lot longer than one without it. Its
+  # evaluate stage is one open-ended judgment call on a whole plan -- the
+  # riskiest shape of call for an MoE model with a small active path (see the
+  # num_ctx comment under models.providers.ollama), so this stays off by
+  # default rather than assuming a 35B-class model judges plans as reliably as
+  # it edits one named file.
   auto_plan: false
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
@@ -155,14 +160,23 @@ models:
       # server truncates the prompt from the oldest end itself, silently, before
       # this project's own budgeting ever runs. 64k is a comfortable default for
       # anything from a small chat model up to the 30-35B class this project
-      # targets; raise it if VRAM allows a bigger window, lower it if a smaller
-      # model or a tighter card needs the memory back. Leave it unset only for a
-      # server with no such option (OpenAI-compatible providers ignore this
-      # field). Overridable per model below, and per agent in system_agents
-      # above -- checked in that order: agent, then model, then this default.
+      # targets. That class is a *total-weight* size, not a reasoning-depth one:
+      # an MoE model like ornith-1.5:35b-128k has ~35B total but only ~3B active
+      # per token, so it reasons closer to a small model per step even though it
+      # needs the VRAM of a much bigger one -- size num_ctx for its window, but
+      # do not expect its single-shot judgment (e.g. auto_plan's evaluate stage
+      # below) to match a dense 35B. Raise the default if VRAM allows a bigger
+      # window, lower it if a smaller model or a tighter card needs the memory
+      # back. Leave it unset only for a server with no such option
+      # (OpenAI-compatible providers ignore this field). Overridable per model
+      # below, and per agent in system_agents above -- checked in that order:
+      # agent, then model, then this default.
       num_ctx: 65536
       # model_num_ctx:
       #   some-other-model-on-this-server: 8192
+      #   # ornith-1.5:35b-128k's own tag names its window; give it the real
+      #   # number rather than leaving it on the provider default above.
+      #   ornith-1.5:35b-128k: 131072
     inferhub:
       base_url: http://127.0.0.1:5080/v1
       model: qwen3
