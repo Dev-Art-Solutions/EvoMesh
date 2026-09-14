@@ -89,6 +89,13 @@ class ToolContext:
     # registered; this flag is the configuration saying no even when they are,
     # so a refusal can name the setting a human has to change.
     allow_write: bool = False
+    # Narrower than the job root: set when a stage's whole job is to write one
+    # known file (the plan draft/eval/decompose stages, each of which only
+    # ever needs docs/evolution/plans/**), so a model that ignores the prose
+    # instruction not to touch a source file gets a named refusal instead of
+    # a stray file landing in the candidate. None means the job root itself
+    # is the only boundary, same as before this existed.
+    write_prefix: str | None = None
     # Programs the shell tool may run, by bare name. Empty refuses everything,
     # which is why the tool is not even registered until a human fills this in.
     shell_allow: frozenset[str] = frozenset()
@@ -302,12 +309,20 @@ def _announce(context: ToolContext, target: Path, before: str, after: str, kind:
     return diff
 
 
-def _writable(context: ToolContext) -> None:
+def _writable(context: ToolContext, target: Path) -> None:
     if not context.allow_write:
         raise ToolDenied(
             "DENIED: this job may not change files. Set harness.allow_write: true "
             "in evomesh.yaml to allow it."
         )
+    if context.write_prefix is not None:
+        inside = _inside(context.root, target)
+        prefix = Path(context.write_prefix).parts
+        if inside[: len(prefix)] != prefix:
+            raise ToolDenied(
+                f"DENIED: this job may only write inside {context.write_prefix}/, "
+                f"not {'/'.join(inside)}"
+            )
 
 
 def _match_lines(content: str, needle: str) -> list[int]:
@@ -344,8 +359,8 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     pyright and pytest and does the wrong thing -- strictly worse than the
     whole-file rewrite it replaces, because that one fails loudly.
     """
-    _writable(context)
     target = _resolve(context, str(args.get("path", "")))
+    _writable(context, target)
     await _permit(context, target, "write")
     old = str(args.get("old") or args.get("old_string") or "")
     new = str(args.get("new") or args.get("new_string") or "")
@@ -388,8 +403,8 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
     Creating and replacing are different intentions, so they are different
     calls rather than the same call with different luck.
     """
-    _writable(context)
     target = _resolve(context, str(args.get("path", "")))
+    _writable(context, target)
     await _permit(context, target, "write")
     content = str(args.get("content") or "")
     overwrite = bool(args.get("overwrite"))
@@ -446,8 +461,8 @@ async def tool_delete(context: ToolContext, args: dict[str, Any]) -> str:
     refusing it outright is cheaper than reasoning about what it might take
     with it.
     """
-    _writable(context)
     target = _resolve(context, str(args.get("path", "")))
+    _writable(context, target)
     await _permit(context, target, "write")
     where = "/".join(_inside(context.root, target))
     if not target.exists():

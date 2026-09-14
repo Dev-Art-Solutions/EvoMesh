@@ -48,12 +48,23 @@ class FakeHarness(HarnessGateway):
         self.labels: list[str] = []
 
     def submit(
-        self, objective: str, *, agent_id: str, root: Path, label: str = ""
+        self,
+        objective: str,
+        *,
+        agent_id: str,
+        root: Path,
+        label: str = "",
+        write_prefix: str | None = None,
     ) -> HarnessJob:
         self.objectives.append(objective)
         self.labels.append(label)
         job = self.queue.submit(
-            objective, root, agent_id=agent_id, allow_write=True, label=label
+            objective,
+            root,
+            agent_id=agent_id,
+            allow_write=True,
+            write_prefix=write_prefix,
+            label=label,
         )
         batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
         entries: list[dict[str, object]] = []

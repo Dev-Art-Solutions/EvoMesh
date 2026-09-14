@@ -585,6 +585,7 @@ class Environment:
             shell_seconds=settings.shell_seconds,
             read_only=not job.allow_write,
             allow_write=job.allow_write,
+            write_prefix=job.write_prefix,
             num_ctx=self.resolve_num_ctx(provider_name, model, num_ctx_override),
             scraping_executable=(
                 self.settings.scraping.executable if self.settings.scraping.enabled else ""

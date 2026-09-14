@@ -30,6 +30,7 @@ from evomesh.bdi import (
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
 from evomesh.evolution import (
+    PLAN_DIR,
     CandidateValidator,
     EnvironmentEvolver,
     Generation,
@@ -129,6 +130,10 @@ INVESTIGATE = "Investigate why "
 INSTANT_VALIDATION = 0.5
 
 RATIONALE_MARKER = "RATIONALE:"
+
+# Where the draft/evaluate/decompose stages are confined to writing -- see
+# ``_through_harness``'s ``write_prefix`` for what this enforces and why.
+PLAN_WRITE_PREFIX = PLAN_DIR.as_posix()
 
 
 def _extract_rationale(answer: str) -> str:
@@ -559,6 +564,7 @@ class EvolverBehavior(BDIBehavior):
             status="planned",
             record=evolver.record_plan_draft,
             on_done=lambda touched: (STAGE_EVALUATE, {}),
+            write_prefix=PLAN_WRITE_PREFIX,
         )
 
     async def _evaluate_plan(
@@ -609,6 +615,7 @@ class EvolverBehavior(BDIBehavior):
             status="evaluated",
             record=evolver.record_plan_eval,
             on_done=on_done,
+            write_prefix=PLAN_WRITE_PREFIX,
         )
 
     async def _decompose(
@@ -677,6 +684,7 @@ class EvolverBehavior(BDIBehavior):
             record_key=node_id,
             on_done=on_done,
             on_no_op=on_no_op,
+            write_prefix=PLAN_WRITE_PREFIX,
         )
 
     async def _propose(
@@ -753,6 +761,7 @@ class EvolverBehavior(BDIBehavior):
         record: Callable[..., Any] | None = None,
         record_key: str | None = None,
         on_no_op: Callable[[], Awaitable[tuple[str, dict[str, Any]] | None]] | None = None,
+        write_prefix: str | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -766,6 +775,14 @@ class EvolverBehavior(BDIBehavior):
         `_decompose` needs to say *which node* it just asked the harness to
         split, and the pipeline `state` dict that would otherwise carry it is
         not part of a recorder's signature.
+
+        ``write_prefix`` narrows the harness's write/edit/delete tools to that
+        one directory inside the candidate -- the plan draft/evaluate/decompose
+        stages pass ``docs/evolution/plans`` since that is the whole of what
+        each is asked to write, so a model that ignores the prose instruction
+        not to touch a source file gets a named tool refusal instead of a
+        stray file landing in the candidate (found live: an evaluate job wrote
+        a throwaway script under ``src/`` despite being told not to).
 
         ``on_no_op`` overrides what happens when the harness wrote nothing.
         Left at its default (``None``), or returning ``None`` itself, a no-op
@@ -793,7 +810,11 @@ class EvolverBehavior(BDIBehavior):
         job = harness.job(int(number)) if number else None
         if job is None:
             job = harness.submit(
-                build(), agent_id=context.definition.id, root=generation.path, label=label
+                build(),
+                agent_id=context.definition.id,
+                root=generation.path,
+                label=label,
+                write_prefix=write_prefix,
             )
             await evolver.set_pipeline_state({**state, "job": job.number})
             # Falls through when the job is somehow already finished, which is
