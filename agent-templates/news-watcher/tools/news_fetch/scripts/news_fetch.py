@@ -26,7 +26,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 TOOL_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = TOOL_DIR.parent / "config.json"
+CONFIG_PATH = TOOL_DIR.parent.parent / "config.json"
 
 DEFAULT_FEEDS = [
     "https://finance.yahoo.com/",

@@ -1,8 +1,30 @@
 {
   "feeds": [
-    "https://finance.yahoo.com/",
-    "https://www.forexfactory.com/news"
+    "https://finance.yahoo.com/news/rssindex",
+    "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+    "https://www.marketwatch.com/rss/topstories"
   ],
-  "keywords": [],
+  "keywords": [
+    "gold",
+    "XAUUSD",
+    "silver",
+    "XAGUSD",
+    "oil",
+    "WTI",
+    "Brent",
+    "bitcoin",
+    "BTC",
+    "ethereum",
+    "ETH",
+    "Fed",
+    "AI",
+    "interest rates",
+    "inflation",
+    "CPI",
+    "forex",
+    "EUR/USD",
+    "USD/JPY",
+    "GBP/USD"
+  ],
   "limit": 10
 }
