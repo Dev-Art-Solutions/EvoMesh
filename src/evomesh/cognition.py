@@ -131,6 +131,14 @@ class CycleOutcome:
 
 
 @dataclass
+class AgentCycleTrace:
+    agent_id: str = ""
+    turn: int = 0
+    cognition: str = ""
+    outcome: str = ""
+
+
+@dataclass
 class CycleContext:
     """Everything a behavior may touch during one cycle."""
 
