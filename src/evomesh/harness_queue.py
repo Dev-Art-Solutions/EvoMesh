@@ -46,6 +46,12 @@ class HarnessJob:
     # Narrower than the job root -- see ToolContext.write_prefix in
     # harness_tools.py for why this exists and what it refuses.
     write_prefix: str | None = None
+    # None means "use harness.max_steps/max_seconds from config". Set by a
+    # caller that knows this job is a small, pre-scoped write (a plan stage,
+    # a decomposed leaf) and wants it to fail fast rather than wander for as
+    # long as an open-ended mutation is allowed to.
+    max_steps: int | None = None
+    max_seconds: float | None = None
     # What to call this job in a status line. Optional: an objective that is one
     # sentence needs no label, and one that is a page needs one.
     label: str = ""
@@ -138,6 +144,8 @@ class HarnessQueue:
         allow_write: bool = False,
         write_prefix: str | None = None,
         label: str = "",
+        max_steps: int | None = None,
+        max_seconds: float | None = None,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -155,6 +163,8 @@ class HarnessQueue:
             allow_write=allow_write,
             write_prefix=write_prefix,
             label=label,
+            max_steps=max_steps,
+            max_seconds=max_seconds,
         )
         self._next += 1
         self.jobs[job.number] = job
@@ -207,6 +217,8 @@ class HarnessGateway:
         root: Path,
         label: str = "",
         write_prefix: str | None = None,
+        max_steps: int | None = None,
+        max_seconds: float | None = None,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -215,6 +227,8 @@ class HarnessGateway:
             allow_write=True,
             write_prefix=write_prefix,
             label=label,
+            max_steps=max_steps,
+            max_seconds=max_seconds,
         )
 
     def job(self, number: int) -> HarnessJob | None:

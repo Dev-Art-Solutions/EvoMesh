@@ -80,6 +80,8 @@ class Environment:
             settings.evolution.auto_restart,
             settings.evolution.validate_seconds,
             settings.evolution.auto_plan,
+            settings.harness.plan_max_steps,
+            settings.harness.plan_max_seconds,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(
@@ -578,8 +580,8 @@ class Environment:
             session=session,
             limits=settings.limits(),
             model=model,
-            max_steps=settings.max_steps,
-            max_seconds=settings.max_seconds,
+            max_steps=job.max_steps if job.max_steps is not None else settings.max_steps,
+            max_seconds=job.max_seconds if job.max_seconds is not None else settings.max_seconds,
             transcript_chars=settings.transcript_chars,
             shell_allow=settings.shell_programs(),
             shell_seconds=settings.shell_seconds,

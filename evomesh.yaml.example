@@ -81,6 +81,15 @@ evolution:
 #   # a job hitting the old 24-step cap having written nothing at all.
 #   max_steps: 40
 #   max_seconds: 600
+#   # The plan pipeline's own stages (evolution.auto_plan: draft, evaluate,
+#   # decompose, and a decomposed leaf's propose) each write exactly one small
+#   # file and need far less room than a from-scratch mutation or a repair --
+#   # generation history showed even 40-step jobs capping out with nothing
+#   # written there. Tight on purpose: a leaf that cannot manage this in ~12
+#   # steps should fail fast and free the pipeline, not spend the same budget
+#   # a real mutation gets.
+#   plan_max_steps: 12
+#   plan_max_seconds: 120
 #   # What the model may be sent in one turn. Over this, the oldest tool results
 #   # are dropped with a marker saying so -- because the alternative is the model
 #   # server dropping the oldest end of the prompt, where the objective lives.

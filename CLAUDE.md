@@ -341,6 +341,17 @@ What that bought, and what it cost, are both worth knowing:
 - **There is deliberately no `validate` tool.** Validation is a five-minute subprocess with its own
   stage and its own verdict; behind a tool a model could burn its whole step budget on `uv sync`,
   and "not validated" (rule 9) would become something the model reports about itself.
+- **A decomposed leaf gets a tighter step budget than a from-scratch mutation.**
+  `harness.plan_max_steps`/`plan_max_seconds` (default 12/120s, versus `max_steps`/`max_seconds`
+  40/600s) apply to every stage that writes exactly one small file — draft, evaluate, decompose, and
+  a leaf's propose — via an optional `max_steps`/`max_seconds` on `HarnessJob` that overrides the
+  config default when set (`EnvironmentEvolver._through_harness` → `HarnessGateway.submit` →
+  `HarnessQueue.submit`). Generation history showed even the full 40-step budget capping out with
+  nothing written on tasks that had already been split down to "one small change to one module that
+  already runs" (`PLAN_DECOMPOSE_RULES`) — more room did not fix a task the model could not do, it
+  just delayed discovering that. A leaf gets a small, fast-failing budget instead so a model that
+  cannot manage it frees the pipeline for the next item in under a minute rather than burning the
+  same ten minutes an open-ended mutation or repair legitimately needs and still keeps.
 
 Three properties of the loop are load-bearing and are the reasons it is shaped this way:
 

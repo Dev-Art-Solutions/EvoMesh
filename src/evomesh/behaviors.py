@@ -337,6 +337,8 @@ class EvolverBehavior(BDIBehavior):
         auto_restart: bool = True,
         validate_seconds: float = 1800.0,
         auto_plan: bool = False,
+        plan_max_steps: int | None = None,
+        plan_max_seconds: float | None = None,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -359,6 +361,11 @@ class EvolverBehavior(BDIBehavior):
         # is approved and when an item is minimal (see docs/evolution/*.md
         # generation history for why the flat rationale alone was not enough).
         self.auto_plan = auto_plan
+        # Passed through from harness.plan_max_steps/plan_max_seconds; kept as
+        # attributes rather than read from settings again here, since a
+        # behavior has no config object of its own to reach.
+        self.plan_max_steps = plan_max_steps
+        self.plan_max_seconds = plan_max_seconds
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -565,6 +572,8 @@ class EvolverBehavior(BDIBehavior):
             record=evolver.record_plan_draft,
             on_done=lambda touched: (STAGE_EVALUATE, {}),
             write_prefix=PLAN_WRITE_PREFIX,
+            max_steps=self.plan_max_steps,
+            max_seconds=self.plan_max_seconds,
         )
 
     async def _evaluate_plan(
@@ -616,6 +625,8 @@ class EvolverBehavior(BDIBehavior):
             record=evolver.record_plan_eval,
             on_done=on_done,
             write_prefix=PLAN_WRITE_PREFIX,
+            max_steps=self.plan_max_steps,
+            max_seconds=self.plan_max_seconds,
         )
 
     async def _decompose(
@@ -685,6 +696,8 @@ class EvolverBehavior(BDIBehavior):
             on_done=on_done,
             on_no_op=on_no_op,
             write_prefix=PLAN_WRITE_PREFIX,
+            max_steps=self.plan_max_steps,
+            max_seconds=self.plan_max_seconds,
         )
 
     async def _propose(
@@ -745,6 +758,15 @@ class EvolverBehavior(BDIBehavior):
                 },
             ),
             on_no_op=on_no_op,
+            # Only a decomposed leaf gets the tight budget: it was already
+            # split down to "one small change to one module that already
+            # runs" (PLAN_DECOMPOSE_RULES), so it should not need more room
+            # than draft/evaluate/decompose did to make that one edit. A
+            # generation with no plan tree behind it is asking for whatever
+            # `objective` describes, which may be exactly as open-ended as a
+            # repair -- that path keeps the full harness.max_steps budget.
+            max_steps=self.plan_max_steps if item is not None else None,
+            max_seconds=self.plan_max_seconds if item is not None else None,
         )
 
     async def _through_harness(
@@ -762,6 +784,8 @@ class EvolverBehavior(BDIBehavior):
         record_key: str | None = None,
         on_no_op: Callable[[], Awaitable[tuple[str, dict[str, Any]] | None]] | None = None,
         write_prefix: str | None = None,
+        max_steps: int | None = None,
+        max_seconds: float | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -815,6 +839,8 @@ class EvolverBehavior(BDIBehavior):
                 root=generation.path,
                 label=label,
                 write_prefix=write_prefix,
+                max_steps=max_steps,
+                max_seconds=max_seconds,
             )
             await evolver.set_pipeline_state({**state, "job": job.number})
             # Falls through when the job is somehow already finished, which is
@@ -1190,6 +1216,8 @@ def default_behaviors(
     auto_restart: bool = True,
     validate_seconds: float = 1800.0,
     auto_plan: bool = False,
+    plan_max_steps: int | None = None,
+    plan_max_seconds: float | None = None,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -1202,6 +1230,8 @@ def default_behaviors(
             auto_restart=auto_restart,
             validate_seconds=validate_seconds,
             auto_plan=auto_plan,
+            plan_max_steps=plan_max_steps,
+            plan_max_seconds=plan_max_seconds,
         ),
     }
 

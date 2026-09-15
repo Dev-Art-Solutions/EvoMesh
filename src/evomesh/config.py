@@ -138,6 +138,18 @@ class HarnessSettings(BaseModel):
     # raised in proportion so it does not just become the next cap.
     max_steps: int = 40
     max_seconds: float = 600.0
+    # The plan pipeline's own stages -- draft, evaluate, decompose, and a
+    # leaf's propose -- each write exactly one small file (PLAN_DRAFT_RULES
+    # etc. in evolution.py all say so) and never need the exploration a
+    # from-scratch mutation or a repair does. Giving them the full budget
+    # above just gives a weak model more room to wander before that one
+    # write, or to cap out at 40 steps having written nothing -- the same
+    # failure the smaller 24-step budget already produced, just slower to
+    # discover. A leaf task that truly cannot be done in ~12 steps should
+    # fail fast and free the pipeline for the next one, not burn the same
+    # ten minutes a real mutation gets.
+    plan_max_steps: int = 12
+    plan_max_seconds: float = 120.0
     # What the model may be sent in one turn. The tools cap their own output;
     # this caps the pile of it, which is the part that grows without asking and
     # is dropped by the model server from the oldest end -- where the objective

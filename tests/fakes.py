@@ -55,6 +55,8 @@ class FakeHarness(HarnessGateway):
         root: Path,
         label: str = "",
         write_prefix: str | None = None,
+        max_steps: int | None = None,
+        max_seconds: float | None = None,
     ) -> HarnessJob:
         self.objectives.append(objective)
         self.labels.append(label)
@@ -65,6 +67,8 @@ class FakeHarness(HarnessGateway):
             allow_write=True,
             write_prefix=write_prefix,
             label=label,
+            max_steps=max_steps,
+            max_seconds=max_seconds,
         )
         batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
         entries: list[dict[str, object]] = []
