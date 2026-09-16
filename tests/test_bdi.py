@@ -1,7 +1,10 @@
 """What makes these agents BDI rather than a loop with nice field names."""
 
+import logging
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 from evomesh.bdi import (
     BDIBehavior,
@@ -339,12 +342,14 @@ async def test_a_recurring_goal_with_notify_on_announces_every_completion(
 
 
 async def test_a_one_shot_goals_first_completion_is_progress_not_finished(
-    tmp_path: Path,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The first goal_done on a fresh, non-recurring goal is a small model's
-    rubber stamp (see _apply), not a real finish -- worth surfacing as
-    progress, but calling it "finished" would tell a human the work is over
-    right before the agent quietly re-checks it once more."""
+    rubber stamp (see _apply), not a real finish -- logged as progress, not
+    announced, since calling it "finished" would tell a human the work is
+    over right before the agent quietly re-checks it once more. A step that
+    is only progress is mechanics for the log, not something worth
+    interrupting a human over; only the real finish is announced."""
     environment, agent = await worker(tmp_path, ScriptedProvider())
     goal = agent.mind.add_goal("Summarize the notes", notify=True)
     runtime = environment.runtimes[agent.id]
@@ -358,20 +363,25 @@ async def test_a_one_shot_goals_first_completion_is_progress_not_finished(
         summary="done", step="read the notes", goal_done=True, phase=AgentPhase.IDLE, worked=True
     )
 
-    await runtime._apply(outcome, goal)  # noqa: SLF001 - first cycle: the rubber stamp
-    assert len(announced) == 1
-    assert "progress" in announced[0]
-    assert "finished" not in announced[0]
+    with caplog.at_level(logging.INFO, logger="evomesh.agents"):
+        await runtime._apply(outcome, goal)  # noqa: SLF001 - first cycle: the rubber stamp
+    assert not announced, "a rubber-stamp completion is progress, not a real finish"
+    assert "progress" in caplog.text
 
+    caplog.clear()
     await runtime._apply(outcome, goal)  # noqa: SLF001 - second cycle: the real finish
-    assert len(announced) == 2
-    assert "finished" in announced[1]
+    assert len(announced) == 1
+    assert "finished" in announced[0]
     await environment.stop()
 
 
-async def test_a_notified_goal_announces_progress_on_an_ordinary_step(tmp_path: Path) -> None:
-    """The actual ask this answers: visibility into how far along a goal is,
-    not just a message once it is over."""
+async def test_a_notified_goal_logs_progress_on_an_ordinary_step_instead_of_announcing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Mid-plan progress is mechanics, not the answer a recurring goal was
+    asked to produce -- worth having in the logs for whoever wants to look,
+    not worth interrupting a human over. Only a genuine finish (or an error)
+    reaches announce()."""
     environment, agent = await worker(tmp_path, ScriptedProvider())
     goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
     runtime = environment.runtimes[agent.id]
@@ -382,14 +392,15 @@ async def test_a_notified_goal_announces_progress_on_an_ordinary_step(tmp_path: 
 
     runtime.announce = record
 
-    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
-        CycleOutcome(step="opened the page", phase=AgentPhase.ACTING, worked=True),
-        goal,
-    )
+    with caplog.at_level(logging.INFO, logger="evomesh.agents"):
+        await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not a full cycle
+            CycleOutcome(step="opened the page", phase=AgentPhase.ACTING, worked=True),
+            goal,
+        )
 
-    assert len(announced) == 1
-    assert "progress" in announced[0]
-    assert "opened the page" in announced[0]
+    assert not announced
+    assert "progress" in caplog.text
+    assert "opened the page" in caplog.text
     await environment.stop()
 
 

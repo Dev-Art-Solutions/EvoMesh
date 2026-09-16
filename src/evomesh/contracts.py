@@ -459,6 +459,11 @@ class AgentDefinition(BaseModel):
     # Overrides the provider's num_ctx for this one agent. None defers to
     # ProviderSettings.num_ctx for whatever provider/model this agent runs.
     num_ctx: int | None = None
+    # Silences this agent's unprompted announcements (mesh-wide and its own
+    # private bot) without touching whether it runs or what any goal's own
+    # `notify` flag says -- a human who still wants the agent working, just
+    # not narrating, mutes the agent rather than editing every goal.
+    muted: bool = False
     status: AgentStatus = AgentStatus.CANDIDATE
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)

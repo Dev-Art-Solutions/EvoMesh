@@ -167,7 +167,21 @@ class Environment:
                 logger.exception("A notification channel failed")
 
     async def announce_agent(self, agent_id: str, text: str) -> None:
-        """Like announce(), plus that one agent's own private bot, if any."""
+        """Like announce(), plus that one agent's own private bot, if any.
+
+        A muted agent keeps running and keeps its goals -- muting silences
+        what it says unprompted, not what it does. The mesh-wide channel is
+        skipped too, not just the agent's private bot: a human who muted an
+        agent because it spams does not want that same spam surfacing in the
+        shared channel instead.
+        """
+        try:
+            muted = self.registry.get(agent_id).muted
+        except KeyError:
+            muted = False
+        if muted:
+            logger.info("muted agent %s: %s", agent_id, text)
+            return
         await self.announce(text)
         for notify in list(self.agent_notifiers.get(agent_id, [])):
             try:
@@ -698,6 +712,19 @@ class Environment:
         if was_running:
             definition.status = AgentStatus.ACTIVE
             await self.start_agent(definition.id)
+        return definition
+
+    async def configure_agent_muted(self, agent_id_or_name: str, muted: bool) -> AgentDefinition:
+        """Toggle whether this agent's unprompted announcements are silenced.
+
+        No stop/restart needed, unlike a model or context-window change: this
+        touches nothing the running loop reads, only what announce_agent()
+        does with what it produces.
+        """
+        definition = self.registry.get(agent_id_or_name)
+        definition.muted = muted
+        definition.touch()
+        await self.repository.save_agent(definition)
         return definition
 
     async def available_models(self, provider_name: str) -> list[str]:

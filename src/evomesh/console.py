@@ -42,6 +42,7 @@ HELP = """Commands:
   /model <agent> <model> [prov] Change one agent's provider/model
   /num-ctx <agent> <n>|clear    Override (or clear) one agent's context window
   /agent start|stop <agent>     Control an individual agent loop
+  /agent mute|unmute <agent>    Silence (or restore) its unprompted announcements
   /cycle <agent>                Run one deliberation cycle now
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
@@ -191,8 +192,9 @@ class ConsoleChannel:
         for agent in self.environment.registry.all():
             state = states[agent.id]
             detail = state.last_error or state.last_outcome
+            muted = " (muted)" if agent.muted else ""
             rows.append(
-                f"{agent.name} [{agent_label(agent.type)}] {agent.status}/{state.phase} "
+                f"{agent.name} [{agent_label(agent.type)}] {agent.status}/{state.phase}{muted} "
                 f"{agent.provider}:{agent.model_name} cycles={state.cycles}\n"
                 f"    goal: {state.goal or 'none'}\n"
                 f"    last: {detail or 'nothing yet'}"
@@ -432,7 +434,7 @@ class ConsoleChannel:
 
     async def _command_agent(self, parts: list[str]) -> str:
         if len(parts) != 3:
-            return "Usage: /agent start|stop <agent>"
+            return "Usage: /agent start|stop|mute|unmute <agent>"
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
         if action == "start":
@@ -440,8 +442,14 @@ class ConsoleChannel:
             await self.environment.start_agent(definition.id)
         elif action == "stop":
             await self.environment.stop_agent(definition.id)
+        elif action in ("mute", "unmute"):
+            definition = await self.environment.configure_agent_muted(
+                definition.id, action == "mute"
+            )
+            state = "muted" if definition.muted else "unmuted"
+            return f"Agent '{definition.name}' {state}; it keeps running, just stays quiet."
         else:
-            return "Agent action must be start or stop."
+            return "Agent action must be start, stop, mute, or unmute."
         return f"Agent '{definition.name}' {action}ed."
 
     async def _command_cycle(self, parts: list[str]) -> str:

@@ -82,6 +82,13 @@ HARNESS_VERBS = (
     "identify",
     "locate",
     "diagnose",
+    # Both the news-watcher and news-analyzer templates phrase their goal as
+    # "Fetch the latest financial headlines with news_fetch ..." -- without
+    # this verb that step never qualified for through_harness(), so the tool
+    # it names could never actually be called; the model just reported (truthfully)
+    # that it had no way to call it.
+    "fetch",
+    "gather",
 )
 
 # How long a reactive chat question may wait on a harness job before falling
@@ -272,6 +279,19 @@ class BDIReasoner:
                 action=recipe.action,
                 context_keys=recipe.context_keys,
             )
+        if goal.cron or goal.interval_seconds:
+            # A goal on a schedule is an appointment kept the same way every
+            # time, not a fresh essay prompt every occurrence -- unlike a bare
+            # `recurring=True` with no schedule, which re-plans with the model
+            # on purpose (see test_a_finished_plan_is_marked_achieved...).
+            # Letting a small model re-paraphrase a scheduled goal is how a
+            # step stops starting with the verb through_harness() keys off of
+            # (HARNESS_VERBS): the goal author already wrote a step-shaped
+            # sentence naming the tool to use, and committing it verbatim both
+            # saves the planning call and keeps the harness objective the
+            # full goal, not a paraphrase that dropped the part naming the
+            # tool.
+            return mind.commit(goal.id, [goal.description], plan="ad-hoc")
         steps = await self._plan_with_model(context, goal)
         return mind.commit(goal.id, steps, plan="model" if len(steps) > 1 else "ad-hoc")
 

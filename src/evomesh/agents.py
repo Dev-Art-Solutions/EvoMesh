@@ -292,8 +292,16 @@ class AgentRuntime:
                         f"{outcome.error}"
                     )
                 elif outcome.step:
-                    await self.announce(
-                        f'{self.definition.name} progress on "{goal.description}": {outcome.step}'
+                    # Mid-flight chatter ("harness job N is looking into...",
+                    # "still working") is mechanics, not the answer a human
+                    # asked a recurring goal to produce -- worth having in the
+                    # logs, not worth interrupting someone over. Only the
+                    # goal's actual finish (or an error) reaches announce().
+                    logger.info(
+                        '%s progress on "%s": %s',
+                        self.definition.name,
+                        goal.description,
+                        outcome.step,
                     )
         if outcome.fact:
             # Beliefs come from perception; a cycle's takeaway is durable memory.

@@ -41,8 +41,47 @@ async def test_console_routes_commands(tmp_path: Path) -> None:
     )
     assert "context window of 32768" in (await console.route('/num-ctx "Writer" 32768'))
     assert "no longer overrides" in (await console.route('/num-ctx "Writer" clear'))
+    assert "muted" in (await console.route('/agent mute "Writer"'))
+    assert environment.registry.get(agent.id).muted is True
+    assert "(muted)" in (await console.route("/agents"))
+    assert "unmuted" in (await console.route('/agent unmute "Writer"'))
+    assert environment.registry.get(agent.id).muted is False
     assert await console.route('/chat "Writer"') == "Talking to Writer."
     assert await console.route("hello") == "Writer> Mock response"
+    await environment.stop()
+
+
+async def test_a_muted_agents_announcements_are_logged_not_sent(
+    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    """Muting silences what an agent says unprompted -- both the shared mesh
+    channel and its own private bot -- without stopping it from running."""
+    import logging
+
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Chatty", purpose="Report often")
+    await environment.register_agent(agent)
+
+    received: list[str] = []
+
+    async def notifier(text: str) -> None:
+        received.append(text)
+
+    environment.notifiers.append(notifier)
+    environment.agent_notifiers[agent.id] = [notifier]
+
+    await environment.configure_agent_muted(agent.id, True)
+    with caplog.at_level(logging.INFO, logger="evomesh.environment"):
+        await environment.announce_agent(agent.id, "a chatty update")
+    assert not received
+    assert "a chatty update" in caplog.text
+    assert not any(entry[2] == "a chatty update" for entry in environment.announcement_log)
+
+    await environment.configure_agent_muted(agent.id, False)
+    await environment.announce_agent(agent.id, "an important update")
+    assert received == ["an important update", "an important update"]
     await environment.stop()
 
 
