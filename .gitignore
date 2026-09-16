@@ -24,6 +24,10 @@ dist/
 # runtime state like data/ or workspace/, not source.
 **/.watch_state.json
 
+# news_fetch's own durable headline cache -- runtime state, rebuilt from live
+# feeds, not source.
+**/.news_cache.jsonl
+
 # Per-candidate scratch: the objective lives in the commit message, and a
 # validation record belongs to the generation that produced it.
 MUTATION_OBJECTIVE.md

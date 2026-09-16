@@ -26,5 +26,6 @@
     "USD/JPY",
     "GBP/USD"
   ],
-  "limit": 10
+  "limit": 10,
+  "cache_days": 3
 }

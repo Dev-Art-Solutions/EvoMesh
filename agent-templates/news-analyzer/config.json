@@ -1,0 +1,12 @@
+{
+  "feeds": [
+    "https://finance.yahoo.com/",
+    "https://www.forexfactory.com/news"
+  ],
+  "instruments": {
+    "XAUUSD": ["gold", "xau"],
+    "EURUSD": ["euro", "ecb", "fed"]
+  },
+  "min_confidence": "medium",
+  "cache_days": 3
+}

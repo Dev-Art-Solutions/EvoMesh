@@ -7,13 +7,18 @@ news_fetch tool (imported by file path, since neither is an installed
 package), filters by the keywords configured in config.json, and prints one
 line per headline it has not already reported. Silence means either nothing
 new matched, or no keywords are configured to match against at all.
+
+Every poll also feeds news_fetch's own durable cache (see CACHE_PATH there)
+via fetch_and_cache -- this watcher's dedup state (below) only remembers
+which links it already announced, not the headlines themselves, so the
+cache is what lets a later on-demand news_fetch call ("show me the last
+day") see history that never matched a keyword at all.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
-import urllib.error
 from pathlib import Path
 from types import ModuleType
 
@@ -56,13 +61,7 @@ def main() -> int:
     state = _load_state()
     seen: set[str] = set(state["seen"])
 
-    collected: list[dict[str, str]] = []
-    for url in feeds:
-        try:
-            raw = news_fetch._fetch(url)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-            continue
-        collected.extend(news_fetch._parse_source(url, raw))
+    collected = news_fetch.fetch_and_cache(feeds, config)
 
     matches = [
         item for item in collected if any(keyword in item["title"].lower() for keyword in keywords)
