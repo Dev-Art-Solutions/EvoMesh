@@ -62,6 +62,15 @@ def _fake_news_fetch_module(config: dict):
                 for item in root.iter("item")
             ]
 
+        @classmethod
+        def fetch_and_cache(cls, feeds, cfg):
+            collected = []
+            for url in feeds:
+                for item in cls._parse_source(url, cls._fetch(url)):
+                    item["source"] = url
+                    collected.append(item)
+            return collected
+
     return Fake()
 
 
