@@ -56,6 +56,8 @@ internal sealed class MainForm : Form
     private Button _agentMuteToggle = null!;
     private Button _agentDeleteButton = null!;
     private TextBox _agentNumCtxField = null!;
+    private TextBox _agentTelegramToken = null!;
+    private Label _agentTelegramStatus = null!;
     private TextBox _newAgentRequest = null!;
     private TextBox _runtimeCycleSeconds = null!;
     private TextBox _evolutionCycleSeconds = null!;
@@ -132,8 +134,21 @@ internal sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open Control Center", null, (_, _) => RestoreFromTray());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit (stops the mesh)", null, (_, _) =>
+        // Closing this dashboard was never actually what stopped the mesh --
+        // Dispose() only ever drops the control connection, never sends
+        // /exit -- so a run-supervised.ps1-style setup (the mesh supervised
+        // by its own process, not spawned by this one) keeps right on
+        // running either way. The old label said "stops the mesh" anyway,
+        // which taught a human to leave this window open forever out of
+        // caution for something that was never true.
+        menu.Items.Add("Exit Control Center (mesh keeps running)", null, (_, _) =>
         {
+            _exitRequested = true;
+            Close();
+        });
+        menu.Items.Add("Stop mesh and exit", null, async (_, _) =>
+        {
+            await RunSafeAsync(_runtime.StopAsync);
             _exitRequested = true;
             Close();
         });
@@ -158,7 +173,9 @@ internal sealed class MainForm : Form
             _trayIcon.ShowBalloonTip(
                 4000,
                 "EvoMesh is still running",
-                "The mesh keeps evolving in the background. Use the tray icon to reopen it or exit.",
+                "The mesh keeps evolving in the background -- closing this window (or exiting from " +
+                "the tray icon) never stops it. Use \"Stop mesh and exit\" in the tray menu if you " +
+                "actually want to stop it too.",
                 ToolTipIcon.Info);
             return;
         }
@@ -424,7 +441,8 @@ internal sealed class MainForm : Form
         });
 
         _agentDetail = new Panel { Dock = DockStyle.Fill, Visible = false };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -485,6 +503,42 @@ internal sealed class MainForm : Form
         mgrid.Controls.Add(applyModel, 3, 1);
         manage.Controls.Add(mgrid);
 
+        var telegram = new GroupBox { Text = "Telegram", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12) };
+        var tgrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, AutoSize = true };
+        tgrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        tgrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        tgrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _agentTelegramToken = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(3, 5, 8, 5),
+            PlaceholderText = "Paste a BotFather token to give this agent its own private bot...",
+            UseSystemPasswordChar = true,
+        };
+        tgrid.Controls.Add(_agentTelegramToken, 0, 0);
+        var setToken = MakeButton("Set", 80);
+        setToken.Click += async (_, _) => await SetSelectedAgentTelegramAsync();
+        tgrid.Controls.Add(setToken, 1, 0);
+        var unsetToken = MakeButton("Unset", 80);
+        unsetToken.Click += async (_, _) => await UnsetSelectedAgentTelegramAsync();
+        tgrid.Controls.Add(unsetToken, 2, 0);
+        _agentTelegramStatus = new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(3, 8, 3, 0),
+            Text = "No private bot -- reachable only through its own chat panel or the mesh-wide bot.",
+        };
+        tgrid.Controls.Add(_agentTelegramStatus, 0, 1);
+        tgrid.SetColumnSpan(_agentTelegramStatus, 2);
+        var testToken = MakeButton("Test", 80);
+        testToken.Click += async (_, _) =>
+        {
+            if (_selectedAgent is { } row) await SendCommandAsync($"/telegram test {Quote(row.Name)}");
+        };
+        tgrid.Controls.Add(testToken, 2, 1);
+        telegram.Controls.Add(tgrid);
+
         var chat = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         chat.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         chat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -527,7 +581,8 @@ internal sealed class MainForm : Form
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(actions, 0, 1);
         layout.Controls.Add(manage, 0, 2);
-        layout.Controls.Add(chat, 0, 3);
+        layout.Controls.Add(telegram, 0, 3);
+        layout.Controls.Add(chat, 0, 4);
         _agentDetail.Controls.Add(layout);
 
         container.Controls.Add(_agentDetail);
@@ -646,6 +701,7 @@ internal sealed class MainForm : Form
         _agentProvider.SelectedItem = row.Provider;
         _agentModel.Text = row.Model;
         _agentNumCtxField.Text = row.NumCtx?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        _agentTelegramToken.Clear();
         _agentChatOutput.Clear();
         if (_agentChatHistory.TryGetValue(row.Id, out var history))
         {
@@ -679,6 +735,9 @@ internal sealed class MainForm : Form
         // /agent delete refuses a core agent server-side too; graying the
         // button out here is one less round trip to learn that.
         _agentDeleteButton.Enabled = !row.IsSystem;
+        _agentTelegramStatus.Text = row.HasTelegram
+            ? "Has its own private bot -- \"Test\" asks it directly, or \"Unset\" to remove it."
+            : "No private bot -- reachable only through its own chat panel or the mesh-wide bot.";
     }
 
     private async Task SendSelectedAgentChatAsync(string text)
@@ -756,6 +815,27 @@ internal sealed class MainForm : Form
             numCtxText.Length == 0
                 ? $"/num-ctx {Quote(row.Name)} clear"
                 : $"/num-ctx {Quote(row.Name)} {numCtxText}");
+        await RefreshAgentListAsync();
+    }
+
+    private async Task SetSelectedAgentTelegramAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        var token = _agentTelegramToken.Text.Trim();
+        if (token.Length == 0)
+        {
+            MessageBox.Show(this, "Paste the token BotFather gave you first.", "Telegram", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        await SendCommandAsync($"/telegram set {Quote(row.Name)} {Quote(token)}");
+        _agentTelegramToken.Clear();
+        await RefreshAgentListAsync();
+    }
+
+    private async Task UnsetSelectedAgentTelegramAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        await SendCommandAsync($"/telegram unset {Quote(row.Name)}");
         await RefreshAgentListAsync();
     }
 
