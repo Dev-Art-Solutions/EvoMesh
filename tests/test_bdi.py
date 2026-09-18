@@ -786,6 +786,44 @@ async def test_a_reactive_question_calls_a_tool_through_the_harness_when_granted
     assert harness.objectives and "What is my balance?" in harness.objectives[0]
 
 
+async def test_a_reactive_question_names_the_agents_own_skills_to_the_harness(
+    tmp_path: Path,
+) -> None:
+    """Found live: NewsAnalyzer answered a chat question with a full
+    narrated report despite its own news-impact-analysis skill spelling out
+    a one-line answer format with BAD/GOOD examples -- the skill was simply
+    never read for a reactive question, only during its recurring goal. The
+    mesh-wide skill catalog every harness job already gets is easy to skim
+    past; naming this agent's own skills imperatively is what closes that."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsAnalyzer",
+        purpose="Analyze news",
+        harness_root=str(tmp_path),
+        skills=["news-impact-analysis"],
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="XAUUSD bearish (medium): Fed hawkish -- rates up.")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    await BDIBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id=definition.id, content="any news on gold?"),
+    )
+
+    assert harness.objectives
+    assert "news-impact-analysis" in harness.objectives[0]
+    assert "read it first" in harness.objectives[0]
+
+
 async def test_a_reactive_question_answers_from_memory_without_harness_access(
     tmp_path: Path,
 ) -> None:

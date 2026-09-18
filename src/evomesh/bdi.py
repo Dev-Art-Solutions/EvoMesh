@@ -531,6 +531,27 @@ class BDIBehavior:
             # memory this once beats hijacking that job or queuing a second one
             # (the queue allows only one open job per agent anyway).
             return None
+        # The harness job already gets every installed skill's one-line
+        # catalog entry prepended (environment.py's _run_harness_job) -- but
+        # that list is mesh-wide, easy to skim past, and nothing points the
+        # model at *this agent's own* skills specifically. Found live,
+        # repeatedly: NewsAnalyzer answering a chat question with a full
+        # narrated report (headers, a "let me work through each" preamble,
+        # per-headline reasoning) despite its own news-impact-analysis skill
+        # spelling out, with BAD/GOOD examples, exactly the one-line format a
+        # chat answer should take -- the skill was simply never read for a
+        # reactive question, only during its recurring goal. Naming this
+        # agent's own bundled skills here, imperatively, is what a generic
+        # "you have tools" catalog entry cannot do.
+        skills_hint = ""
+        if context.definition.skills:
+            names = ", ".join(context.definition.skills)
+            skills_hint = (
+                f"\n\nThis agent's own skills: {names}. If one of them governs "
+                "this kind of question, read it first (the `read` tool) and "
+                "follow its formatting rules exactly -- do not answer "
+                "generically when a skill already specifies the answer's shape."
+            )
         job = harness.submit(
             f"Answer this question directly: {message.content.strip()}\n\n"
             "Use a tool only if you actually need to -- if you already know "
@@ -539,7 +560,7 @@ class BDIBehavior:
             "not narrate your own process (no 'Here's what I found', no "
             "'## Analysis' headers, no listing what you checked and ruled "
             "out) and do not pad a short fact into a structured writeup. "
-            "Say the answer, plainly, the way you would say it out loud.",
+            f"Say the answer, plainly, the way you would say it out loud.{skills_hint}",
             agent_id=context.definition.id,
             root=Path(root),
             label=message.content.strip()[:80],
