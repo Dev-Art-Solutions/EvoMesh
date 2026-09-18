@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from .mesh_utils import directed_pair_count
+
 
 @dataclass
 class MeshNode:
@@ -48,3 +50,11 @@ class Mesh:
         for source, targets in self.edges.items():
             for target, label in targets.items():
                 yield source, target, label
+
+    def edge_count(self) -> int:
+        edges = (
+            (source, target)
+            for source, targets in self.edges.items()
+            for target in targets
+        )
+        return len(directed_pair_count(edges))
