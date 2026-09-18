@@ -50,6 +50,9 @@ goals:                            # optional list, each becomes a standing goal
                                          # this goal's progress and completion
 skills: [trading-strategy]           # names this template bundles or expects installed
 tools: [mt5_query, mt5_signal]        # same
+harness: true                          # optional, default false — grant harness access at spawn
+                                        # even with no bundled tools (see "Bundled skills and
+                                        # tools" below); implied already whenever tools is non-empty
 watch:                                 # optional deterministic watcher — see below
   command: python "{template_dir}/scripts/watch_positions.py"
   interval_seconds: 5
@@ -124,9 +127,11 @@ mesh's live `SkillRegistry`/`ToolRegistry` if that subdirectory exists. Name a s
 some other way — otherwise the agent gets a dangling reference to something that was never
 registered.
 
-If `tools` is non-empty, `instantiate()` automatically grants the new agent harness access rooted
-at its own playground, so its custom tools can actually run. Two things still have to be true, or
-the tool exists but silently cannot run:
+If `tools` is non-empty, or `harness: true` is set explicitly (for a template with no custom
+tools of its own, relying only on the harness's built-in read/edit/write/shell -- a general coding
+agent, say), `instantiate()` automatically grants the new agent harness access rooted at its own
+playground (or its `project`, see "Working in a real project" below). Two things still have to be
+true, or a bundled custom tool exists but silently cannot run:
 
 - `harness.enabled: true` in `evomesh.yaml`;
 - the tool's underlying program (its command's first word, e.g. `python`) listed in

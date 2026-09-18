@@ -72,6 +72,12 @@ class AgentTemplateDefinition(BaseModel):
     goals: list[TemplateGoal] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    # instantiate() auto-grants harness access whenever a template bundles
+    # its own tools (they need it to run at all) -- but an agent whose whole
+    # purpose is the harness's own built-in read/edit/write/shell, with no
+    # custom tool of its own (a general coding agent, say), bundles none and
+    # so got no grant either. This says so explicitly instead.
+    harness: bool = False
     # See watchers.py -- a command polled on its own interval, never on this
     # agent's cognition cycle. May use the placeholder {template_dir} for the
     # template's own installed directory, the same way a tool's command may
@@ -141,6 +147,7 @@ def parse_agent_template(
             goals=goals,
             skills=skills,
             tools=tools,
+            harness=bool(meta.get("harness", False)),
             watch_command=str(watch.get("command") or "").strip(),
             watch_interval_seconds=(
                 float(watch["interval_seconds"])
@@ -291,10 +298,12 @@ class AgentTemplateRegistry:
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())
 
         await environment.register_agent(definition)
-        if template.tools:
+        if template.tools or template.harness:
             # A custom tool only reaches a model through the harness, so a
             # template naming tools is asking for harness access to use them
-            # -- the same grant `/harness grant <agent>` makes by hand.
+            # -- the same grant `/harness grant <agent>` makes by hand. A
+            # template with no custom tools but `harness: true` is asking
+            # for that same access on the harness's own built-in tools alone.
             root = environment.default_harness_root(definition)
             definition.harness_root = str(root)
             await environment.repository.save_agent(definition)

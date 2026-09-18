@@ -162,6 +162,26 @@ async def test_instantiate_uses_the_templates_own_project_path(tmp_path: Path) -
     await environment.stop()
 
 
+async def test_harness_true_grants_access_with_no_bundled_tools(tmp_path: Path) -> None:
+    """A template with no custom tools -- a general coding agent, using only
+    the harness's own built-in read/edit/write/shell -- got no automatic
+    grant before `harness: true` existed, unlike one naming `tools:`."""
+    text = VALID.replace("name: trader\n", "name: coder\n").replace(
+        "tools: [mt5_bridge]\n", "tools: []\nharness: true\n"
+    )
+    write_template(tmp_path, "coder", text)
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "coder")
+
+    assert definition.harness_root != ""
+    playground = environment.memory_for(definition).playground_path
+    assert Path(definition.harness_root) == playground
+    await environment.stop()
+
+
 async def test_instantiate_accepts_an_explicit_project_override(tmp_path: Path) -> None:
     write_template(tmp_path, "trader", VALID)
     override_dir = tmp_path / "override-project"
