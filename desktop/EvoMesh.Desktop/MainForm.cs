@@ -36,6 +36,27 @@ internal sealed class MainForm : Form
     private Label _settingsNotice = null!;
     private ComboBox _agentProvider = null!;
     private ComboBox _agentModel = null!;
+    private TabControl _tabs = null!;
+    private readonly ListView _agentList = new();
+    private readonly System.Windows.Forms.Timer _agentRefreshTimer = new() { Interval = 4000 };
+    // Each agent keeps its own scrollback here -- switching the selected row
+    // and back must not lose what was already said to it, and nothing here
+    // should ever bleed into another agent's panel or the shared Console tab.
+    private readonly Dictionary<string, List<string>> _agentChatHistory = [];
+    private List<AgentRow> _agentRows = [];
+    private AgentRow? _selectedAgent;
+    private Panel _agentPlaceholder = null!;
+    private Panel _agentDetail = null!;
+    private Label _agentDetailName = null!;
+    private Label _agentDetailStatus = null!;
+    private Label _agentDetailMeta = null!;
+    private RichTextBox _agentChatOutput = null!;
+    private TextBox _agentChatInput = null!;
+    private Button _agentStartStop = null!;
+    private Button _agentMuteToggle = null!;
+    private Button _agentDeleteButton = null!;
+    private TextBox _agentNumCtxField = null!;
+    private TextBox _newAgentRequest = null!;
     private TextBox _runtimeCycleSeconds = null!;
     private TextBox _evolutionCycleSeconds = null!;
     private CheckBox _autoPromote = null!;
@@ -69,6 +90,8 @@ internal sealed class MainForm : Form
         _runtime.OutputReceived += AppendOutput;
         _runtime.RunningChanged += UpdateRuntimeState;
         _runtime.HealthChecked += ShowHealthCheck;
+        _agentRefreshTimer.Tick += async (_, _) => await RefreshAgentListAsync();
+        _agentRefreshTimer.Start();
         EnsureConfiguration();
         LoadSettings();
         UpdateRuntimeState(false);
@@ -147,6 +170,7 @@ internal sealed class MainForm : Form
         if (disposing)
         {
             _trayIcon.Dispose();
+            _agentRefreshTimer.Dispose();
             _runtime.Dispose();
         }
         base.Dispose(disposing);
@@ -227,6 +251,16 @@ internal sealed class MainForm : Form
         tabs.TabPages.Add(BuildConsoleTab());
         tabs.TabPages.Add(BuildAgentsTab());
         tabs.TabPages.Add(BuildSettingsTab());
+        // A jump straight to a current picture beats waiting up to
+        // _agentRefreshTimer's own 4s tick the moment a human lands here.
+        tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            if (tabs.SelectedTab?.Text == "Agents")
+            {
+                await RefreshAgentListAsync();
+            }
+        };
+        _tabs = tabs;
         return tabs;
     }
 
@@ -288,96 +322,464 @@ internal sealed class MainForm : Form
 
     private TabPage BuildAgentsTab()
     {
-        var page = new TabPage("Agents") { Padding = new Padding(18), BackColor = BackColor };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        var page = new TabPage("Agents") { Padding = new Padding(14), BackColor = BackColor };
+        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var architect = new GroupBox { Text = "Create an agent with Agent Architect", Dock = DockStyle.Fill, Padding = new Padding(16) };
-        var architectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
-        architectLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        architectLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        architectLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        architectLayout.Controls.Add(new Label { Text = "Describe the agent you want. Architect will continue the interview in Console & Chat.", AutoSize = true }, 0, 0);
-        var request = new TextBox { Dock = DockStyle.Fill, Multiline = true, PlaceholderText = "Example: Create a Bulgarian research agent that reads D:\\Papers and uses qwen3:14b." };
-        architectLayout.Controls.Add(request, 0, 1);
-        var ask = MakeButton("Ask Architect", 150);
-        ask.Click += async (_, _) =>
+        var newAgent = new TableLayoutPanel
         {
-            if (string.IsNullOrWhiteSpace(request.Text)) return;
-            await SendCommandAsync("/chat architect");
-            await SendCommandAsync(request.Text.Trim());
-            request.Clear();
+            Dock = DockStyle.Top,
+            ColumnCount = 3,
+            AutoSize = true,
+            Padding = new Padding(0, 0, 0, 12),
         };
-        architectLayout.Controls.Add(ask, 0, 2);
-        architect.Controls.Add(architectLayout);
-
-        var models = new GroupBox { Text = "Per-agent runtime and model", Dock = DockStyle.Fill, Padding = new Padding(16) };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 4 };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-        var agentName = AddField(grid, "Agent name", 0, 0);
-        _agentProvider = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        _agentProvider.Items.AddRange(["ollama", "inferhub", "openai_compatible"]);
-        _agentProvider.SelectedIndex = 0;
-        _agentProvider.SelectedIndexChanged += async (_, _) =>
-        {
-            if (_agentProvider.Text == "ollama")
-            {
-                await RefreshOllamaModelsAsync(showErrors: false);
-            }
-        };
-        grid.Controls.Add(new Label { Text = "Provider", AutoSize = true, Anchor = AnchorStyles.Left }, 2, 0);
-        grid.Controls.Add(_agentProvider, 3, 0);
-        grid.Controls.Add(new Label { Text = "Model", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 0, 1);
-        _agentModel = new ComboBox
+        newAgent.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        newAgent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        newAgent.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        newAgent.Controls.Add(
+            new Label { Text = "New agent:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 10, 8, 3) },
+            0, 0);
+        _newAgentRequest = new TextBox
         {
             Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDown,
-            Margin = new Padding(3, 5, 12, 5),
+            Margin = new Padding(3, 6, 8, 3),
+            PlaceholderText = "Describe it, e.g. \"a Bulgarian research agent that reads D:\\Papers and uses qwen3:14b\" -- Architect asks the rest below.",
         };
-        grid.Controls.Add(_agentModel, 1, 1);
-        grid.SetColumnSpan(_agentModel, 3);
-        var apply = MakeButton("Apply model", 130);
-        apply.Click += async (_, _) =>
+        newAgent.Controls.Add(_newAgentRequest, 1, 0);
+        var ask = MakeButton("Ask Architect", 150);
+        ask.Margin = new Padding(0, 6, 0, 3);
+        ask.Click += async (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(agentName.Text) || string.IsNullOrWhiteSpace(_agentModel.Text))
-            {
-                MessageBox.Show(this, "Select an agent and model first.", "EvoMesh", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            await SendCommandAsync($"/model {Quote(agentName.Text)} {Quote(_agentModel.Text)} {_agentProvider.Text}");
+            if (string.IsNullOrWhiteSpace(_newAgentRequest.Text)) return;
+            var text = _newAgentRequest.Text.Trim();
+            _newAgentRequest.Clear();
+            SelectAgentRowById("architect");
+            await SendSelectedAgentChatAsync(text);
         };
-        var list = MakeButton("Refresh models", 150);
-        list.Click += async (_, _) =>
-        {
-            if (_agentProvider.Text == "ollama")
-            {
-                await RefreshOllamaModelsAsync(showErrors: true);
-            }
-            else
-            {
-                await SendCommandAsync($"/models {_agentProvider.Text}");
-            }
-        };
-        var startAgent = MakeButton("Start agent", 130);
-        startAgent.Click += async (_, _) => await SendCommandAsync($"/agent start {Quote(agentName.Text)}");
-        var stopAgent = MakeButton("Stop agent", 130);
-        stopAgent.Click += async (_, _) => await SendCommandAsync($"/agent stop {Quote(agentName.Text)}");
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([apply, list, startAgent, stopAgent]);
-        grid.Controls.Add(actions, 0, 2);
-        grid.SetColumnSpan(actions, 4);
-        grid.Controls.Add(new Label { Text = "Changing a running agent's model safely restarts only that agent. Other agents keep running.", AutoSize = true, ForeColor = Color.DimGray }, 0, 3);
-        grid.SetColumnSpan(grid.GetControlFromPosition(0, 3)!, 4);
-        models.Controls.Add(grid);
+        newAgent.Controls.Add(ask, 2, 0);
 
-        layout.Controls.Add(architect, 0, 0);
-        layout.Controls.Add(models, 0, 1);
-        page.Controls.Add(layout);
+        var split = new SplitContainer
+        {
+            // A freshly constructed SplitContainer is not parented or Dock-sized
+            // yet, so it validates Panel1MinSize/Panel2MinSize/SplitterDistance
+            // against its own tiny default Width right here in the initializer --
+            // a generous explicit Width first is what keeps that validation from
+            // throwing before Dock=Fill ever gets a chance to take over.
+            Width = 960,
+            Height = 560,
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterWidth = 6,
+            BackColor = Color.FromArgb(225, 230, 236),
+        };
+        split.Panel1MinSize = 240;
+        split.Panel2MinSize = 380;
+        split.SplitterDistance = 280;
+
+        _agentList.View = View.Details;
+        _agentList.FullRowSelect = true;
+        _agentList.GridLines = false;
+        _agentList.HideSelection = false;
+        _agentList.MultiSelect = false;
+        _agentList.Dock = DockStyle.Fill;
+        _agentList.Font = new Font("Segoe UI", 9.5F);
+        _agentList.Columns.Add("Agent", 160);
+        _agentList.Columns.Add("Status", 100);
+        _agentList.Columns.Add("Model", 220);
+        _agentList.SelectedIndexChanged += (_, _) =>
+        {
+            var row = _agentList.SelectedItems.Count > 0 ? _agentList.SelectedItems[0].Tag as AgentRow : null;
+            SelectAgent(row);
+        };
+        split.Panel1.Padding = new Padding(0, 0, 6, 0);
+        split.Panel1.Controls.Add(_agentList);
+        split.Panel2.Padding = new Padding(6, 0, 0, 0);
+        split.Panel2.Controls.Add(BuildAgentDetailPanel());
+
+        outer.Controls.Add(newAgent, 0, 0);
+        outer.Controls.Add(split, 0, 1);
+        page.Controls.Add(outer);
         return page;
+    }
+
+    /// <summary>
+    /// The right half of the Agents tab: nothing selected shows a placeholder,
+    /// a selection shows status, start/stop/mute/delete, the model/num_ctx
+    /// editor, and a chat panel scoped to that one agent alone.
+    /// </summary>
+    private Control BuildAgentDetailPanel()
+    {
+        var container = new Panel { Dock = DockStyle.Fill };
+
+        _agentPlaceholder = new Panel { Dock = DockStyle.Fill };
+        _agentPlaceholder.Controls.Add(new Label
+        {
+            Text = "Select an agent on the left -- or create one above -- to chat with it, " +
+                   "change its model, or delete it.",
+            AutoSize = true,
+            MaximumSize = new Size(360, 0),
+            ForeColor = Color.DimGray,
+            Location = new Point(4, 4),
+        });
+
+        _agentDetail = new Panel { Dock = DockStyle.Fill, Visible = false };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1 };
+        _agentDetailName = new Label { AutoSize = true, Font = new Font("Segoe UI", 14F, FontStyle.Bold) };
+        _agentDetailStatus = new Label { AutoSize = true, Margin = new Padding(0, 2, 0, 0) };
+        _agentDetailMeta = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(520, 0),
+            ForeColor = Color.DimGray,
+            Margin = new Padding(0, 4, 0, 0),
+        };
+        header.Controls.Add(_agentDetailName, 0, 0);
+        header.Controls.Add(_agentDetailStatus, 0, 1);
+        header.Controls.Add(_agentDetailMeta, 0, 2);
+
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 10, 0, 8) };
+        _agentStartStop = MakeButton("Stop", 90);
+        _agentStartStop.Click += async (_, _) => await ToggleSelectedAgentRunningAsync();
+        _agentMuteToggle = MakeButton("Mute", 90);
+        _agentMuteToggle.Click += async (_, _) => await ToggleSelectedAgentMutedAsync();
+        var cycleNow = MakeButton("Cycle now", 100);
+        cycleNow.Click += async (_, _) =>
+        {
+            if (_selectedAgent is { } row) await SendCommandAsync($"/cycle {Quote(row.Name)}");
+        };
+        _agentDeleteButton = MakeButton("Delete...", 100);
+        _agentDeleteButton.FlatAppearance.BorderColor = Color.FromArgb(178, 34, 34);
+        _agentDeleteButton.Click += async (_, _) => await DeleteSelectedAgentAsync();
+        actions.Controls.AddRange([_agentStartStop, _agentMuteToggle, cycleNow, _agentDeleteButton]);
+
+        var manage = new GroupBox { Text = "Model", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12) };
+        var mgrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, AutoSize = true };
+        mgrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        mgrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        mgrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        mgrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        mgrid.Controls.Add(new Label { Text = "Provider", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 0, 0);
+        _agentProvider = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(3, 5, 12, 5) };
+        _agentProvider.Items.AddRange(["ollama", "inferhub", "openai_compatible"]);
+        _agentProvider.SelectedIndexChanged += async (_, _) =>
+        {
+            if (_agentProvider.Text == "ollama") await RefreshOllamaModelsAsync(showErrors: false);
+        };
+        mgrid.Controls.Add(_agentProvider, 1, 0);
+        mgrid.Controls.Add(new Label { Text = "Num ctx", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 2, 0);
+        _agentNumCtxField = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 5), PlaceholderText = "blank = inherit" };
+        mgrid.Controls.Add(_agentNumCtxField, 3, 0);
+        mgrid.Controls.Add(new Label { Text = "Model", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 8, 8) }, 0, 1);
+        _agentModel = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3, 5, 12, 5) };
+        mgrid.Controls.Add(_agentModel, 1, 1);
+        mgrid.SetColumnSpan(_agentModel, 2);
+        var applyModel = MakeButton("Apply", 90);
+        applyModel.Click += async (_, _) => await ApplySelectedAgentModelAsync();
+        mgrid.Controls.Add(applyModel, 3, 1);
+        manage.Controls.Add(mgrid);
+
+        var chat = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        chat.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        chat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _agentChatOutput = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            BackColor = Color.FromArgb(17, 25, 39),
+            ForeColor = Color.FromArgb(225, 235, 245),
+            Font = new Font("Cascadia Mono", 10F),
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+        var chatInput = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(0, 8, 0, 0) };
+        chatInput.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        chatInput.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        _agentChatInput = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Message this agent..." };
+        _agentChatInput.KeyDown += async (_, args) =>
+        {
+            if (args.KeyCode == Keys.Enter && !args.Shift)
+            {
+                args.SuppressKeyPress = true;
+                var text = _agentChatInput.Text.Trim();
+                _agentChatInput.Clear();
+                await SendSelectedAgentChatAsync(text);
+            }
+        };
+        var sendButton = MakeButton("Send", 100);
+        sendButton.Dock = DockStyle.Fill;
+        sendButton.Click += async (_, _) =>
+        {
+            var text = _agentChatInput.Text.Trim();
+            _agentChatInput.Clear();
+            await SendSelectedAgentChatAsync(text);
+        };
+        chatInput.Controls.Add(_agentChatInput, 0, 0);
+        chatInput.Controls.Add(sendButton, 1, 0);
+        chat.Controls.Add(_agentChatOutput, 0, 0);
+        chat.Controls.Add(chatInput, 0, 1);
+
+        layout.Controls.Add(header, 0, 0);
+        layout.Controls.Add(actions, 0, 1);
+        layout.Controls.Add(manage, 0, 2);
+        layout.Controls.Add(chat, 0, 3);
+        _agentDetail.Controls.Add(layout);
+
+        container.Controls.Add(_agentDetail);
+        container.Controls.Add(_agentPlaceholder);
+        return container;
+    }
+
+    private async Task RefreshAgentListAsync()
+    {
+        if (!_runtime.IsRunning)
+        {
+            return;
+        }
+        List<AgentRow> rows;
+        try
+        {
+            rows = await _runtime.GetAgentsAsync();
+        }
+        catch
+        {
+            // Transient -- the next timer tick tries again rather than
+            // popping an error over what is, from a human's chair, nothing
+            // more than a periodic background refresh.
+            return;
+        }
+        _agentRows = rows;
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(ApplyAgentRows); } catch (ObjectDisposedException) { } catch (InvalidOperationException) { }
+            return;
+        }
+        ApplyAgentRows();
+    }
+
+    private void ApplyAgentRows()
+    {
+        var previouslySelectedId = _selectedAgent?.Id;
+        _agentList.BeginUpdate();
+        _agentList.Items.Clear();
+        foreach (var row in _agentRows.OrderBy(r => r.IsSystem ? 0 : 1).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var item = new ListViewItem(row.Name) { Tag = row, ForeColor = StatusColor(row) };
+            item.SubItems.Add(StatusText(row));
+            item.SubItems.Add($"{row.Provider}:{row.Model}");
+            _agentList.Items.Add(item);
+            if (row.Id == previouslySelectedId)
+            {
+                item.Selected = true;
+            }
+        }
+        _agentList.EndUpdate();
+        // The row objects are new instances every refresh; re-point the
+        // selection at this tick's copy so the detail panel's own numbers
+        // (cycles, phase, goal) do not go stale between polls.
+        if (previouslySelectedId is not null)
+        {
+            var updated = _agentRows.FirstOrDefault(r => r.Id == previouslySelectedId);
+            if (updated is not null)
+            {
+                _selectedAgent = updated;
+                RenderAgentDetailHeader();
+            }
+        }
+    }
+
+    private static string StatusText(AgentRow row) => row.Phase switch
+    {
+        "offline" => "○ offline",
+        "awaiting-harness" => "◐ working",
+        "thinking" => "◐ thinking",
+        "acting" => "◐ acting",
+        "starting" => "◐ starting",
+        "error" => "✕ error",
+        _ => row.Status == "active" ? "● idle" : "○ stopped",
+    };
+
+    private static Color StatusColor(AgentRow row) => row.Phase switch
+    {
+        "offline" => Color.Gray,
+        "error" => Color.Firebrick,
+        _ => row.Status == "active" ? Color.FromArgb(20, 130, 60) : Color.DimGray,
+    };
+
+    /// <summary>Picks a row already in the cached list, e.g. after asking
+    /// Architect for a new agent -- before the next refresh even lands.</summary>
+    private void SelectAgentRowById(string agentId)
+    {
+        var row = _agentRows.FirstOrDefault(r => r.Id == agentId);
+        if (row is null)
+        {
+            return;
+        }
+        foreach (ListViewItem item in _agentList.Items)
+        {
+            item.Selected = item.Tag is AgentRow tagged && tagged.Id == agentId;
+        }
+        SelectAgent(row);
+    }
+
+    private void SelectAgent(AgentRow? row)
+    {
+        _selectedAgent = row;
+        if (row is null)
+        {
+            _agentDetail.Visible = false;
+            _agentPlaceholder.Visible = true;
+            return;
+        }
+        _agentPlaceholder.Visible = false;
+        _agentDetail.Visible = true;
+        RenderAgentDetailHeader();
+        _agentProvider.SelectedItem = row.Provider;
+        _agentModel.Text = row.Model;
+        _agentNumCtxField.Text = row.NumCtx?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        _agentChatOutput.Clear();
+        if (_agentChatHistory.TryGetValue(row.Id, out var history))
+        {
+            foreach (var line in history)
+            {
+                _agentChatOutput.AppendText(line + Environment.NewLine);
+            }
+            _agentChatOutput.SelectionStart = _agentChatOutput.TextLength;
+            _agentChatOutput.ScrollToCaret();
+        }
+    }
+
+    private void RenderAgentDetailHeader()
+    {
+        if (_selectedAgent is not { } row)
+        {
+            return;
+        }
+        _agentDetailName.Text = row.Name + (row.IsSystem ? "  ·  core agent" : "");
+        _agentDetailStatus.Text = $"{StatusText(row)}   cycles={row.Cycles}" + (row.Muted ? "   muted" : "")
+            + (row.HasTelegram ? "   telegram" : "");
+        _agentDetailStatus.ForeColor = StatusColor(row);
+        _agentDetailMeta.Text = row switch
+        {
+            { Goal.Length: > 0 } => $"goal: {row.Goal}",
+            { LastOutcome.Length: > 0 } => $"last: {row.LastOutcome}",
+            _ => "idle, no open goal",
+        };
+        _agentStartStop.Text = row.Status == "active" ? "Stop" : "Start";
+        _agentMuteToggle.Text = row.Muted ? "Unmute" : "Mute";
+        // /agent delete refuses a core agent server-side too; graying the
+        // button out here is one less round trip to learn that.
+        _agentDeleteButton.Enabled = !row.IsSystem;
+    }
+
+    private async Task SendSelectedAgentChatAsync(string text)
+    {
+        if (_selectedAgent is not { } row || text.Length == 0)
+        {
+            return;
+        }
+        AppendAgentChat(row.Id, $"you> {text}");
+        if (!_runtime.IsRunning)
+        {
+            AppendAgentChat(row.Id, "[start the mesh first]");
+            return;
+        }
+        try
+        {
+            // Pins the shared control connection's chat target at this agent
+            // right before asking -- the same /chat the Console tab uses, so
+            // whichever surface talks next always says explicitly who to.
+            await _runtime.RequestSilentAsync($"/chat {Quote(row.Name)}");
+            var response = await _runtime.RequestSilentAsync(text);
+            AppendAgentChat(row.Id, response);
+        }
+        catch (Exception exc)
+        {
+            AppendAgentChat(row.Id, $"[error] {exc.Message}");
+        }
+        await RefreshAgentListAsync();
+    }
+
+    private void AppendAgentChat(string agentId, string line)
+    {
+        if (!_agentChatHistory.TryGetValue(agentId, out var history))
+        {
+            history = [];
+            _agentChatHistory[agentId] = history;
+        }
+        history.Add(line);
+        if (_selectedAgent?.Id != agentId)
+        {
+            return;
+        }
+        _agentChatOutput.AppendText(line + Environment.NewLine);
+        _agentChatOutput.SelectionStart = _agentChatOutput.TextLength;
+        _agentChatOutput.ScrollToCaret();
+    }
+
+    private async Task ToggleSelectedAgentRunningAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        var action = row.Status == "active" ? "stop" : "start";
+        await SendCommandAsync($"/agent {action} {Quote(row.Name)}");
+        await RefreshAgentListAsync();
+    }
+
+    private async Task ToggleSelectedAgentMutedAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        var action = row.Muted ? "unmute" : "mute";
+        await SendCommandAsync($"/agent {action} {Quote(row.Name)}");
+        await RefreshAgentListAsync();
+    }
+
+    private async Task ApplySelectedAgentModelAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        if (string.IsNullOrWhiteSpace(_agentModel.Text))
+        {
+            MessageBox.Show(this, "Pick a model first.", "EvoMesh", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        await SendCommandAsync($"/model {Quote(row.Name)} {Quote(_agentModel.Text)} {_agentProvider.Text}");
+        var numCtxText = _agentNumCtxField.Text.Trim();
+        await SendCommandAsync(
+            numCtxText.Length == 0
+                ? $"/num-ctx {Quote(row.Name)} clear"
+                : $"/num-ctx {Quote(row.Name)} {numCtxText}");
+        await RefreshAgentListAsync();
+    }
+
+    private async Task DeleteSelectedAgentAsync()
+    {
+        if (_selectedAgent is not { } row) return;
+        if (row.IsSystem)
+        {
+            MessageBox.Show(
+                this, $"'{row.Name}' is a core agent and cannot be deleted -- stop it instead.",
+                "EvoMesh", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var confirm = MessageBox.Show(
+            this, $"Delete '{row.Name}' for good? This cannot be undone.",
+            "Delete agent", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+        var wipe = MessageBox.Show(
+            this, "Also delete its saved memory, context, and playground files from disk?",
+            "Delete agent", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        await SendCommandAsync($"/agent delete {Quote(row.Name)}{(wipe ? " wipe" : "")}");
+        _agentChatHistory.Remove(row.Id);
+        SelectAgent(null);
+        await RefreshAgentListAsync();
     }
 
     private TabPage BuildSettingsTab()

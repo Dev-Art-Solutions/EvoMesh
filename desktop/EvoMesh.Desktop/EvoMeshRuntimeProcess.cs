@@ -2,8 +2,30 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace EvoMesh.Desktop;
+
+/// <summary>One row of control.py's /agents.json -- one live or offline agent.</summary>
+internal sealed record AgentRow(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("phase")] string Phase,
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("num_ctx")] int? NumCtx,
+    [property: JsonPropertyName("cycle_seconds")] int? CycleSeconds,
+    [property: JsonPropertyName("muted")] bool Muted,
+    [property: JsonPropertyName("has_telegram")] bool HasTelegram,
+    [property: JsonPropertyName("goal")] string? Goal,
+    [property: JsonPropertyName("last_outcome")] string LastOutcome,
+    [property: JsonPropertyName("last_error")] string? LastError,
+    [property: JsonPropertyName("cycles")] int Cycles)
+{
+    public bool IsSystem => Type == "system";
+}
 
 internal sealed class EvoMeshRuntimeProcess : IDisposable
 {
@@ -472,6 +494,46 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         }
     }
 
+    /// <summary>
+    /// Same round trip as <see cref="SendAsync"/>, but the answer goes back to
+    /// the caller instead of onto the shared console log -- for a panel that
+    /// keeps its own transcript (a per-agent chat) or wants the reply purely
+    /// as data (the agent list), neither of which belongs mixed into
+    /// Console &amp; Chat's single shared scrollback.
+    /// </summary>
+    public async Task<string> RequestSilentAsync(string command)
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("Start EvoMesh before sending commands.");
+        }
+        try
+        {
+            var response = await RequestAsync(command, CancellationToken.None);
+            if (!response.Running)
+            {
+                Disconnect(notify: true);
+            }
+            return response.Output;
+        }
+        catch (Exception exc)
+        {
+            Disconnect(notify: true);
+            throw new InvalidOperationException("The mesh control connection was lost.", exc);
+        }
+    }
+
+    /// <summary>The live agent roster, structured -- see control.py's /agents.json.</summary>
+    public async Task<List<AgentRow>> GetAgentsAsync()
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("Start EvoMesh before requesting agents.");
+        }
+        var response = await RequestAsync("/agents.json", CancellationToken.None);
+        return response.Agents ?? [];
+    }
+
     public async Task StopAsync()
     {
         _stopRequested = true;
@@ -726,5 +788,6 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         bool Running,
         bool Shutdown = false,
         bool Error = false,
-        Dictionary<string, double>? Stuck = null);
+        Dictionary<string, double>? Stuck = null,
+        List<AgentRow>? Agents = null);
 }
