@@ -416,6 +416,56 @@ async def test_harness_grant_with_no_path_defaults_a_system_agent_to_the_project
     await environment.stop()
 
 
+async def test_agent_project_points_harness_grant_at_a_real_directory(tmp_path: Path) -> None:
+    """/agent project sets where the agent works; /harness grant with no
+    path is what actually moves a grant there, same two-step contract as
+    every other configure-then-apply setting in this console."""
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Coder", purpose="Write code")
+    await environment.register_agent(agent)
+    real_project = tmp_path / "real-project"
+    real_project.mkdir()
+
+    set_result = await console.route(f'/agent project "Coder" "{real_project}"')
+    assert str(real_project) in set_result
+    assert agent.project_path == str(real_project)
+    # Setting it alone must not silently move an existing grant.
+    assert environment.default_harness_root(agent) == real_project
+
+    grant_result = await console.route('/harness grant "Coder"')
+    assert str(real_project) in grant_result
+    assert agent.harness_root == str(real_project)
+
+    clear_result = await console.route('/agent project "Coder" clear')
+    assert agent.project_path == ""
+    assert "no longer has a configured project" in clear_result
+    playground = environment.memory_for(agent).playground_path
+    assert environment.default_harness_root(agent) == playground
+    await environment.stop()
+
+
+async def test_agent_project_refuses_a_path_that_is_not_a_directory(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Coder", purpose="Write code")
+    await environment.register_agent(agent)
+
+    result = await console.route(f'/agent project "Coder" "{tmp_path / "nope"}"')
+
+    assert "is not a directory" in result
+    assert agent.project_path == ""
+    await environment.stop()
+
+
 async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

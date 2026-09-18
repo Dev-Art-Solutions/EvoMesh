@@ -443,6 +443,18 @@ class AgentDefinition(BaseModel):
     # is a capability an agent is given, like a filesystem grant, rather than
     # something every agent has because the mesh has it.
     harness_root: str = ""
+    # Optional. An absolute path to a real project this agent should work in --
+    # a standalone repo the human already has, not somewhere under this
+    # mesh's own workspace/agents/<slug>/ tree (that tree is what
+    # Settings.workspace_path and "workspace" mean everywhere else in this
+    # codebase -- deliberately a different name here to not collide with
+    # that). Empty (the default) is unchanged from before this field
+    # existed: the agent gets only its own mesh-managed playground. Set, it
+    # becomes what Environment.default_harness_root hands out instead of
+    # that playground -- memory.md/context.md still live in the playground
+    # either way, only where the agent's own *work* happens moves. See
+    # console.py's `/agent project <agent> <path>|clear`.
+    project_path: str = ""
     cycle_seconds: int | None = None
     # A private Telegram bot for this agent alone -- its own BotFather token,
     # separate from the mesh-wide bot in Settings.telegram. None means this

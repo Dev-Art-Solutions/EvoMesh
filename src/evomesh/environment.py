@@ -423,12 +423,16 @@ class Environment:
         """Where an agent's harness jobs run when nobody names a directory.
 
         A system agent (the Evolver, Guardian, ...) already works in the
-        EvoMesh tree itself. Anything else gets its own playground instead --
-        granting harness access with no path should never be how a fresh
-        agent ends up editing this project's own source.
+        EvoMesh tree itself. An agent with a configured project_path (a real
+        project the human pointed it at -- see AgentDefinition.project_path)
+        works there instead of its own playground. Anything else gets that
+        playground -- granting harness access with no path should never be
+        how a fresh agent ends up editing this project's own source.
         """
         if definition.type == "system":
             return self.project_root
+        if definition.project_path:
+            return Path(definition.project_path)
         return self.memory_for(definition).playground_path
 
     def memory_for(self, definition: AgentDefinition) -> AgentMemory:

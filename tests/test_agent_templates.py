@@ -124,3 +124,55 @@ async def test_instantiate_can_give_the_new_agent_its_own_telegram_bot(tmp_path:
     assert definition.telegram is not None
     assert definition.telegram.token == "123:abc"
     await environment.stop()
+
+
+def test_parse_agent_template_reads_an_optional_project_path() -> None:
+    text = VALID.replace("identity: Trader\n", "identity: Trader\nproject: D:\\Code\\SomeRepo\n")
+
+    definition = parse_agent_template(Path("agent-templates/trader/AGENT.md"), text)
+
+    assert definition.project == "D:\\Code\\SomeRepo"
+
+
+def test_parse_agent_template_project_defaults_to_empty() -> None:
+    definition = parse_agent_template(Path("agent-templates/trader/AGENT.md"), VALID)
+
+    assert definition.project == ""
+
+
+async def test_instantiate_uses_the_templates_own_project_path(tmp_path: Path) -> None:
+    """An agent with a configured project works there -- see
+    Environment.default_harness_root -- instead of its own mesh-managed
+    playground, once the harness actually grants it (tools: makes that
+    grant happen at spawn time)."""
+    project_dir = tmp_path / "real-project"
+    project_dir.mkdir()
+    templated = VALID.replace(
+        "tools: [mt5_bridge]\n", f"tools: [mt5_bridge]\nproject: {project_dir}\n"
+    )
+    write_template(tmp_path, "trader", templated)
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "trader")
+
+    assert definition.project_path == str(project_dir)
+    assert Path(definition.harness_root) == project_dir
+    await environment.stop()
+
+
+async def test_instantiate_accepts_an_explicit_project_override(tmp_path: Path) -> None:
+    write_template(tmp_path, "trader", VALID)
+    override_dir = tmp_path / "override-project"
+    override_dir.mkdir()
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(
+        environment, "trader", project_path=str(override_dir)
+    )
+
+    assert definition.project_path == str(override_dir)
+    await environment.stop()

@@ -53,6 +53,7 @@ tools: [mt5_query, mt5_signal]        # same
 watch:                                 # optional deterministic watcher — see below
   command: python "{template_dir}/scripts/watch_positions.py"
   interval_seconds: 5
+project: D:\Code\SomeRepo               # optional — see "Working in a real project" below
 ---
 
 Everything after the closing `---` is a Markdown body for a human who opens this file —
@@ -62,6 +63,25 @@ not read by the mesh. Use it to document config.json's fields and any setup the 
 
 Both `name` and `purpose` are required; parsing fails otherwise (`InvalidAgentTemplateError`).
 `goals[].text` is required per goal; everything else in a goal has the defaults shown above.
+
+## Working in a real project, instead of the mesh-managed playground
+
+By default every non-system agent gets its own playground under `workspace/agents/<slug>/` —
+`ensure_playground()` creates it the moment the agent is registered, and it is where
+`AgentDefinition.harness_root` points by default once harness access is granted. A coding agent
+meant to work on someone's actual repository (not this mesh's own state) should point at that
+repository instead: set `project` in the frontmatter to an absolute path, and `instantiate()`
+copies it onto the new `AgentDefinition.project_path` — `Environment.default_harness_root` then
+hands that out instead of the playground the moment harness access is granted (still automatic
+when the template names `tools:`, same as before this field existed). The playground itself does
+not go away: `memory.md`/`context.md` still live there either way, only where the agent's own
+*work* happens moves.
+
+A human can also set or change this after the agent already exists, without editing the template:
+`/agent project <agent> <path>` (or `clear` to go back to the playground). That only updates the
+setting — it does not by itself move an already-granted harness root, so pair it with
+`/harness grant <agent>` (no path) to actually re-grant there. `/agent-template spawn <template>
+--project <path>` does both at once, for spawning fresh.
 
 ## The deterministic watcher — when to use `watch`, and why
 

@@ -45,6 +45,8 @@ HELP = """Commands:
   /agent mute|unmute <agent>    Silence (or restore) its unprompted announcements
   /agent delete <agent> [wipe]  Remove it for good (system agents refuse this);
                                 "wipe" also deletes its memory/context/playground
+  /agent project <agent> <path>|clear  Work in a real project instead of its
+                                own playground (then /harness grant to apply)
   /cycle <agent>                Run one deliberation cycle now
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
@@ -315,7 +317,7 @@ class ConsoleChannel:
         usage = (
             "Usage: /agent-template show <name>  |  /agent-template install <directory>  |  "
             "/agent-template spawn <template> [name] [--provider p] [--model m] "
-            "[--telegram token]"
+            "[--telegram token] [--project path]"
         )
         if len(parts) < 3:
             return usage
@@ -340,18 +342,23 @@ class ConsoleChannel:
                 return f"Could not install the agent template: {describe(exc)}"
             return f"Installed template '{template.name}': {template.description} ({template.path})"
         if action == "spawn":
-            options = {"provider": None, "model": None, "telegram": ""}
+            options = {"provider": None, "model": None, "telegram": "", "project": None}
             positional: list[str] = []
             index = 3
             while index < len(parts):
                 token = parts[index]
-                if token in {"--provider", "--model", "--telegram"} and index + 1 < len(parts):
+                if (
+                    token in {"--provider", "--model", "--telegram", "--project"}
+                    and index + 1 < len(parts)
+                ):
                     options[token[2:]] = parts[index + 1]
                     index += 2
                 else:
                     positional.append(token)
                     index += 1
             agent_name = positional[0] if positional else None
+            if options["project"] is not None and _directory(options["project"]) is None:
+                return f"{options['project']} is not a directory."
             try:
                 definition = await self.environment.agent_templates.instantiate(
                     self.environment,
@@ -360,13 +367,15 @@ class ConsoleChannel:
                     provider=options["provider"],
                     model=options["model"],
                     telegram_token=options["telegram"] or "",
+                    project_path=options["project"],
                 )
             except MissingAgentTemplateError:
                 return f"There is no agent template called {target}."
             started = definition.id in self.environment.runtimes
             bot = " with its own Telegram bot" if definition.telegram else ""
+            project = f", working in {definition.project_path}" if definition.project_path else ""
             return (
-                f"Agent '{definition.name}' spawned from template '{target}'{bot}, "
+                f"Agent '{definition.name}' spawned from template '{target}'{bot}{project}, "
                 f"using {definition.provider}:{definition.model_name}. "
                 f"{'Its cycle loop is running.' if started else 'It is not running yet.'}"
             )
@@ -435,7 +444,10 @@ class ConsoleChannel:
         return f"Agent '{definition.name}' now uses a context window of {definition.num_ctx}."
 
     async def _command_agent(self, parts: list[str]) -> str:
-        usage = "Usage: /agent start|stop|mute|unmute|delete <agent> [wipe]"
+        usage = (
+            "Usage: /agent start|stop|mute|unmute|delete <agent> [wipe]  |  "
+            "/agent project <agent> <path>|clear"
+        )
         if len(parts) not in (3, 4):
             return usage
         action, agent_name = parts[1].lower(), parts[2]
@@ -449,6 +461,30 @@ class ConsoleChannel:
                 return str(exc)
             suffix = " and its workspace deleted" if wipe else " (workspace kept on disk)"
             return f"Agent '{definition.name}' deleted{suffix}."
+        if action == "project":
+            if len(parts) != 4:
+                return usage
+            definition = self.environment.registry.get(agent_name)
+            value = parts[3]
+            if value.lower() == "clear":
+                definition.project_path = ""
+                definition.touch()
+                await self.environment.repository.save_agent(definition)
+                return (
+                    f"Agent '{definition.name}' no longer has a configured project -- "
+                    "/harness grant (with no path) will use its own playground again."
+                )
+            target = _directory(value)
+            if target is None:
+                return f"{value} is not a directory."
+            definition.project_path = str(target)
+            definition.touch()
+            await self.environment.repository.save_agent(definition)
+            return (
+                f"Agent '{definition.name}' now works in {target}. This does not by itself "
+                f'move an existing harness grant -- run /harness grant "{definition.name}" '
+                "to (re-)grant it there."
+            )
         if len(parts) != 3:
             return usage
         definition = self.environment.registry.get(agent_name)
@@ -667,6 +703,11 @@ class ConsoleChannel:
                     return f"{parts[3]} is not a directory."
             elif agent.type == "system":
                 root = self.environment.project_root
+            elif agent.project_path:
+                # A human pointed this agent at a real project (/agent
+                # project) -- that beats its own mesh-managed playground the
+                # same way an explicit path above would.
+                root = Path(agent.project_path)
             else:
                 # No path named, and this is not a system agent: its own
                 # playground, never this project's own source tree, is what

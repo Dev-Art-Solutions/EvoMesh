@@ -78,6 +78,13 @@ class AgentTemplateDefinition(BaseModel):
     # use {tool_dir}.
     watch_command: str = ""
     watch_interval_seconds: float | None = None
+    # Optional. An absolute path to a real project this agent should work in
+    # instead of the mesh-managed playground it otherwise gets -- a
+    # standalone repo, not somewhere under workspace/agents/<slug>/. Empty
+    # (the default) means no change: the agent still gets its own playground,
+    # same as every template before this field existed. See
+    # Environment.default_harness_root and AgentDefinition.project_path.
+    project: str = ""
     path: Path
     created_by: str = "system"
 
@@ -140,6 +147,7 @@ def parse_agent_template(
                 if watch.get("interval_seconds") is not None
                 else None
             ),
+            project=str(meta.get("project") or "").strip(),
             path=path,
             created_by=created_by,
         )
@@ -221,6 +229,7 @@ class AgentTemplateRegistry:
         provider: str | None = None,
         model: str | None = None,
         telegram_token: str = "",
+        project_path: str | None = None,
     ) -> AgentDefinition:
         """Install the template's bundled skills/tools (if bundled beside it,
         rather than already installed) and bring up a live, running agent.
@@ -264,6 +273,10 @@ class AgentTemplateRegistry:
                 "{template_dir}", str(bundle_root.resolve(strict=False))
             ),
             watch_interval_seconds=template.watch_interval_seconds,
+            # An explicit --project at spawn time overrides the template's
+            # own default; neither given means no change from before this
+            # field existed -- the agent still gets its own playground.
+            project_path=(project_path or template.project).strip(),
         )
         for goal in template.goals:
             definition.mind.add_goal(
