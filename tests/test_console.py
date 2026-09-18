@@ -466,6 +466,30 @@ async def test_agent_project_refuses_a_path_that_is_not_a_directory(tmp_path: Pa
     await environment.stop()
 
 
+async def test_agent_self_check_overrides_and_clears_independently_of_mesh_wide(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True, self_check_command="ruff check ."),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Coder", purpose="Write code")
+    await environment.register_agent(agent)
+
+    set_result = await console.route('/agent self-check "Coder" "pytest -q"')
+    assert 'pytest -q' in set_result
+    assert agent.self_check_command == "pytest -q"
+
+    clear_result = await console.route('/agent self-check "Coder" clear')
+    assert agent.self_check_command is None
+    assert "ruff check ." in clear_result
+    await environment.stop()
+
+
 async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

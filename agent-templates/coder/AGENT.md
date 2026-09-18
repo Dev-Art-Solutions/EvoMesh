@@ -26,11 +26,15 @@ project's own lint/type-check/test commands. For any of that to actually work:
 - the programs this agent's own project uses -- `python`, `ruff`, `pyright`, `npm`, `dotnet`,
   `git`, whatever it needs -- listed in `harness.shell_allow`, or it can read and plan but never
   actually check or run anything;
-- ideally, `harness.self_check_command` set mesh-wide to that project's own lint/type/test
-  wrapper, so a change is not allowed to end as "done" until it passes -- see
-  `evomesh.yaml.example`'s own commented-out example. That setting is mesh-wide, not
-  per-agent, so it only fits when this is the only (or the dominant) project the harness is
-  ever pointed at; otherwise the `coding-discipline` skill's own instruction to run the
+- ideally, a self-check command pointed at that project's own lint/type/test wrapper, so a
+  change is not allowed to end as "done" until it actually passes. Either name `self_check:
+  "<command>"` in this file before spawning it, or run `/agent self-check "Coder" "<command>"`
+  once it already exists -- either sets this agent's own
+  `AgentDefinition.self_check_command`, which always wins over `harness.self_check_command`'s
+  mesh-wide setting (see `evomesh.yaml.example`'s own commented-out example of that one), so a
+  second `Coder` instance pointed at a different `--project` can run a different check without
+  the two fighting over one mesh-wide value. `/agent self-check "Coder" clear` goes back to the
+  mesh-wide setting. Without either, the `coding-discipline` skill's own instruction to run the
   project's own checks by hand, through `shell`, is what carries the weight instead.
 
 **Point this agent at a real project before giving it work.** By default it gets only its own

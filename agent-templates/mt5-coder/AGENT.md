@@ -48,5 +48,13 @@ the agent still writes `.mq5`/`.mqh` files and says plainly, per `mql5-conventio
 not compile them. `metaeditor64` (the basename, no path or extension) must also be in
 `harness.shell_allow`, or the agent has the path but the harness still refuses to run it.
 
+For the Python side, name `self_check: "<command>"` in this file before spawning it, or run
+`/agent self-check "MT5 Coder" "<command>"` once it already exists, to run this agent's own
+project's lint/type/test command automatically before a writing job is allowed to end -- this
+agent's own `self_check_command` always wins over `harness.self_check_command`'s mesh-wide
+setting, so it never fights with `coder` or another `mt5-coder` instance pointed at a different
+project over one shared value. `/agent self-check "MT5 Coder" clear` goes back to the mesh-wide
+setting.
+
 Give this agent its own Telegram bot with `/telegram set mt5-coder <token>` (or
 `--telegram <token>` when spawning it) to hand it tasks from a phone.

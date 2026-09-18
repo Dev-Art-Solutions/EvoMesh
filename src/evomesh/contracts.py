@@ -471,6 +471,16 @@ class AgentDefinition(BaseModel):
     # Overrides the provider's num_ctx for this one agent. None defers to
     # ProviderSettings.num_ctx for whatever provider/model this agent runs.
     num_ctx: int | None = None
+    # Overrides HarnessSettings.self_check_command/self_check_max_attempts for
+    # this one agent's own harness jobs. None defers to the mesh-wide setting;
+    # "" (empty, distinct from None) explicitly turns self-check off for this
+    # agent even when the mesh-wide setting is on. Exists because a coding
+    # agent (Coder, MT5 Coder, ...) working in its own real project needs
+    # that project's own lint/type/test command, not whatever one other
+    # project the mesh-wide setting happens to be pointed at -- see
+    # console.py's `/agent self-check <agent> <command>|clear`.
+    self_check_command: str | None = None
+    self_check_max_attempts: int | None = None
     # Silences this agent's unprompted announcements (mesh-wide and its own
     # private bot) without touching whether it runs or what any goal's own
     # `notify` flag says -- a human who still wants the agent working, just

@@ -57,6 +57,7 @@ watch:                                 # optional deterministic watcher — see 
   command: python "{template_dir}/scripts/watch_positions.py"
   interval_seconds: 5
 project: D:\Code\SomeRepo               # optional — see "Working in a real project" below
+self_check: "ruff check ."                # optional — see "Per-agent self-check" below
 ---
 
 Everything after the closing `---` is a Markdown body for a human who opens this file —
@@ -85,6 +86,23 @@ A human can also set or change this after the agent already exists, without edit
 setting — it does not by itself move an already-granted harness root, so pair it with
 `/harness grant <agent>` (no path) to actually re-grant there. `/agent-template spawn <template>
 --project <path>` does both at once, for spawning fresh.
+
+## Per-agent self-check
+
+`harness.self_check_command` in `evomesh.yaml` runs a lint/type/test command against any writing
+job's root right before it is allowed to end (see `harness.py`'s own docs), but it is one
+mesh-wide setting — wrong the moment two agents work in two different projects with two
+different check commands. Set `self_check` in the frontmatter to give a coding template its own
+default instead; `AgentDefinition.self_check_command` (set from it at `instantiate()` time)
+always wins over the mesh-wide one for that agent's own jobs. `""` (empty, distinct from unset)
+turns self-check off for that agent specifically even when the mesh-wide one is on. Like
+`self_check_command` itself, this is one command with no real shell behind it (`shlex.split`, so
+`&&`/`|` are arguments, not operators) — point it at a wrapper script to chain more than one
+check.
+
+A human can set or change this after the agent already exists too, the same shape as `project`:
+`/agent self-check <agent> "<command>"` (or `clear` to go back to the mesh-wide setting) —
+applies immediately, no restart or re-grant needed.
 
 ## The deterministic watcher — when to use `watch`, and why
 

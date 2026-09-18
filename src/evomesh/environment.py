@@ -599,10 +599,16 @@ class Environment:
         provider_name = self.settings.models.default_provider
         model: str | None = None
         num_ctx_override: int | None = None
+        self_check_command = settings.self_check_command
+        self_check_max_attempts = settings.self_check_max_attempts
         if job.agent_id and self._has(job.agent_id):
             definition = self.registry.get(job.agent_id)
             provider_name, model = definition.provider, definition.model_name
             num_ctx_override = definition.num_ctx
+            if definition.self_check_command is not None:
+                self_check_command = definition.self_check_command
+            if definition.self_check_max_attempts is not None:
+                self_check_max_attempts = definition.self_check_max_attempts
         provider = self.providers.get(provider_name)
         if provider is None:
             raise RuntimeError(f"Provider '{provider_name}' is not configured")
@@ -627,8 +633,8 @@ class Environment:
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
             custom_tools=self.active_custom_tools(),
-            self_check_command=settings.self_check_command,
-            self_check_max_attempts=settings.self_check_max_attempts,
+            self_check_command=self_check_command,
+            self_check_max_attempts=self_check_max_attempts,
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.

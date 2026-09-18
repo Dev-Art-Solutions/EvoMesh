@@ -1025,6 +1025,84 @@ async def test_a_finished_job_arrives_as_an_ordinary_message(tmp_path: Path) -> 
     assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
 
 
+def _writing_settings(tmp_path: Path, *, self_check_command: str) -> Settings:
+    settings = mesh_settings(tmp_path)
+    settings.harness = HarnessSettings(
+        enabled=True,
+        allow_write=True,
+        session_path=tmp_path / "sessions",
+        self_check_command=self_check_command,
+    )
+    return settings
+
+
+async def test_an_agent_specific_self_check_overrides_the_mesh_wide_one(
+    tmp_path: Path,
+) -> None:
+    """A coding agent working in its own real project needs that project's
+    own lint/test command, not whatever the mesh-wide setting happens to be
+    pointed at -- see AgentDefinition.self_check_command."""
+    always_fails = tmp_path / "always_fails.py"
+    always_fails.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    settings = _writing_settings(tmp_path, self_check_command=f'python "{always_fails}"')
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(name="write", arguments={"path": "out.py", "content": "x = 1\n"})
+                ]
+            ),
+            ChatTurn(text="done"),
+        ]
+    )
+    environment = Environment(settings, providers={"ollama": provider})
+    await environment.start()
+    # Empty, not None -- explicitly off for this agent despite the mesh-wide
+    # command above always failing.
+    agent = AgentDefinition(name="Coder", purpose="Write code", self_check_command="")
+    await environment.register_agent(agent)
+    try:
+        job = environment.submit_harness_job("add a file", agent_id=agent.id, root=tmp_path)
+        message = await environment.bus.receive(agent.id, wait_seconds=5)
+    finally:
+        await environment.stop()
+
+    assert f"job {job.number}" in message.content
+    assert "self-check" not in message.content
+    assert "done" in message.content
+
+
+async def test_an_agent_without_its_own_override_uses_the_mesh_wide_self_check(
+    tmp_path: Path,
+) -> None:
+    always_fails = tmp_path / "always_fails.py"
+    always_fails.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    settings = _writing_settings(tmp_path, self_check_command=f'python "{always_fails}"')
+    settings.harness.self_check_max_attempts = 1
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(name="write", arguments={"path": "out.py", "content": "x = 1\n"})
+                ]
+            ),
+            ChatTurn(text="done"),
+        ]
+    )
+    environment = Environment(settings, providers={"ollama": provider})
+    await environment.start()
+    agent = AgentDefinition(name="Coder", purpose="Write code")  # self_check_command: None
+    await environment.register_agent(agent)
+    try:
+        job = environment.submit_harness_job("add a file", agent_id=agent.id, root=tmp_path)
+        message = await environment.bus.receive(agent.id, wait_seconds=5)
+    finally:
+        await environment.stop()
+
+    assert f"job {job.number}" in message.content
+    assert "self-check still reports problems" in message.content
+
+
 async def test_a_notify_false_job_never_reaches_the_mailbox(tmp_path: Path) -> None:
     """A step that polls its own job's result (`through_harness`, the Evolver
     pipeline) must not also get it delivered as an inbox message -- an agent

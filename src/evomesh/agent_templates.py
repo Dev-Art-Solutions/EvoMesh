@@ -91,6 +91,11 @@ class AgentTemplateDefinition(BaseModel):
     # same as every template before this field existed. See
     # Environment.default_harness_root and AgentDefinition.project_path.
     project: str = ""
+    # Optional. This template's own default for
+    # AgentDefinition.self_check_command -- None (the default) means this
+    # template has no opinion, so the mesh-wide HarnessSettings.
+    # self_check_command applies, same as before this field existed.
+    self_check: str | None = None
     path: Path
     created_by: str = "system"
 
@@ -155,6 +160,9 @@ def parse_agent_template(
                 else None
             ),
             project=str(meta.get("project") or "").strip(),
+            self_check=(
+                str(meta["self_check"]) if meta.get("self_check") is not None else None
+            ),
             path=path,
             created_by=created_by,
         )
@@ -284,6 +292,7 @@ class AgentTemplateRegistry:
             # own default; neither given means no change from before this
             # field existed -- the agent still gets its own playground.
             project_path=(project_path or template.project).strip(),
+            self_check_command=template.self_check,
         )
         for goal in template.goals:
             definition.mind.add_goal(

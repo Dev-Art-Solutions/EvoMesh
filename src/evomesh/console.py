@@ -47,6 +47,8 @@ HELP = """Commands:
                                 "wipe" also deletes its memory/context/playground
   /agent project <agent> <path>|clear  Work in a real project instead of its
                                 own playground (then /harness grant to apply)
+  /agent self-check <agent> "<command>"|clear  Override (or clear) this
+                                agent's own self-check, instead of the mesh-wide one
   /cycle <agent>                Run one deliberation cycle now
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
@@ -446,7 +448,8 @@ class ConsoleChannel:
     async def _command_agent(self, parts: list[str]) -> str:
         usage = (
             "Usage: /agent start|stop|mute|unmute|delete <agent> [wipe]  |  "
-            "/agent project <agent> <path>|clear"
+            "/agent project <agent> <path>|clear  |  "
+            '/agent self-check <agent> "<command>"|clear'
         )
         if len(parts) not in (3, 4):
             return usage
@@ -484,6 +487,28 @@ class ConsoleChannel:
                 f"Agent '{definition.name}' now works in {target}. This does not by itself "
                 f'move an existing harness grant -- run /harness grant "{definition.name}" '
                 "to (re-)grant it there."
+            )
+        if action == "self-check":
+            if len(parts) != 4:
+                return usage
+            definition = self.environment.registry.get(agent_name)
+            value = parts[3]
+            if value.lower() == "clear":
+                definition.self_check_command = None
+                definition.touch()
+                await self.environment.repository.save_agent(definition)
+                mesh_wide = self.environment.settings.harness.self_check_command
+                return (
+                    f"Agent '{definition.name}' now follows the mesh-wide self-check "
+                    f"({mesh_wide or 'off'}) again instead of its own."
+                )
+            definition.self_check_command = value
+            definition.touch()
+            await self.environment.repository.save_agent(definition)
+            state = f'"{value}"' if value else "off (empty command)"
+            return (
+                f"Agent '{definition.name}' now self-checks its own writing jobs with "
+                f"{state}, regardless of the mesh-wide setting."
             )
         if len(parts) != 3:
             return usage

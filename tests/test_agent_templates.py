@@ -165,6 +165,31 @@ async def test_instantiate_uses_the_templates_own_project_path(tmp_path: Path) -
     await environment.stop()
 
 
+async def test_instantiate_uses_the_templates_own_self_check_default(tmp_path: Path) -> None:
+    text = VALID.replace("identity: Trader\n", 'identity: Trader\nself_check: "ruff check ."\n')
+    write_template(tmp_path, "trader", text)
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "trader")
+
+    assert definition.self_check_command == "ruff check ."
+    await environment.stop()
+
+
+async def test_instantiate_self_check_defaults_to_none_when_unset(tmp_path: Path) -> None:
+    write_template(tmp_path, "trader", VALID)
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "trader")
+
+    assert definition.self_check_command is None
+    await environment.stop()
+
+
 async def test_harness_true_grants_access_with_no_bundled_tools(tmp_path: Path) -> None:
     """A template with no custom tools -- a general coding agent, using only
     the harness's own built-in read/edit/write/shell -- got no automatic
