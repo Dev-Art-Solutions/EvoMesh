@@ -929,6 +929,30 @@ async def test_a_finished_job_arrives_as_an_ordinary_message(tmp_path: Path) -> 
     assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
 
 
+async def test_a_notify_false_job_never_reaches_the_mailbox(tmp_path: Path) -> None:
+    """A step that polls its own job's result (`through_harness`, the Evolver
+    pipeline) must not also get it delivered as an inbox message -- an agent
+    that answers every inbound message via the harness would otherwise be
+    handed its own finished step as a fresh "question" to answer, whose
+    answer is delivered the same way, forever. Live, this was NewsAnalyzer
+    stuck answering its own last answer in a growing loop that never
+    touched news again."""
+    environment = Environment(
+        mesh_settings(tmp_path), providers={"ollama": MockProvider(responses=["all done"])}
+    )
+    await environment.start()
+    try:
+        job = environment.harness.submit(
+            "look around", agent_id="guardian", root=tmp_path, notify=False
+        )
+        with pytest.raises(TimeoutError):
+            await environment.bus.receive("guardian", wait_seconds=0.5)
+    finally:
+        await environment.stop()
+
+    assert environment.harness_queue.jobs[job.number].status is JobStatus.DONE
+
+
 async def test_a_job_is_granted_the_root_it_was_handed(tmp_path: Path) -> None:
     """Found by the first real generation: every tool was denied.
 

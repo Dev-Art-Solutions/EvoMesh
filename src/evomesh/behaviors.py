@@ -858,6 +858,11 @@ class EvolverBehavior(BDIBehavior):
                 write_prefix=write_prefix,
                 max_steps=max_steps,
                 max_seconds=max_seconds,
+                # This pipeline polls `harness.job(state["job"])` again every
+                # cycle until it finishes (see below) -- an inbox delivery on
+                # top of that would hand the Evolver its own stage result a
+                # second time, as a fresh "message" for respond() to answer.
+                notify=False,
             )
             await evolver.set_pipeline_state({**state, "job": job.number})
             # Falls through when the job is somehow already finished, which is

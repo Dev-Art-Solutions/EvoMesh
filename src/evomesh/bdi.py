@@ -453,6 +453,11 @@ class BDIBehavior:
                 agent_id=context.definition.id,
                 root=Path(root),
                 label=step.description,
+                # This step polls `harness.job(step.job)` again every cycle
+                # until it finishes -- an inbox delivery on top of that would
+                # hand the agent its own step's result a second time, as a
+                # fresh "message" from "harness" for respond() to answer.
+                notify=False,
             )
             step.job = job.number
             if job.open:
@@ -533,12 +538,20 @@ class BDIBehavior:
             agent_id=context.definition.id,
             root=Path(root),
             label=message.content.strip()[:80],
+            # This call already returns the answer to whoever asked, once the
+            # wait below gets it -- an inbox delivery on top of that would
+            # hand the agent its own answer back as a new inbound "message",
+            # which respond() then tries to answer too, and so on forever.
+            # Flipped back on below only if the wait times out and delivery
+            # becomes the sole way the asker ever sees this job finish.
+            notify=False,
         )
         elapsed = 0.0
         while job.open and elapsed < HARNESS_RESPOND_TIMEOUT_SECONDS:
             await asyncio.sleep(HARNESS_RESPOND_POLL_SECONDS)
             elapsed += HARNESS_RESPOND_POLL_SECONDS
         if job.open:
+            job.notify = True
             return (
                 f"Still working on that (harness job {job.number}) -- ask again "
                 "in a moment, or check /harness status."

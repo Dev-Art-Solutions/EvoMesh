@@ -650,7 +650,7 @@ class Environment:
         wakes the loop the agent already has -- so no behavior has to know that
         a worker exists.
         """
-        if not job.agent_id:
+        if not job.agent_id or not job.notify:
             return
         if job.result is not None:
             said = job.result.answer or job.result.detail

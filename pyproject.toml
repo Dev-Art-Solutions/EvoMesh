@@ -36,6 +36,12 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.pyright]
 pythonVersion = "3.13"
+# This project ships Windows-only code behind `try: import msvcrt` (see
+# singleton.py) that must still type-check on Linux CI. Pyright's default
+# pythonPlatform tracks the host OS, which excludes msvcrt's members from
+# its own stub on any non-Windows host; "All" checks every platform's stubs
+# regardless of where pyright itself is running.
+pythonPlatform = "All"
 typeCheckingMode = "standard"
 include = ["src", "tests"]
 venvPath = "."

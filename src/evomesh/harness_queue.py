@@ -57,6 +57,17 @@ class HarnessJob:
     label: str = ""
     status: JobStatus = JobStatus.QUEUED
     steps: int = 0
+    # Whether a finished job should land in its agent's inbox as a message.
+    # True for a job nobody else is watching for (the console, a genuine
+    # human question that outran its synchronous wait). False for a job a
+    # behavior already consumes itself by polling `harness.job(job.number)`
+    # every cycle (a plan step, an evolution pipeline stage) -- delivering
+    # those too turned the agent's own routine work into a fresh inbound
+    # "message" every cycle, which respond() then tried to answer as if a
+    # human had asked it something, which produced another delivered
+    # message, forever: an agent (NewsAnalyzer, live) stuck answering its
+    # own last answer in an ever-growing loop that never touched news again.
+    notify: bool = True
     result: HarnessResult | None = None
     detail: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -146,6 +157,7 @@ class HarnessQueue:
         label: str = "",
         max_steps: int | None = None,
         max_seconds: float | None = None,
+        notify: bool = True,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -165,6 +177,7 @@ class HarnessQueue:
             label=label,
             max_steps=max_steps,
             max_seconds=max_seconds,
+            notify=notify,
         )
         self._next += 1
         self.jobs[job.number] = job
@@ -219,6 +232,7 @@ class HarnessGateway:
         write_prefix: str | None = None,
         max_steps: int | None = None,
         max_seconds: float | None = None,
+        notify: bool = True,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -229,6 +243,7 @@ class HarnessGateway:
             label=label,
             max_steps=max_steps,
             max_seconds=max_seconds,
+            notify=notify,
         )
 
     def job(self, number: int) -> HarnessJob | None:
