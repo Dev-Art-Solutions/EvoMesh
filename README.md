@@ -5,6 +5,53 @@
 
 EvoMesh is an experimental, open-source multi-agent runtime for local AI models. The environment owns agent lifecycle, messaging, persistent state, skills, permissions, model access, health, and evolutionary history. Agents communicate through the environment rather than private network endpoints.
 
+## Trading & MetaTrader 5
+
+EvoMesh includes an experimental multi-agent trading stack built around MetaTrader 5, shipped as agent templates and declarative tools rather than as core runtime code:
+
+- **[Trader](agent-templates/trader/AGENT.md)** watches an MT5 account through the local MT5 Execution Bridge, reports on open positions and account health, and executes a trading strategy only when explicitly asked to. A deterministic watcher alerts on equity/loss thresholds every few seconds, separate from its conversational cycle.
+- **[MT5 Coder](agent-templates/mt5-coder/AGENT.md)** writes MQL5 (Expert Advisors, indicators, scripts) and MT5-facing Python on request, and can optionally verify `.mq5` changes by compiling them through MetaEditor when one is configured.
+- **News Watcher** tracks financial RSS feeds for human-chosen keywords/instruments and reports on request or on a genuine keyword match.
+- **News Analyzer** goes a step further: it judges whether a headline is likely to move a configured instrument's price, in which direction, and with how much confidence — it never places, sizes, or suggests a trade.
+- **[`mt5_query`](tools/mt5_query/TOOL.md)** is a read-only tool: account balance/equity/margin, open positions, or pending orders through the Execution Bridge. It never places or changes a trade.
+- **[`mt5_signal`](tools/mt5_signal/TOOL.md)** submits a risk-based BUY/SELL request to the Execution Bridge. It is only ever called after an explicit human request, never on an agent's own initiative.
+
+**Human-in-the-loop by design.** The LLM behind these agents does not get unrestricted access to the MT5 terminal. `mt5_query` can only read account state; `mt5_signal` can only submit a request. The MT5 Execution Bridge — a separate local service, not part of EvoMesh's own runtime — is the deterministic risk authority: it independently enforces checks such as spread, daily loss, position limits, and stop-loss requirements before any order is sent, regardless of what an agent asked for. A rejected request is reported plainly and is never blindly retried.
+
+```text
+       Financial news
+             |
+             v
+      +--------------+
+      | News Watcher |
+      +------+-------+
+             |
+             v
+      +---------------+
+      | News Analyzer |
+      +-------+-------+
+              |
+              v
+         +---------+
+         | Trader  |
+         +----+----+
+              |
+       +------+------+
+       |             |
+       v             v
+  mt5_query      mt5_signal
+       |             |
+       +------+------+
+              |
+              v
+    MT5 Execution Bridge
+              |
+              v
+        MetaTrader 5
+```
+
+> **Experimental / Alpha.** This trading stack is for research, development, and demo-account testing. It is not financial advice, and it is not presented as a production-ready autonomous trading system. Review its configuration, use a demo account, and keep a human in the loop before pointing it at anything else.
+
 ## Why it exists
 
 Most agent systems treat agents as prompts around API calls. EvoMesh treats them as persistent participants in a shared world, with structured minds, reusable capabilities, explicit access grants, and a generational path for improving the runtime itself.
