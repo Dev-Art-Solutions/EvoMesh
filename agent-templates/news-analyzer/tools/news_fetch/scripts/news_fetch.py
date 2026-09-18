@@ -1,8 +1,7 @@
 """Fetch recent headlines from a set of sources, stdlib only.
 
 argv[1] = an optional JSON object overriding feeds/keywords/limit; falls
-back to config.json beside the installed template (agent-templates/
-news-watcher/config.json) when a field is not given.
+back to config.json (see _config_path()) when a field is not given.
 
 RSS/Atom is tried first for any URL -- it needs no extra runtime dependency
 and is far more reliable than scraping a page's HTML. finance.yahoo.com and
@@ -14,13 +13,13 @@ is a job for the harness's own scraping tool (Scrapling, see evomesh.yaml's
 `scraping` settings) run by hand, not this script.
 
 Every live fetch also feeds a small durable cache (.news_cache.jsonl beside
-this template's AGENT.md, see CACHE_PATH) so a caller can look back over
-more than one snapshot -- the live fetch above only ever returns what a
-source has *right now*, and the previous headlines are gone the moment a
-newer one pushes them off a feed. Pass {"from_cache": true} to read that
-history back (optionally with "since_hours") instead of hitting the network
-at all. Entries older than config.json's "cache_days" (default 3) are
-pruned every time the cache is written.
+whichever config.json this run resolved, see _cache_path()) so a caller can
+look back over more than one snapshot -- the live fetch above only ever
+returns what a source has *right now*, and the previous headlines are gone
+the moment a newer one pushes them off a feed. Pass {"from_cache": true} to
+read that history back (optionally with "since_hours") instead of hitting
+the network at all. Entries older than config.json's "cache_days" (default
+3) are pruned every time the cache is written.
 """
 
 from __future__ import annotations
@@ -35,9 +34,42 @@ import urllib.request
 from pathlib import Path
 from xml.etree import ElementTree
 
+# This one script file is reached two very different ways, and they disagree
+# about where "beside this template's AGENT.md" even is:
+#
+# - The harness runs it as a subprocess custom tool (TOOL.md's `command:`),
+#   with the *calling agent's own playground* as cwd (run_command in
+#   harness_tools.py) -- and the tool itself is installed flattened into one
+#   shared `tools/news_fetch/` in the registry root (ToolRegistry.install_
+#   directory keys by tool name, so news-watcher's and news-analyzer's
+#   bundled copies overwrite the same slot), so __file__ here no longer
+#   points anywhere near either template. Found live: this sent every
+#   model-driven `news_fetch` call reading a nonexistent
+#   <repo_root>/config.json (so silently DEFAULT_FEEDS, never the
+#   configured watchlist) and writing an orphaned, ever-growing
+#   <repo_root>/scripts/.news_cache.jsonl nothing else ever read.
+# - watch_news.py (the deterministic watcher) imports this module directly
+#   from its own template's bundled copy instead, where __file__-relative
+#   resolution already lands on the right config.json.
+#
+# Both invocations happen to share one cwd, though: the harness sets it to
+# the agent's playground either way (see AgentWatcher's own `cwd=` in
+# environment.py). A config.json living there -- the one place both paths
+# agree on -- wins over the file-relative guess below, which stays only as
+# the fallback for a freshly spawned agent that has not been given one yet.
 TOOL_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = TOOL_DIR.parent.parent / "config.json"
-CACHE_PATH = TOOL_DIR.parent.parent / "scripts" / ".news_cache.jsonl"
+
+
+def _config_path() -> Path:
+    beside_playground = Path.cwd() / "config.json"
+    if beside_playground.is_file():
+        return beside_playground
+    return TOOL_DIR.parent.parent / "config.json"
+
+
+def _cache_path() -> Path:
+    return _config_path().parent / "scripts" / ".news_cache.jsonl"
+
 
 DEFAULT_FEEDS = [
     "https://finance.yahoo.com/",
@@ -57,10 +89,11 @@ _FOREXFACTORY_HEADLINE = re.compile(r'href="(/news/(\d+)[a-z0-9\-]*)"[^>]*>([^<]
 
 
 def _load_config() -> dict:
-    if not CONFIG_PATH.is_file():
+    config_path = _config_path()
+    if not config_path.is_file():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return json.loads(config_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -140,11 +173,12 @@ def _parse_source(url: str, raw: bytes) -> list[dict[str, str]]:
 
 
 def _load_cache() -> list[dict]:
-    if not CACHE_PATH.is_file():
+    cache_path = _cache_path()
+    if not cache_path.is_file():
         return []
     entries: list[dict] = []
     try:
-        lines = CACHE_PATH.read_text(encoding="utf-8").splitlines()
+        lines = cache_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
     for line in lines:
@@ -191,8 +225,9 @@ def _append_cache(items: list[dict[str, str]], config: dict) -> None:
     kept = kept[-MAX_CACHE_ENTRIES:]
 
     try:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_PATH.write_text(
+        cache_path = _cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
             "\n".join(json.dumps(entry) for entry in kept) + ("\n" if kept else ""),
             encoding="utf-8",
         )

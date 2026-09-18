@@ -7,8 +7,11 @@ network or real article text, so this stays deterministic in CI."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parent.parent
@@ -108,6 +111,49 @@ def test_parse_source_returns_nothing_for_an_unknown_non_rss_host() -> None:
     )
 
     assert items == []
+
+
+def test_config_path_prefers_one_beside_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The harness runs this script as a subprocess with the *calling
+    agent's own playground* as cwd (see harness_tools.py's run_command), so
+    a config.json living there -- one per agent -- is what a model-driven
+    tool call actually needs, not a guess relative to wherever this
+    particular installed copy of the script happens to sit on disk. Found
+    live: every such call was silently reading a nonexistent
+    <repo_root>/config.json instead, so it always ran on DEFAULT_FEEDS and
+    never the agent's configured watchlist."""
+    monkeypatch.chdir(tmp_path)
+    playground_config = tmp_path / "config.json"
+    playground_config.write_text(json.dumps({"feeds": ["https://example.com/rss"]}))
+
+    assert news_fetch._config_path() == playground_config
+    assert news_fetch._load_config() == {"feeds": ["https://example.com/rss"]}
+
+
+def test_config_path_falls_back_to_the_template_when_cwd_has_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshly spawned agent has no config.json of its own yet -- the
+    template's own default (agent-templates/news-watcher/config.json here)
+    is the right fallback, not an empty <repo_root>/config.json nobody
+    ever writes."""
+    monkeypatch.chdir(tmp_path)
+
+    resolved = news_fetch._config_path()
+
+    assert resolved == SCRIPT_PATH.parent.parent.parent.parent / "config.json"
+    assert resolved.is_file()
+
+
+def test_cache_path_sits_beside_whichever_config_was_chosen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.json").write_text("{}")
+
+    assert news_fetch._cache_path() == tmp_path / "scripts" / ".news_cache.jsonl"
 
 
 def test_parse_feed_still_handles_plain_rss() -> None:

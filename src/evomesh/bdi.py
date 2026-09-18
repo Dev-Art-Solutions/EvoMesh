@@ -534,7 +534,12 @@ class BDIBehavior:
         job = harness.submit(
             f"Answer this question directly: {message.content.strip()}\n\n"
             "Use a tool only if you actually need to -- if you already know "
-            "the answer, or the question needs no live data, just answer.",
+            "the answer, or the question needs no live data, just answer.\n\n"
+            "This is a chat reply to a human, not a report or a work log. Do "
+            "not narrate your own process (no 'Here's what I found', no "
+            "'## Analysis' headers, no listing what you checked and ruled "
+            "out) and do not pad a short fact into a structured writeup. "
+            "Say the answer, plainly, the way you would say it out loud.",
             agent_id=context.definition.id,
             root=Path(root),
             label=message.content.strip()[:80],
