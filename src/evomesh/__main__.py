@@ -9,6 +9,7 @@ from evomesh.config import load_settings
 from evomesh.console import ConsoleChannel
 from evomesh.control import CONTROL_HOST, CONTROL_PORT, ControlServer, wait_for_console_or_shutdown
 from evomesh.environment import Environment
+from evomesh.singleton import AlreadyRunningError, SingletonLock
 from evomesh.telegram import TelegramChannel
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 # treats it as a restart rather than a crash. It is deliberately not 0: a plain
 # success must never be mistaken for a request to come back up.
 RESTART_EXIT_CODE = 86
+
+# A second instance refusing to start is not a crash -- there is nothing
+# broken to back off from, the other process is already doing the job -- but
+# it is not success either, so a launcher (or a human) can tell the two
+# apart from the exit code alone.
+ALREADY_RUNNING_EXIT_CODE = 2
 
 
 async def _restart_when_asked(environment: Environment, shutdown: asyncio.Event) -> None:
@@ -63,34 +70,45 @@ async def application(
         handlers=handlers,
         force=True,
     )
-    environment = Environment(settings)
-    await environment.start(start_agent_loops=True)
-    shutdown = asyncio.Event()
-    control = ControlServer(environment, shutdown, control_host, control_port)
-    telegram = TelegramChannel(environment, settings.telegram)
-    environment.channels["telegram"] = telegram
-    restart_watch = asyncio.create_task(_restart_when_asked(environment, shutdown))
-    telegram_task = asyncio.create_task(telegram.run()) if telegram.configured else None
+    lock = SingletonLock(settings.lock_path) if settings.single_instance else None
+    if lock is not None:
+        try:
+            lock.acquire()
+        except AlreadyRunningError as exc:
+            logger.error(str(exc))
+            return ALREADY_RUNNING_EXIT_CODE
     try:
-        await control.start()
-        if headless:
-            await shutdown.wait()
-        else:
-            await wait_for_console_or_shutdown(ConsoleChannel(environment), shutdown)
+        environment = Environment(settings)
+        await environment.start(start_agent_loops=True)
+        shutdown = asyncio.Event()
+        control = ControlServer(environment, shutdown, control_host, control_port)
+        telegram = TelegramChannel(environment, settings.telegram)
+        environment.channels["telegram"] = telegram
+        restart_watch = asyncio.create_task(_restart_when_asked(environment, shutdown))
+        telegram_task = asyncio.create_task(telegram.run()) if telegram.configured else None
+        try:
+            await control.start()
+            if headless:
+                await shutdown.wait()
+            else:
+                await wait_for_console_or_shutdown(ConsoleChannel(environment), shutdown)
+        finally:
+            restart_watch.cancel()
+            if telegram_task is not None:
+                telegram.stop()
+                telegram_task.cancel()
+            for task in (restart_watch, telegram_task):
+                if task is not None:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            await control.stop()
+            await environment.stop()
+        return RESTART_EXIT_CODE if environment.restart_requested.is_set() else 0
     finally:
-        restart_watch.cancel()
-        if telegram_task is not None:
-            telegram.stop()
-            telegram_task.cancel()
-        for task in (restart_watch, telegram_task):
-            if task is not None:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        await control.stop()
-        await environment.stop()
-    return RESTART_EXIT_CODE if environment.restart_requested.is_set() else 0
+        if lock is not None:
+            lock.release()
 
 
 def main() -> None:

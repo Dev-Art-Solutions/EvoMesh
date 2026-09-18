@@ -235,6 +235,12 @@ class Settings(BaseModel):
     generation_path: Path = Path("generations")
     workspace_path: Path = Path("workspace")
     log_level: str = "INFO"
+    # A second EvoMesh against the same data races the first for the control
+    # port, the git repo, and the generation counter -- see singleton.py. On
+    # by default; a config that genuinely wants two (e.g. pointed at two
+    # different data_paths from the same checkout) can turn it off.
+    single_instance: bool = True
+    lock_path: Path = Path(".runtime/evomesh.lock")
     models: ModelSettings = Field(default_factory=ModelSettings)
     system_agents: dict[str, AgentModelSettings] = Field(default_factory=dict)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
@@ -248,7 +254,7 @@ class Settings(BaseModel):
         clone = self.model_copy(deep=True)
         if not clone.harness.session_path.is_absolute():
             clone.harness.session_path = root / clone.harness.session_path
-        for name in ("data_path", "generation_path", "workspace_path"):
+        for name in ("data_path", "generation_path", "workspace_path", "lock_path"):
             value = getattr(clone, name)
             if not value.is_absolute():
                 setattr(clone, name, root / value)
