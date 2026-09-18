@@ -29,6 +29,28 @@ PIPELINE_STATE_KEY = "evolution.pipeline"
 # behind a change has to travel with the change.
 BACKLOG_DIR = Path("docs") / "evolution"
 
+# Found live, repeatedly: a job burns several of its steps on `ls`/`read`
+# against `docs/evolution/plans` (which does not exist until this job writes
+# into it) and on `shell: ls` (denied -- `shell` only runs `python`, per
+# harness.shell_allow), before ever trying the `ls`/`read`/`grep` tools that
+# actually work. On a 12-step budget that alone can eat the job before it
+# writes anything. Said once, up front, in every stage that explores the tree.
+TOOL_USAGE_HINT = (
+    "- Use the `ls`, `read` and `grep` tools directly to explore the tree -- "
+    "`shell` only runs `python`, nothing else, so `shell: ls` (or any other "
+    "unix command) is always denied. `docs/evolution/plans` does not exist "
+    "until you write the first file into it, so `ls`/`read` against it "
+    "report 'does not exist', not a permissions problem -- that is expected, "
+    "not a reason to retry the same call.\n"
+    "- Do not read AGENTS.md, CLAUDE.md or README.md -- those are onboarding "
+    "for a human or coding assistant extending the harness itself, not "
+    "needed to write this file, and reading them (found live: one job read "
+    "AGENTS.md twice, verbatim, then ran out of budget having written "
+    "nothing) can burn the whole step budget before you reach the actual "
+    "work. Everything this task needs is already above, in THE PACKAGE AS "
+    "IT STANDS, or in the source files it names."
+)
+
 # What a generation is asked for, now that the asking goes to an agent that can
 # read the project rather than to one prompt which had to carry all of it.
 HARNESS_RULES = "\n".join(
@@ -113,6 +135,7 @@ PLAN_EVAL_FILE = "plan.eval.md"
 PLAN_DRAFT_RULES = "\n".join(
     (
         "Rules for this stage:",
+        TOOL_USAGE_HINT,
         f"- Do not touch any source file. Write exactly one file, "
         f"`{(PLAN_DIR / PLAN_FILE).as_posix()}`, inside this candidate.",
         "- Before naming a function, class, or attribute the plan depends on, "
@@ -131,6 +154,7 @@ PLAN_DRAFT_RULES = "\n".join(
 PLAN_EVAL_RULES = "\n".join(
     (
         "Rules for this stage:",
+        TOOL_USAGE_HINT,
         "- You are reviewing a plan someone else proposed. Do not touch any "
         "source file.",
         f"- Write exactly one file, `{(PLAN_DIR / PLAN_EVAL_FILE).as_posix()}`, "
@@ -156,6 +180,7 @@ PLAN_EVAL_RULES = "\n".join(
 PLAN_DECOMPOSE_RULES = "\n".join(
     (
         "Rules for this stage:",
+        TOOL_USAGE_HINT,
         "- Do not touch any source file. Write exactly one file at the NODE "
         "PATH given below, inside this candidate.",
         "- Decide whether this item is already minimal -- one small change to "

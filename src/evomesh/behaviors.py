@@ -576,6 +576,16 @@ class EvolverBehavior(BDIBehavior):
             max_seconds=self.plan_max_seconds,
         )
 
+    # Found live: a harness job can cap out having written nothing for reasons
+    # that have nothing to do with the plan under review -- the local model
+    # repeating one `ls` call three times in a row despite the harness's own
+    # correction, the first time this stage ever ran after a fix that got the
+    # draft stage landing again. Discarding the whole generation over that
+    # throws away a plan that was never actually reviewed, so this stage gets
+    # a few free retries (a fresh harness job each time) before falling
+    # through to the D5 discard every other stage uses unconditionally.
+    EVAL_MAX_NO_OP_RETRIES = 2
+
     async def _evaluate_plan(
         self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
     ) -> StepResult:
@@ -614,6 +624,12 @@ class EvolverBehavior(BDIBehavior):
             queue = [root.id] if root is not None else []
             return (STAGE_DECOMPOSE, {"plan_queue": queue})
 
+        async def on_no_op() -> tuple[str, dict[str, Any]] | None:
+            retries = int(state.get("eval_retries", 0))
+            if retries >= self.EVAL_MAX_NO_OP_RETRIES:
+                return None
+            return (STAGE_EVALUATE, {"eval_retries": retries + 1})
+
         return await self._through_harness(
             context,
             evolver,
@@ -624,6 +640,7 @@ class EvolverBehavior(BDIBehavior):
             status="evaluated",
             record=evolver.record_plan_eval,
             on_done=on_done,
+            on_no_op=on_no_op,
             write_prefix=PLAN_WRITE_PREFIX,
             max_steps=self.plan_max_steps,
             max_seconds=self.plan_max_seconds,

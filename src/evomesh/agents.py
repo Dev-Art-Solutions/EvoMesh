@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from typing import Any
 
 from evomesh import cron
 from evomesh.bdi import ReflectiveBehavior
-from evomesh.cognition import AgentBehavior, CycleContext, CycleOutcome
+from evomesh.cognition import AgentBehavior, CycleContext, CycleOutcome, strip_reasoning
 from evomesh.contracts import (
     AgentDefinition,
     AgentPhase,
@@ -41,6 +42,20 @@ MAX_INBOX_HISTORY = 6
 # minutes with no supervisor any the wiser.
 STUCK_CYCLE_MULTIPLE = 3.0
 STUCK_CYCLE_FLOOR = 600.0
+
+# `through_harness` in bdi.py substitutes this filler whenever a harness job's
+# own answer was empty, so a human reading a status line never sees a bare
+# blank. Right for status; wrong for a notify announcement -- a recurring
+# goal whose whole point is that most cycles find nothing to say (see
+# NewsAnalyzer's news-impact-analysis skill: "silence is correct") should not
+# get a Telegram message every cycle just because this filler is non-empty.
+_HARNESS_EMPTY_ANSWER = re.compile(r"^harness job \d+ found nothing to report$")
+
+
+def _is_silent_outcome(summary: str) -> bool:
+    """Whether a recurring goal's outcome is genuinely nothing to announce."""
+    text = summary.strip()
+    return not text or bool(_HARNESS_EMPTY_ANSWER.fullmatch(text))
 
 
 class AgentRegistry:
@@ -282,9 +297,24 @@ class AgentRuntime:
                 # completion of a recurring goal, which has no such stamp) is
                 # worth reporting as done rather than as one more step.
                 genuinely_done = outcome.goal_done and (goal.recurring or worked_before)
-                if genuinely_done:
+                # A goal whose skill says "silence is the correct, common
+                # outcome" (news-impact-analysis, news-triage, ...) means it
+                # literally: a recurring cycle that found nothing to say
+                # should send nothing, not a "found nothing to report" filler
+                # every single cycle forever.
+                silent = goal.recurring and _is_silent_outcome(outcome.summary)
+                if genuinely_done and not silent:
+                    # A recurring goal "finishes" every cycle by design, so
+                    # re-quoting its whole description (often a paragraph,
+                    # e.g. NewsAnalyzer's) ahead of the actual answer on every
+                    # single notification is pure noise repeated forever --
+                    # the human already knows what their standing goal is.
+                    # Only a genuine one-shot completion is worth naming.
                     await self.announce(
-                        f'{self.definition.name} finished "{goal.description}": {outcome.summary}'
+                        f"{self.definition.name}: {outcome.summary}"
+                        if goal.recurring
+                        else f'{self.definition.name} finished "{goal.description}": '
+                        f"{outcome.summary}"
                     )
                 elif outcome.error:
                     await self.announce(
@@ -347,13 +377,14 @@ class AgentRuntime:
         )
 
     async def _summarize(self, text: str) -> str:
-        return await self.provider.generate(
+        raw = await self.provider.generate(
             f"Compress these notes into at most 5 short bullet facts. Keep only what is "
             f"still true and useful.\n\n{text}",
             system="You compress an agent's long-term memory. Output bullets only.",
             model=self.definition.model_name,
             num_ctx=self.num_ctx,
         )
+        return strip_reasoning(raw)
 
     # -- helpers --------------------------------------------------------
 

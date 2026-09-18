@@ -26,6 +26,14 @@ if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 Set-Location -LiteralPath $Root
 
 $RestartExitCode = 86
+# Found live: exit code 1 from a stale process still holding the control port
+# used to make this loop `break` and log "not restarting" -- silencing the
+# whole mesh (and every agent's Telegram bot) until a human noticed the
+# window looked idle and relaunched it by hand, once for 5+ hours straight.
+# A crash is not a reason to give up forever, only a reason to back off so a
+# genuinely broken build doesn't spin the CPU retrying every few milliseconds.
+$consecutiveFailures = 0
+$maxBackoffSeconds = 300
 
 $env:UV_CACHE_DIR = Join-Path $Root '.runtime\uv-cache'
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $Root '.runtime\python'
@@ -44,7 +52,13 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $meshLog) | Out-Nu
 
 function Write-Log([string] $Message) {
     $line = "$(Get-Date -Format o) $Message"
-    Add-Content -Path $supervisorLog -Value $line -Encoding utf8
+    # Found live: this whole script ran under $ErrorActionPreference = 'Stop',
+    # so a transient Add-Content failure (the log file briefly locked by
+    # something reading it) turned into a terminating error that silently
+    # killed the entire supervisor loop -- the one thing that exists
+    # specifically to never give up. Logging a restart must never be able to
+    # prevent one.
+    try { Add-Content -Path $supervisorLog -Value $line -Encoding utf8 -ErrorAction Stop } catch {}
     Write-Output $line
 }
 
@@ -58,14 +72,18 @@ while ($true) {
         --log-file $meshLog
     $code = $LASTEXITCODE
 
-    if ($code -ne $RestartExitCode) {
-        Write-Log "[supervisor] EvoMesh exited with code $code; not restarting"
-        break
+    if ($code -eq $RestartExitCode) {
+        Write-Log '[supervisor] a new generation landed; restarting into it'
+        $consecutiveFailures = 0
+        # The new code may need dependencies the old one did not have, and the
+        # old process needs a moment to release the control port.
+        & $uv sync --locked --no-dev
+        Start-Sleep -Seconds 2
+        continue
     }
 
-    Write-Log '[supervisor] a new generation landed; restarting into it'
-    # The new code may need dependencies the old one did not have, and the old
-    # process needs a moment to release the control port.
-    & $uv sync --locked --no-dev
-    Start-Sleep -Seconds 2
+    $consecutiveFailures++
+    $backoff = [Math]::Min($maxBackoffSeconds, 5 * [Math]::Pow(2, $consecutiveFailures - 1))
+    Write-Log "[supervisor] EvoMesh exited with code $code; restarting in ${backoff}s (failure #$consecutiveFailures)"
+    Start-Sleep -Seconds $backoff
 }

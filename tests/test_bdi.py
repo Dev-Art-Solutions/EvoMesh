@@ -317,7 +317,9 @@ async def test_a_recurring_goal_with_notify_on_announces_every_completion(
     tmp_path: Path,
 ) -> None:
     """A recurring goal has no first-cycle rubber stamp to wait out -- every
-    goal_done is real, so it should announce every time."""
+    goal_done is real, so it should announce every time. It should not repeat
+    the goal description each cycle -- the human already knows their standing
+    goal, so only the fresh summary is worth another message."""
     environment, agent = await worker(tmp_path, ScriptedProvider())
     goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
     runtime = environment.runtimes[agent.id]
@@ -335,9 +337,41 @@ async def test_a_recurring_goal_with_notify_on_announces_every_completion(
 
     assert len(announced) == 1
     assert agent.name in announced[0]
-    assert "Check example.com" in announced[0]
     assert "all quiet" in announced[0]
-    assert "finished" in announced[0]
+    await environment.stop()
+
+
+async def test_a_recurring_goal_with_a_silent_outcome_does_not_announce(
+    tmp_path: Path,
+) -> None:
+    """A recurring goal whose skill says silence is the correct outcome (e.g.
+    NewsAnalyzer's "nothing cleared the bar") should not spam a "found
+    nothing to report" filler every single cycle forever."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal("Check example.com", recurring=True, notify=True)
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001 - exercising the wiring directly, not through a full cycle
+        CycleOutcome(summary="", goal_done=True, phase=AgentPhase.IDLE, worked=True),
+        goal,
+    )
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary="harness job 42 found nothing to report",
+            goal_done=True,
+            phase=AgentPhase.IDLE,
+            worked=True,
+        ),
+        goal,
+    )
+
+    assert announced == []
     await environment.stop()
 
 
