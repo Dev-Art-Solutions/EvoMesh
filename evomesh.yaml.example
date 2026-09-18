@@ -221,6 +221,16 @@ models:
     #   base_url: https://openrouter.ai/api/v1
     #   model: anthropic/claude-sonnet-5
     #   api_key: sk-or-...
+    # gemini:
+    #   kind: openai
+    #   # Google's own OpenAI-compatibility layer for the Gemini API -- the
+    #   # same chat/completions dialect as every other `kind: openai` entry
+    #   # here, so this needs no dedicated provider class the way Claude's
+    #   # genuinely different Messages API did. Get a key from
+    #   # https://aistudio.google.com/apikey.
+    #   base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    #   model: gemini-2.5-flash
+    #   api_key: AIza...
 
 git:
   # Every generation the mesh commits is signed with this identity, so a human
