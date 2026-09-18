@@ -112,6 +112,20 @@ evolution:
 #   # queue inside the GPU instead of in a queue you can look at.
 #   workers: 1
 #   max_queue: 8
+#   # Run against a writing job's root, right before it is allowed to end,
+#   # whenever it actually changed a file -- a non-zero exit is fed back as
+#   # one more turn so the job fixes it itself (bounded by the attempt count
+#   # below, and by the job's own step budget either way). Off (empty) by
+#   # default. This is one command (shlex-split, same as shell_allow above --
+#   # no real shell, so `&&`/`|` are arguments, not operators), so point it at
+#   # a small wrapper script to chain more than one check, e.g.
+#   # `python scripts/self_check.py` running ruff + pyright + pytest and
+#   # exiting non-zero on the first that fails. Unlike shell_allow this is
+#   # trusted the same way harness.enabled/allow_write already are -- it is
+#   # something the human who owns this file chose, never something the
+#   # model picked.
+#   self_check_command: ""    # e.g. "ruff check ." or a wrapper script
+#   self_check_max_attempts: 2
 
 # The Web.Fetch skill and the harness's fetch tool: an agent asks for a URL,
 # gets back its main content as Markdown. Off by default. Scrapling

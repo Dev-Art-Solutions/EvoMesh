@@ -17,8 +17,10 @@ require.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import shlex
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -44,6 +46,7 @@ from evomesh.models import (
     ToolCall,
     ToolsUnsupportedError,
 )
+from evomesh.processes import run_command
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,16 @@ BROKEN_CALL_HINT = (
 TEXT_CALL_HINT = (
     "You wrote a call to {name} as text, and text is not run. Issue it as a real "
     "tool call. If you are finished instead, answer in plain prose."
+)
+
+# Said whenever HarnessSettings.self_check_command is configured and a job
+# that changed a file tries to end while that command still fails -- so
+# "answered" means the code actually passes the project's own lint/type/test
+# gate, not just that the model stopped asking for tools.
+SELF_CHECK_HINT = (
+    "Before this can be the answer, the project's own self-check command "
+    "found problems with what you changed. Fix them, then answer again.\n\n"
+    "{output}"
 )
 
 
@@ -206,6 +219,16 @@ class HarnessRunner:
     system: str = SYSTEM
     tool_chars: int = 0
     prompt_chars: int = 0
+    # See HarnessSettings.self_check_command -- empty turns this off.
+    self_check_command: str = ""
+    self_check_max_attempts: int = 2
+    _self_check_attempts: int = field(default=0, init=False, repr=False)
+    _self_check_last_output: str = field(default="", init=False, repr=False)
+    # A separate flag from the output string above: a check can fail (a
+    # non-zero exit) while printing nothing at all, and the answer must
+    # still say so rather than silently passing a job that never actually
+    # cleared its own self-check.
+    _self_check_failed: bool = field(default=False, init=False, repr=False)
 
     async def run(self, task: str) -> HarnessResult:
         started = time.monotonic()
@@ -280,8 +303,20 @@ class HarnessRunner:
                         )
                     )
                     continue
+                hint = await self._self_check_feedback()
+                if hint is not None:
+                    messages.append(ChatMessage(role="assistant", content=turn.text))
+                    messages.append(ChatMessage(role="user", content=hint))
+                    continue
+                answer = turn.text
+                if self._self_check_failed:
+                    detail = self._self_check_last_output or "(no output)"
+                    answer = (
+                        f"{answer}\n\n[self-check still reports problems after "
+                        f"{self._self_check_attempts} attempt(s):]\n{detail[:1000]}"
+                    )
                 return self._end(
-                    "answered", started, step, calls_made, native, answer=turn.text
+                    "answered", started, step, calls_made, native, answer=answer
                 )
 
             corrected = False
@@ -391,6 +426,64 @@ class HarnessRunner:
             "tool", name=call.name, args=call.arguments, chars=len(result), result=result
         )
         return result
+
+    async def _self_check_feedback(self) -> str | None:
+        """A user-turn message to send back and keep the job going, or None
+        to let it end as answered.
+
+        None covers four different reasons, deliberately not distinguished
+        to the caller: not configured, nothing was actually changed this job
+        (a read-only answer has nothing for a linter to check), the check
+        just passed, or the attempt budget is spent -- that last case still
+        leaves ``_self_check_last_output`` set, which is what lets the
+        answer note the residual failure instead of hiding it.
+        """
+        if not self.self_check_command:
+            return None
+        tally = self.context.tally
+        if not (tally.edits or tally.writes or tally.deletes):
+            return None
+        if self._self_check_attempts >= self.self_check_max_attempts:
+            return None
+        try:
+            parts = shlex.split(self.self_check_command, posix=True)
+        except ValueError as exc:
+            logger.warning("harness self_check_command could not be parsed: %s", exc)
+            return None
+        if not parts:
+            return None
+        self._self_check_attempts += 1
+        try:
+            result = await asyncio.wait_for(
+                run_command(parts[0], *parts[1:], cwd=self.context.root),
+                timeout=self.context.shell_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "harness self_check_command did not finish within %.0fs",
+                self.context.shell_seconds,
+            )
+            return None
+        except OSError as exc:
+            # A broken self-check must never be the reason a real answer is
+            # blocked -- that would make a typo in evomesh.yaml look like
+            # every job in the mesh suddenly failing its own code.
+            logger.warning("harness self_check_command could not run: %s", exc)
+            return None
+        self.session.record(
+            "self_check", attempt=self._self_check_attempts, exit_code=result.exit_code
+        )
+        if result.exit_code == 0:
+            self._self_check_failed = False
+            self._self_check_last_output = ""
+            return None
+        self._self_check_failed = True
+        self._self_check_last_output = result.output.strip()
+        if self._self_check_attempts >= self.self_check_max_attempts:
+            return None
+        return SELF_CHECK_HINT.format(
+            output=self._self_check_last_output[:2000] or "(no output)"
+        )
 
     def _end(
         self,
@@ -535,6 +628,8 @@ def build_runner(
     scraping_executable: str = "",
     scraping_timeout: float = 30.0,
     custom_tools: tuple[Tool, ...] = (),
+    self_check_command: str = "",
+    self_check_max_attempts: int = 2,
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -579,4 +674,6 @@ def build_runner(
         max_seconds=max_seconds,
         transcript_chars=transcript_chars,
         system=SYSTEM if read_only else WRITE_SYSTEM,
+        self_check_command=self_check_command if allow_write else "",
+        self_check_max_attempts=self_check_max_attempts,
     )

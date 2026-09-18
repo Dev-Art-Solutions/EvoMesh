@@ -623,6 +623,8 @@ class Environment:
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
             custom_tools=self.active_custom_tools(),
+            self_check_command=settings.self_check_command,
+            self_check_max_attempts=settings.self_check_max_attempts,
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.

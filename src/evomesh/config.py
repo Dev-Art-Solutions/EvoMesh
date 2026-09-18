@@ -174,6 +174,21 @@ class HarnessSettings(BaseModel):
     # has been thought of, and it is wrong the first time a tool is installed.
     shell_allow: list[str] = Field(default_factory=list)
     shell_seconds: float = 60.0
+    # Run against a writing job's root, right before it is allowed to end,
+    # whenever it actually changed a file -- e.g. "ruff check . && pyright"
+    # is not one command this can run directly (see harness.py's own `shell`
+    # tool: everything here is shlex.split, never a real shell), so point
+    # this at a small wrapper script for more than one check. A non-zero
+    # exit is fed back as one more turn so the job can fix it itself,
+    # bounded by self_check_max_attempts (further bounded by the job's own
+    # step budget either way) -- past that, the last failure is folded into
+    # the job's own answer rather than silently disappearing. Empty (the
+    # default) turns this off entirely; unlike shell_allow, this is a
+    # command the human who owns this file chose, never one the model
+    # picked, so it is trusted the same way harness.enabled/allow_write
+    # already are.
+    self_check_command: str = ""
+    self_check_max_attempts: int = 2
 
     def shell_programs(self) -> frozenset[str]:
         return frozenset(name.strip().lower() for name in self.shell_allow if name.strip())

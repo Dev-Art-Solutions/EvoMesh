@@ -628,6 +628,102 @@ async def test_reasoning_blocks_never_reach_the_transcript(project: Path) -> Non
     assert result.answer == "The answer is 4."
 
 
+# -- self-check ------------------------------------------------------------
+
+
+async def test_a_failing_self_check_sends_the_job_back_to_fix_it(project: Path) -> None:
+    """self_check_command runs against the real file the edit tool actually
+    touched -- not a mock -- so this is a genuine end-to-end pass: wrong
+    value, blocked from answering, fixed for real, then accepted."""
+    (project / "check.py").write_text(
+        "import sys\nsys.exit(0 if 'return False' in open('src/answer.py').read() else 1)\n",
+        encoding="utf-8",
+    )
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py", "old": "return True", "new": "return 1"
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="done"),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py", "old": "return 1", "new": "return False"
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="done for real"),
+        ]
+    )
+    runner = build_runner(
+        provider, project, read_only=False, allow_write=True, self_check_command="python check.py"
+    )
+
+    result = await runner.run("fix the return value")
+
+    assert result.outcome == "answered"
+    assert result.answer == "done for real"
+    assert "return False" in (project / "src" / "answer.py").read_text(encoding="utf-8")
+
+
+async def test_a_self_check_that_never_passes_still_ends_but_says_so(project: Path) -> None:
+    """The attempt budget is not a promise the check will ever pass -- a job
+    stuck on a pre-existing, unrelated failure must still end rather than
+    burn its whole step budget on a fight it cannot win. The residual
+    failure rides along in the answer instead of vanishing silently."""
+    (project / "check.py").write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(name="write", arguments={"path": "new.py", "content": "x = 1\n"})
+                ]
+            ),
+            ChatTurn(text="one"),
+            ChatTurn(text="two"),
+        ]
+    )
+    runner = build_runner(
+        provider,
+        project,
+        read_only=False,
+        allow_write=True,
+        self_check_command="python check.py",
+        self_check_max_attempts=2,
+    )
+
+    result = await runner.run("add a file")
+
+    assert result.outcome == "answered"
+    assert result.answer.startswith("two")
+    assert "self-check still reports problems after 2 attempt(s)" in result.answer
+
+
+async def test_self_check_is_skipped_when_nothing_was_changed(project: Path) -> None:
+    """A read-only answer has nothing for a linter to check -- running the
+    command anyway would just be latency with no signal."""
+    (project / "check.py").write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    provider = MockProvider(responses=["nothing needed changing"])
+    runner = build_runner(
+        provider, project, read_only=False, allow_write=True, self_check_command="python check.py"
+    )
+
+    result = await runner.run("is anything broken?")
+
+    assert result.outcome == "answered"
+    assert result.answer == "nothing needed changing"
+
+
 # -- the shell -----------------------------------------------------------
 
 
