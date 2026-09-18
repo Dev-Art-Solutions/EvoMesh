@@ -15,8 +15,11 @@ from evomesh.agent_templates import (
     parse_agent_template,
 )
 from evomesh.config import Settings
+from evomesh.contracts import Autonomy
 from evomesh.environment import Environment
 from evomesh.models import MockProvider
+
+REPO_TEMPLATES = Path(__file__).resolve().parent.parent / "agent-templates"
 
 VALID = (
     "---\n"
@@ -195,4 +198,45 @@ async def test_instantiate_accepts_an_explicit_project_override(tmp_path: Path) 
     )
 
     assert definition.project_path == str(override_dir)
+    await environment.stop()
+
+
+# -- the shipped coder / mt5-coder templates, from the real repo files ----
+
+
+async def test_the_coder_template_spawns_a_working_reactive_agent(tmp_path: Path) -> None:
+    """Spawned from the actual files this repo ships, not a synthetic
+    fixture -- catches a real frontmatter/skill mistake a hand-built VALID
+    string never would."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.agent_templates.install_directory(REPO_TEMPLATES / "coder")
+
+    definition = await environment.agent_templates.instantiate(environment, "coder")
+
+    assert definition.identity == "Coder"
+    assert definition.autonomy is Autonomy.REACTIVE
+    # harness: true with no bundled tools -- must still get a grant.
+    assert definition.harness_root != ""
+    assert Path(definition.harness_root) == environment.memory_for(definition).playground_path
+    assert [skill.name for skill in environment.skills.discover("coding-discipline")] == [
+        "coding-discipline"
+    ]
+    await environment.stop()
+
+
+async def test_the_mt5_coder_template_spawns_with_both_bundled_skills(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.agent_templates.install_directory(REPO_TEMPLATES / "mt5-coder")
+
+    definition = await environment.agent_templates.instantiate(environment, "mt5-coder")
+
+    assert definition.identity == "MT5 Coder"
+    assert definition.autonomy is Autonomy.REACTIVE
+    assert definition.harness_root != ""
+    installed = {skill.name for skill in environment.skills.discover()}
+    assert {"coding-discipline", "mql5-conventions"} <= installed
     await environment.stop()
