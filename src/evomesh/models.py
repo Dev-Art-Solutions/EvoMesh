@@ -361,6 +361,179 @@ class OpenAICompatibleProvider:
         return ChatTurn(text=str(answer.get("content") or ""), tool_calls=calls)
 
 
+class AnthropicProvider:
+    """Claude via Anthropic's own Messages API.
+
+    A genuinely different wire format from every other provider here (Ollama's
+    ``/api/chat``, and any OpenAI-compatible ``/chat/completions`` server --
+    OpenAI itself, OpenRouter, a local vLLM/llama.cpp): ``system`` is a
+    top-level field rather than a message in the list, a tool result rides
+    back as a ``tool_result`` content block on a *user* turn instead of its
+    own ``tool``-role message, tool schemas are named ``input_schema`` rather
+    than ``parameters``, and auth is an ``x-api-key`` header plus a required
+    ``anthropic-version`` rather than a bearer token. All of that is
+    translated at the edges here so the rest of this project keeps one
+    provider-neutral shape (``ChatMessage``/``ChatTurn``/``ToolCall``).
+    """
+
+    ANTHROPIC_VERSION = "2023-06-01"
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        timeout_seconds: float = 600,
+        max_output_tokens: int = 8192,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {"x-api-key": self.api_key or "", "anthropic-version": self.ANTHROPIC_VERSION}
+
+    async def health(self) -> tuple[bool, str]:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                response = await client.get(f"{self.base_url}/models", headers=self._headers)
+                response.raise_for_status()
+            return True, "ready"
+        except httpx.HTTPError as exc:
+            return False, f"Cannot reach Anthropic at {self.base_url}: {describe(exc)}"
+
+    async def list_models(self) -> list[str]:
+        async with httpx.AsyncClient(timeout=5) as client:
+            try:
+                response = await client.get(f"{self.base_url}/models", headers=self._headers)
+                response.raise_for_status()
+                return sorted(str(item["id"]) for item in response.json().get("data", []))
+            except (httpx.HTTPError, KeyError, ValueError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
+    ) -> str:
+        del num_ctx  # see chat(): no equivalent on this dialect
+        turn = await self.chat(
+            [ChatMessage(role="user", content=prompt)], system=system, model=model
+        )
+        return turn.text
+
+    @staticmethod
+    def _content_blocks(message: ChatMessage) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
+        for call in message.tool_calls:
+            blocks.append(
+                {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
+            )
+        return blocks
+
+    @classmethod
+    def _wire_messages(cls, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Translate the shared transcript into Anthropic's turn shape.
+
+        harness.py appends one ``tool``-role ChatMessage per call the
+        previous assistant turn made, back to back. Anthropic expects every
+        ``tool_use`` block from an assistant turn answered together in the
+        single user turn that follows it -- one ``tool_result`` block per
+        call, not one user turn per result -- so consecutive ``tool``
+        entries are merged here rather than sent as separate turns.
+        """
+        wire: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+
+        def flush() -> None:
+            if pending:
+                wire.append({"role": "user", "content": pending.copy()})
+                pending.clear()
+
+        for message in messages:
+            if message.role == "tool":
+                pending.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id,
+                        "content": message.content,
+                    }
+                )
+                continue
+            flush()
+            wire.append({"role": message.role, "content": cls._content_blocks(message)})
+        flush()
+        return wire
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        model: str | None = None,
+        num_ctx: int | None = None,
+    ) -> ChatTurn:
+        del num_ctx  # see generate(): no equivalent on this dialect
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "max_tokens": self.max_output_tokens,
+            "messages": self._wire_messages(messages),
+        }
+        if system:
+            body["system"] = system
+        if tools:
+            # This project's tool schemas are OpenAI's function-calling shape
+            # everywhere (Tool.schema() in harness_tools.py) -- translated to
+            # Anthropic's here rather than making every caller dialect-aware.
+            body["tools"] = [
+                {
+                    "name": entry["function"]["name"],
+                    "description": entry["function"].get("description", ""),
+                    "input_schema": entry["function"].get("parameters", {}),
+                }
+                for entry in tools
+                if entry.get("type") == "function" and "function" in entry
+            ]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/messages", headers=self._headers, json=body
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPStatusError as exc:
+                if tools and _tools_are_unsupported(exc):
+                    raise ToolsUnsupportedError(describe(exc)) from exc
+                raise ModelUnavailableError(describe(exc)) from exc
+            except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        for block in payload.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text_parts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use":
+                calls.append(
+                    ToolCall(
+                        name=str(block.get("name", "")),
+                        arguments=block.get("input") or {},
+                        id=str(block.get("id") or uuid.uuid4().hex[:12]),
+                    )
+                )
+        return ChatTurn(text="".join(text_parts), tool_calls=calls)
+
+
 class MockProvider:
     def __init__(
         self,

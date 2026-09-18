@@ -32,7 +32,12 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
 from evomesh.memory import AgentMemory, WorldContext
 from evomesh.messaging import MessageBus
-from evomesh.models import ModelProvider, OllamaProvider, OpenAICompatibleProvider
+from evomesh.models import (
+    AnthropicProvider,
+    ModelProvider,
+    OllamaProvider,
+    OpenAICompatibleProvider,
+)
 from evomesh.permissions import FilesystemPolicy
 from evomesh.skills import SkillRegistry
 from evomesh.storage import SQLiteRepository
@@ -243,9 +248,18 @@ class Environment:
     def _build_providers(self) -> dict[str, ModelProvider]:
         result: dict[str, ModelProvider] = {}
         for name, config in self.settings.models.providers.items():
-            if name == "ollama":
+            kind = config.kind or ("ollama" if name == "ollama" else "openai")
+            if kind == "ollama":
                 result[name] = OllamaProvider(
                     config.base_url, config.model, config.timeout_seconds, config.num_ctx
+                )
+            elif kind == "anthropic":
+                result[name] = AnthropicProvider(
+                    config.base_url,
+                    config.model,
+                    config.api_key,
+                    config.timeout_seconds,
+                    config.max_output_tokens,
                 )
             else:
                 result[name] = OpenAICompatibleProvider(

@@ -193,6 +193,34 @@ models:
       base_url: http://127.0.0.1:8000/v1
       model: local-model
       api_key: ""
+    # Any of the four kinds below can be named and combined freely: point
+    # system_agents.<agent>.provider (or an agent template's `provider:`) at
+    # whichever key you gave it here, same as ollama/inferhub above. `kind`
+    # only has to be given when the key itself is not literally "ollama" and
+    # is not the default OpenAI-compatible dialect every local server here
+    # speaks -- so `inferhub` and `openai_compatible` above need no `kind` at
+    # all, but a hosted OpenAI-compatible endpoint given a name of your own
+    # choosing (openrouter, below) does.
+    # openai:
+    #   kind: openai
+    #   base_url: https://api.openai.com/v1
+    #   model: gpt-5
+    #   api_key: sk-...
+    # claude:
+    #   kind: anthropic
+    #   base_url: https://api.anthropic.com/v1
+    #   model: claude-sonnet-5
+    #   api_key: sk-ant-...
+    #   # Anthropic's Messages API requires an output cap on every request,
+    #   # unlike every other dialect above -- this is that cap, not a context
+    #   # window (num_ctx has no equivalent here; Anthropic sizes the model's
+    #   # own context window server-side).
+    #   max_output_tokens: 8192
+    # openrouter:
+    #   kind: openai
+    #   base_url: https://openrouter.ai/api/v1
+    #   model: anthropic/claude-sonnet-5
+    #   api_key: sk-or-...
 
 git:
   # Every generation the mesh commits is signed with this identity, so a human

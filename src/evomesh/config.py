@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -23,9 +23,22 @@ class ProviderSettings(BaseModel):
     base_url: str
     model: str
     api_key: str | None = None
+    # Which wire dialect this endpoint speaks. "ollama" is Ollama's own
+    # /api/generate + /api/chat; "anthropic" is Claude's Messages API;
+    # "openai" is the OpenAI-compatible chat/completions shape that OpenAI
+    # itself, OpenRouter, InferHub, vLLM and llama.cpp all speak. Unset falls
+    # back to this provider's own key in `providers:` being literally
+    # "ollama" (so an existing `providers: {ollama: ...}` block keeps working
+    # unchanged) and to "openai" for every other key -- which is why
+    # `inferhub`/`openai_compatible` in evomesh.yaml.example never had to
+    # name a kind before this field existed.
+    kind: Literal["ollama", "openai", "anthropic"] | None = None
     # A 30B model on a busy GPU answers a full prompt in minutes, not seconds.
     # Too low a ceiling here reads to a human as "the agent is broken".
     timeout_seconds: float = 600
+    # Anthropic's Messages API requires this on every request (there is no
+    # server-side default); every other dialect here ignores it.
+    max_output_tokens: int = 8192
     # Ollama's own default is 2048 tokens regardless of what the Modelfile's
     # trained context is, and every prompt budget in this project (RuntimeSettings,
     # HarnessSettings.transcript_chars) is sized in *characters* on the assumption

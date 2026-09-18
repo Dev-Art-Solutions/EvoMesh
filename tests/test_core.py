@@ -22,7 +22,13 @@ from evomesh.evolution import (
 )
 from evomesh.harness_tools import ALL_TOOLS, ToolContext, ToolRegistry
 from evomesh.messaging import MessageBus
-from evomesh.models import MockProvider, OllamaProvider, describe
+from evomesh.models import (
+    AnthropicProvider,
+    MockProvider,
+    OllamaProvider,
+    OpenAICompatibleProvider,
+    describe,
+)
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.storage import SQLiteRepository
 from tests.fakes import wipe_database
@@ -536,6 +542,75 @@ def test_provider_num_ctx_comes_from_configuration(tmp_path: Path) -> None:
 
     assert isinstance(provider, OllamaProvider)
     assert provider.num_ctx == 8192
+
+
+def test_an_unnamed_provider_key_defaults_to_the_openai_dialect(tmp_path: Path) -> None:
+    """`inferhub`, `openai_compatible`, and anything else that is not
+    literally "ollama" and does not set `kind` speaks the OpenAI-compatible
+    chat/completions shape -- true before `kind` existed (name-sniffing on
+    "ollama" alone) and unchanged by adding it."""
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            default_provider="inferhub",
+            providers={
+                "inferhub": ProviderSettings(base_url="http://127.0.0.1:5080/v1", model="qwen3")
+            },
+        ),
+    )
+
+    provider = Environment(settings).providers["inferhub"]
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+
+
+def test_kind_openai_selects_the_openai_dialect_regardless_of_name(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            default_provider="openrouter",
+            providers={
+                "openrouter": ProviderSettings(
+                    base_url="https://openrouter.ai/api/v1",
+                    model="anthropic/claude-sonnet-5",
+                    api_key="sk-or-test",
+                    kind="openai",
+                )
+            },
+        ),
+    )
+
+    provider = Environment(settings).providers["openrouter"]
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.api_key == "sk-or-test"
+
+
+def test_kind_anthropic_selects_the_anthropic_dialect(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        models=ModelSettings(
+            default_provider="claude",
+            providers={
+                "claude": ProviderSettings(
+                    base_url="https://api.anthropic.com/v1",
+                    model="claude-sonnet-5",
+                    api_key="sk-ant-test",
+                    kind="anthropic",
+                    max_output_tokens=4096,
+                )
+            },
+        ),
+    )
+
+    provider = Environment(settings).providers["claude"]
+
+    assert isinstance(provider, AnthropicProvider)
+    assert provider.api_key == "sk-ant-test"
+    assert provider.max_output_tokens == 4096
 
 
 async def test_ollama_requests_carry_num_ctx_when_configured(
