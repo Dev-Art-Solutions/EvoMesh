@@ -29,6 +29,11 @@ class FilesystemPolicy:
     async def revoke(self, agent_id: str, path: Path | str) -> None:
         await self.repository.delete_grants(agent_id, str(self.normalize(path)))
 
+    async def revoke_all(self, agent_id: str) -> None:
+        """Every grant this agent holds, gone -- for deleting the agent itself
+        rather than narrowing what it can still reach."""
+        await self.repository.delete_all_grants(agent_id)
+
     async def require(self, agent_id: str, path: Path | str, operation: str) -> Path:
         target = self.normalize(path)
         for grant in await self.repository.load_grants(agent_id):

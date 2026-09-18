@@ -82,6 +82,9 @@ class SQLiteRepository:
     async def save_agent(self, agent: AgentDefinition) -> None:
         await self._upsert("agents", "id", agent.id, "definition", agent.model_dump_json())
 
+    async def delete_agent(self, agent_id: str) -> None:
+        await self._write([("DELETE FROM agents WHERE id = ?", (agent_id,))])
+
     async def load_agents(self) -> list[AgentDefinition]:
         rows = await self._all("SELECT definition FROM agents")
         return [AgentDefinition.model_validate_json(row[0]) for row in rows]
@@ -106,6 +109,12 @@ class SQLiteRepository:
                 for grant in grants
                 if grant.path == path
             ]
+        )
+
+    async def delete_all_grants(self, agent_id: str) -> None:
+        grants = await self.load_grants(agent_id)
+        await self._write(
+            [("DELETE FROM filesystem_grants WHERE id = ?", (grant.id,)) for grant in grants]
         )
 
     async def load_grants(self, agent_id: str | None = None) -> list[FilesystemGrant]:

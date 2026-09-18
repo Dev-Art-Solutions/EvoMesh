@@ -43,6 +43,8 @@ HELP = """Commands:
   /num-ctx <agent> <n>|clear    Override (or clear) one agent's context window
   /agent start|stop <agent>     Control an individual agent loop
   /agent mute|unmute <agent>    Silence (or restore) its unprompted announcements
+  /agent delete <agent> [wipe]  Remove it for good (system agents refuse this);
+                                "wipe" also deletes its memory/context/playground
   /cycle <agent>                Run one deliberation cycle now
   /beliefs <agent>              What the agent currently holds true
   /goals <agent>                Its goals (desires), by priority
@@ -433,9 +435,22 @@ class ConsoleChannel:
         return f"Agent '{definition.name}' now uses a context window of {definition.num_ctx}."
 
     async def _command_agent(self, parts: list[str]) -> str:
-        if len(parts) != 3:
-            return "Usage: /agent start|stop|mute|unmute <agent>"
+        usage = "Usage: /agent start|stop|mute|unmute|delete <agent> [wipe]"
+        if len(parts) not in (3, 4):
+            return usage
         action, agent_name = parts[1].lower(), parts[2]
+        if action == "delete":
+            wipe = len(parts) == 4 and parts[3].lower() == "wipe"
+            try:
+                definition = await self.environment.delete_agent(
+                    agent_name, wipe_workspace=wipe
+                )
+            except ValueError as exc:
+                return str(exc)
+            suffix = " and its workspace deleted" if wipe else " (workspace kept on disk)"
+            return f"Agent '{definition.name}' deleted{suffix}."
+        if len(parts) != 3:
+            return usage
         definition = self.environment.registry.get(agent_name)
         if action == "start":
             definition.status = AgentStatus.ACTIVE
@@ -449,7 +464,7 @@ class ConsoleChannel:
             state = "muted" if definition.muted else "unmuted"
             return f"Agent '{definition.name}' {state}; it keeps running, just stays quiet."
         else:
-            return "Agent action must be start, stop, mute, or unmute."
+            return usage
         return f"Agent '{definition.name}' {action}ed."
 
     async def _command_cycle(self, parts: list[str]) -> str:

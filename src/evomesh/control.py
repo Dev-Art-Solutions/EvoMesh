@@ -58,11 +58,44 @@ class ControlServer:
             if command == "/ping":
                 stuck = self.environment.stuck_agents()
                 return {"output": "EvoMesh control ready", "running": True, "stuck": stuck}
+            if command == "/agents.json":
+                # Structured, for a UI to render a live list/cards from --
+                # every other command answers in the one text shape shared
+                # with the console and Telegram, but a human-readable roster
+                # like /agents's own is not something a client should have to
+                # parse back apart to draw a button next to each agent.
+                return {"output": "", "running": True, "agents": self._agents_json()}
             response = await channel.route(command)
             should_stop = command.lower() == "/exit"
             return {"output": response, "running": not should_stop, "shutdown": should_stop}
         except Exception as exc:  # noqa: BLE001 - a failed command never drops the connection
             return {"output": f"Error: {describe(exc)}", "running": True, "error": True}
+
+    def _agents_json(self) -> list[dict[str, Any]]:
+        states = self.environment.runtime_states()
+        rows: list[dict[str, Any]] = []
+        for definition in self.environment.registry.all():
+            state = states.get(definition.id)
+            rows.append(
+                {
+                    "id": definition.id,
+                    "name": definition.name,
+                    "type": definition.type,
+                    "status": str(definition.status),
+                    "phase": str(state.phase) if state else "offline",
+                    "provider": definition.provider,
+                    "model": definition.model_name,
+                    "num_ctx": definition.num_ctx,
+                    "cycle_seconds": definition.cycle_seconds,
+                    "muted": definition.muted,
+                    "has_telegram": bool(definition.telegram and definition.telegram.enabled),
+                    "goal": state.goal if state else None,
+                    "last_outcome": state.last_outcome if state else "",
+                    "last_error": state.last_error if state else None,
+                    "cycles": state.cycles if state else 0,
+                }
+            )
+        return rows
 
 
 async def wait_for_console_or_shutdown(

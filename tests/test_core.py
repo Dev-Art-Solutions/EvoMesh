@@ -164,6 +164,64 @@ async def test_each_agent_uses_its_configured_model(tmp_path: Path) -> None:
     await environment.stop()
 
 
+async def test_deleting_an_agent_stops_it_and_removes_it_for_good(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    specialist = AgentDefinition(name="Specialist", purpose="Get deleted")
+    await environment.register_agent(specialist)
+    await environment.start_agent(specialist.id)
+    await environment.grant_access(
+        FilesystemGrant(agent_id=specialist.id, path=str(tmp_path), read=True)
+    )
+
+    deleted = await environment.delete_agent(specialist.id)
+
+    assert deleted.id == specialist.id
+    assert specialist.id not in environment.runtimes
+    assert await environment.repository.load_grants(specialist.id) == []
+    with pytest.raises(KeyError):
+        environment.registry.get(specialist.id)
+    # Not persisted either -- a restart must not bring it back.
+    reloaded = await environment.repository.load_agents()
+    assert all(agent.id != specialist.id for agent in reloaded)
+    await environment.stop()
+
+
+async def test_deleting_an_agent_keeps_its_workspace_unless_asked_to_wipe_it(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    specialist = AgentDefinition(name="Specialist", purpose="Get deleted")
+    await environment.register_agent(specialist)
+    directory = environment.memory_for(specialist).directory
+    assert directory.is_dir()
+
+    await environment.delete_agent(specialist.id)
+    assert directory.is_dir()
+
+    respawned = AgentDefinition(name="Specialist2", purpose="Get wiped")
+    await environment.register_agent(respawned)
+    wiped_directory = environment.memory_for(respawned).directory
+    await environment.delete_agent(respawned.id, wipe_workspace=True)
+    assert not wiped_directory.exists()
+    await environment.stop()
+
+
+async def test_a_system_agent_cannot_be_deleted(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    with pytest.raises(ValueError, match="core agent"):
+        await environment.delete_agent("evolver")
+
+    assert environment.registry.get("evolver") is not None
+    await environment.stop()
+
+
 async def test_stuck_agents_catches_what_ping_cannot(tmp_path: Path) -> None:
     """A cycle in flight past its own budget is not the same as a dead socket.
 

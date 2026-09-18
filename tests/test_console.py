@@ -51,6 +51,45 @@ async def test_console_routes_commands(tmp_path: Path) -> None:
     await environment.stop()
 
 
+async def test_agent_delete_removes_it_and_refuses_a_system_agent(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Writer", purpose="Write", model_name="mock-model")
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id)
+
+    result = await console.route('/agent delete "Writer"')
+
+    assert "deleted" in result
+    assert "workspace kept" in result
+    with pytest.raises(KeyError):
+        environment.registry.get(agent.id)
+
+    refusal = await console.route("/agent delete evolver")
+    assert "core agent" in refusal
+    assert environment.registry.get("evolver") is not None
+    await environment.stop()
+
+
+async def test_agent_delete_wipe_removes_the_workspace_too(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="Writer", purpose="Write", model_name="mock-model")
+    await environment.register_agent(agent)
+    directory = environment.memory_for(agent).directory
+    assert directory.is_dir()
+
+    result = await console.route('/agent delete "Writer" wipe')
+
+    assert "workspace deleted" in result
+    assert not directory.exists()
+    await environment.stop()
+
+
 async def test_a_muted_agents_announcements_are_logged_not_sent(
     tmp_path: Path, caplog: "pytest.LogCaptureFixture"
 ) -> None:
@@ -397,6 +436,43 @@ async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> N
     assert "status: READY" in str((await request("/status"))["output"])
     assert (await request("/exit"))["shutdown"] is True
     assert shutdown.is_set()
+    writer.close()
+    await writer.wait_closed()
+    await server.stop()
+    await environment.stop()
+
+
+async def test_agents_json_returns_structured_rows_for_a_ui(tmp_path: Path) -> None:
+    """A UI drawing a list of agents needs fields, not /agents's own text
+    table re-parsed apart -- this is the one command every other command's
+    shared text-answer shape does not have to fit."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Writer", purpose="Write", model_name="mock-model")
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id)
+    shutdown = asyncio.Event()
+    server = ControlServer(environment, shutdown, port=0)
+    await server.start()
+    port = server._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+    writer.write((json.dumps({"command": "/agents.json"}) + "\n").encode())
+    await writer.drain()
+    response = json.loads(await reader.readline())
+
+    rows = response["agents"]
+    assert isinstance(rows, list)
+    writer_row = next(row for row in rows if row["name"] == "Writer")
+    assert writer_row["id"] == agent.id
+    assert writer_row["type"] == "agent"
+    assert writer_row["provider"] == "ollama"
+    assert writer_row["model"] == "mock-model"
+    assert writer_row["muted"] is False
+    assert writer_row["has_telegram"] is False
+    assert "phase" in writer_row and "cycles" in writer_row
+
     writer.close()
     await writer.wait_closed()
     await server.stop()

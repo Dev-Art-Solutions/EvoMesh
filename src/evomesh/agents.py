@@ -80,6 +80,9 @@ class AgentRegistry:
                 return agent
         raise KeyError(agent_id_or_name)
 
+    def unregister(self, agent_id: str) -> None:
+        self._agents.pop(agent_id, None)
+
 
 @dataclass
 class AgentRuntime:

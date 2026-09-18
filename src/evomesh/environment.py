@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -739,6 +740,35 @@ class Environment:
         definition.muted = muted
         definition.touch()
         await self.repository.save_agent(definition)
+        return definition
+
+    async def delete_agent(
+        self, agent_id_or_name: str, *, wipe_workspace: bool = False
+    ) -> AgentDefinition:
+        """Remove an agent for good: stopped, unregistered, its grants gone,
+        and -- only if asked -- its memory.md/context.md/playground with it.
+
+        A system agent (Architect, Guardian, Evaluator, the Evolver itself)
+        is structural to the mesh rather than something a human spawned, so
+        deleting one is refused rather than silently taking down a piece of
+        the mesh's own machinery; stop it instead if it needs to be quiet.
+        `wipe_workspace` defaults to false: the registry entry going away is
+        already the irreversible half of this, and a directory left behind
+        is a mistake a human can still recover from, not one they are forced
+        to accept up front.
+        """
+        definition = self.registry.get(agent_id_or_name)
+        if definition.type == "system":
+            raise ValueError(
+                f"'{definition.name}' is a core agent and cannot be deleted; stop it instead."
+            )
+        await self.stop_agent(definition.id, persist_status=False)
+        await self.permissions.revoke_all(definition.id)
+        self.registry.unregister(definition.id)
+        await self.repository.delete_agent(definition.id)
+        if wipe_workspace:
+            directory = self.memory_for(definition).directory
+            await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
         return definition
 
     async def available_models(self, provider_name: str) -> list[str]:
