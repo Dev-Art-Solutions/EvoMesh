@@ -7,7 +7,7 @@ EvoMesh is an experimental, open-source multi-agent runtime for local AI models.
 
 ## Trading & MetaTrader 5
 
-EvoMesh includes an experimental multi-agent trading stack built around MetaTrader 5, shipped as agent templates and declarative tools rather than as core runtime code:
+EvoMesh includes an experimental multi-agent trading stack built around MetaTrader 5, using specialized agents and explicitly granted tools:
 
 - **[Trader](agent-templates/trader/AGENT.md)** watches an MT5 account through the local MT5 Execution Bridge, reports on open positions and account health, and executes a trading strategy only when explicitly asked to. A deterministic watcher alerts on equity/loss thresholds every few seconds, separate from its conversational cycle.
 - **[MT5 Coder](agent-templates/mt5-coder/AGENT.md)** writes MQL5 (Expert Advisors, indicators, scripts) and MT5-facing Python on request, and can optionally verify `.mq5` changes by compiling them through MetaEditor when one is configured.
