@@ -357,6 +357,47 @@ async def test_a_wholly_fabricated_edit_shows_the_start_of_the_real_file(
     assert "def reconsider() -> bool:" in result
 
 
+async def test_a_not_found_edit_prefers_a_distinctive_anchor_over_a_generic_one(
+    project: Path,
+) -> None:
+    """A short generic line (`continue`) can coincidentally match unrelated code --
+    picking that as the anchor points the model at the wrong place. The real,
+    distinctive line should win even though it appears later in `old`."""
+    (project / "src" / "loopy.py").write_text(
+        "def first(items):\n"
+        "    for item in items:\n"
+        "        if item is None:\n"
+        "            continue\n"
+        "        print(item)\n"
+        "\n\n"
+        "def second(items):\n"
+        "    for item in items:\n"
+        "        if not item.enabled:\n"
+        "            continue\n"
+        "        yield item.value_for_report()\n",
+        encoding="utf-8",
+    )
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {
+            "path": "src/loopy.py",
+            "old": (
+                "def second(items):\n"
+                "    for item in items:\n"
+                "        continue\n"
+                "        yield item.value_for_report()"
+            ),
+            "new": "x",
+        },
+    )
+
+    assert "This line of 'old' does appear" in result
+    # The distinctive, uniquely-matching line is shown, not the ambiguous "continue".
+    assert "yield item.value_for_report()" in result
+
+
 # -- the loop ------------------------------------------------------------
 
 

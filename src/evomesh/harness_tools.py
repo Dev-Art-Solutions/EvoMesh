@@ -346,16 +346,28 @@ def _not_found_hint(content: str, old: str) -> str:
     straight at the real text to copy from; when no line of it appears at
     all, showing the top of the real file at least confirms whether the
     model even has the right file in mind.
+
+    The anchor line has to be distinctive, not just present. A short generic
+    line (`continue`, `return None`) matches unrelated code by coincidence
+    and points the model at the wrong place -- found live, right after the
+    first version of this hint shipped. Requiring 12+ characters and picking
+    the longest, least-ambiguous match across every line of `old` favours a
+    real anchor over a coincidental one.
     """
+    candidates: list[tuple[str, list[int]]] = []
     for line in old.splitlines():
         stripped = line.strip()
-        if len(stripped) < 8:
+        if len(stripped) < 12:
             continue
         at = _match_lines(content, stripped)
         if at:
-            return "This line of 'old' does appear, but not the rest of it:\n" + _neighbourhoods(
-                content, at
-            )
+            candidates.append((stripped, at))
+    if candidates:
+        # Fewest coincidental hits first, then longest (most distinctive) line.
+        stripped, at = min(candidates, key=lambda c: (len(c[1]), -len(c[0])))
+        return "This line of 'old' does appear, but not the rest of it:\n" + _neighbourhoods(
+            content, at
+        )
     lines = content.splitlines()
     shown = lines[:20]
     head = "\n".join(f"{index:>5} {line}" for index, line in enumerate(shown, start=1))
