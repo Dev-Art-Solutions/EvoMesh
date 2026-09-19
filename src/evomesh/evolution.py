@@ -69,7 +69,14 @@ HARNESS_RULES = "\n".join(
         "nothing runs, so the file has to go, or be wired into something that "
         "already does.",
         "- Everything you touch must stay valid Python: ruff, pyright and pytest "
-        "are run against your work as soon as you are finished.",
+        "are run against your work as soon as you are finished -- automatically, "
+        "in a separate stage, once you stop calling tools. Do not try to run them "
+        "yourself: `shell` only runs the harness's own bare Python interpreter, "
+        "which has none of those installed and cannot run this project's suite "
+        "(found live: a job spent its entire budget on `python -m pytest` and "
+        "`import pytest` failing with 'No module named pytest', and never wrote "
+        "a single edit). Spend your steps reading and editing, not probing "
+        "whether you can test your own change -- you cannot, and do not need to.",
         "- Stay inside this directory. It is a disposable copy, not the running mesh.",
         "- End your final answer with one sentence starting exactly with "
         "'RATIONALE:' explaining what you changed and why -- it is the only "
