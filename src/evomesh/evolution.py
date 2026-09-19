@@ -77,6 +77,14 @@ HARNESS_RULES = "\n".join(
         "`import pytest` failing with 'No module named pytest', and never wrote "
         "a single edit). Spend your steps reading and editing, not probing "
         "whether you can test your own change -- you cannot, and do not need to.",
+        "- Searching is not the work. Found live: a job re-read the same two or "
+        "three files and re-ran near-identical greps a dozen times hunting for "
+        "the perfect place to wire something in, and ran out of budget having "
+        "never called edit once. If you catch yourself re-reading a file you've "
+        "already read, or re-running a grep with only the pattern tweaked, stop "
+        "searching -- commit to editing the best candidate site you have already "
+        "found. A real, small, imperfect edit beats an unlimited search for a "
+        "perfect one that runs out of steps and lands nothing.",
         "- Stay inside this directory. It is a disposable copy, not the running mesh.",
         "- End your final answer with one sentence starting exactly with "
         "'RATIONALE:' explaining what you changed and why -- it is the only "
