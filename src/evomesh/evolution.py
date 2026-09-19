@@ -63,6 +63,14 @@ HARNESS_RULES = "\n".join(
         "work, and is worth more than another new file.",
         "- Read a file before you change it. Use edit, not write, for a file that "
         "already exists, and keep each change as small as the objective allows.",
+        "- `old` must be copied, not recalled. Found live: a job read cognition.py "
+        "three times, then wrote an `old` for a whole class -- with a docstring "
+        "and a property neither named `reliable` -- that appears nowhere in the "
+        "file it had just read, and the denial arrived with no budget left to "
+        "retry. The longer `old` is, the more likely you are to misremember a "
+        "word of it -- keep it to the few lines you are actually changing, "
+        "copied character-for-character from your most recent `read` of that "
+        "exact file, never reconstructed from what the function is supposed to do.",
         "- If you created a file that turns out to be wrong -- a scratch script, "
         "a false start, a file the hygiene check names -- use delete to remove "
         "it. Leaving it behind is not an option: a candidate cannot land code "
