@@ -334,6 +334,35 @@ def _match_lines(content: str, needle: str) -> list[int]:
     return lines
 
 
+def _not_found_hint(content: str, old: str) -> str:
+    """Give a not-found refusal something real to anchor a retry on.
+
+    A blind "read the file again" assumes the model's `old` was a faithful
+    copy that just went stale. Found live: a model can instead fabricate
+    `old` wholesale -- plausible code matching a plan's *description* of a
+    function rather than the function's actual body -- and a bare re-read
+    doesn't correct that, it just gets re-fabricated the same way on the next
+    attempt. Anchoring on whichever line of `old` does appear verbatim points
+    straight at the real text to copy from; when no line of it appears at
+    all, showing the top of the real file at least confirms whether the
+    model even has the right file in mind.
+    """
+    for line in old.splitlines():
+        stripped = line.strip()
+        if len(stripped) < 8:
+            continue
+        at = _match_lines(content, stripped)
+        if at:
+            return "This line of 'old' does appear, but not the rest of it:\n" + _neighbourhoods(
+                content, at
+            )
+    lines = content.splitlines()
+    shown = lines[:20]
+    head = "\n".join(f"{index:>5} {line}" for index, line in enumerate(shown, start=1))
+    more = f"\n  ... {len(lines) - 20} more lines" if len(lines) > 20 else ""
+    return f"No line of 'old' appears anywhere in the file. Its actual start:\n{head}{more}"
+
+
 def _neighbourhoods(content: str, at: list[int], *, context_lines: int = 2) -> str:
     """Each match with the lines around it, so the anchor can be widened here."""
     lines = content.splitlines()
@@ -375,8 +404,8 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     where = "/".join(_inside(context.root, target))
     if not found:
         raise ToolDenied(
-            f"DENIED: that text is not in {where}. Read the file again -- it may have "
-            "changed since you last saw it, or the indentation may differ."
+            f"DENIED: that text is not in {where}. It may have changed since you last "
+            "saw it, or the indentation may differ.\n" + _not_found_hint(content, old)
         )
     if len(found) > 1:
         # The refusal carries the surrounding lines, not just the count. A model

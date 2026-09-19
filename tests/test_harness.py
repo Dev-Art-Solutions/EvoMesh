@@ -170,7 +170,7 @@ async def test_a_stale_anchor_is_refused_and_says_to_read_again(project: Path) -
     )
 
     assert result.startswith("DENIED:")
-    assert "Read the file again" in result
+    assert "that text is not in" in result
 
 
 async def test_write_refuses_to_replace_an_existing_file_by_accident(project: Path) -> None:
@@ -311,6 +311,50 @@ async def test_an_edit_that_changes_nothing_is_refused(project: Path) -> None:
     )
 
     assert "identical" in result
+
+
+async def test_a_not_found_edit_shows_the_real_file_instead_of_just_saying_reread(
+    project: Path,
+) -> None:
+    """A model that fabricates `old` from a description, not a real read, needs a
+    concrete anchor to correct against -- not another blind re-read that just gets
+    re-fabricated the same way. See tests below for the two shapes of hint."""
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {
+            "path": "src/answer.py",
+            "old": "def reconsider() -> bool:\n    return False  # never happens",
+            "new": "x",
+        },
+    )
+
+    assert "DENIED: that text is not in" in result
+    # The first line of `old` really is in the file -- shown so the model can see
+    # exactly where its guess diverges from the real body.
+    assert "This line of 'old' does appear" in result
+    assert "def reconsider() -> bool:" in result
+
+
+async def test_a_wholly_fabricated_edit_shows_the_start_of_the_real_file(
+    project: Path,
+) -> None:
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {
+            "path": "src/answer.py",
+            "old": (
+                "async def run_forever(self) -> None:\n"
+                "    while True:\n"
+                "        await self.step()"
+            ),
+            "new": "x",
+        },
+    )
+
+    assert "No line of 'old' appears anywhere in the file" in result
+    assert "def reconsider() -> bool:" in result
 
 
 # -- the loop ------------------------------------------------------------
