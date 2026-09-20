@@ -375,6 +375,151 @@ async def test_a_recurring_goal_with_a_silent_outcome_does_not_announce(
     await environment.stop()
 
 
+async def test_report_pattern_keeps_only_matching_lines(tmp_path: Path) -> None:
+    """The deterministic backstop for a skill's strict-format rule: only the
+    line(s) shaped like the goal's own report format reach chat."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=r"^[A-Z]+ (bullish|bearish): .+$",
+    )
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary="Checked the feed, nothing else to add.\nXAU bullish: Fed pause.",
+            goal_done=True,
+            phase=AgentPhase.IDLE,
+            worked=True,
+        ),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "XAU bullish: Fed pause." in announced[0]
+    assert "Checked the feed" not in announced[0]
+
+
+async def test_report_pattern_is_never_applied_to_an_unfinished_cycle(
+    tmp_path: Path,
+) -> None:
+    """A cron goal that takes several cycles to finish (NewsAnalyzer: 3-4
+    ticks per 30-minute window) was running the filter -- and, when nothing
+    matched, an extra model call to re-extract a report -- on every single
+    mid-plan cycle, not just the one that actually finished. Every one of
+    those calls was wasted: an intermediate summary is never the report."""
+    provider = ScriptedProvider()
+    environment, agent = await worker(tmp_path, provider)
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=r"^[A-Z]+ (bullish|bearish): .+$",
+    )
+    runtime = environment.runtimes[agent.id]
+    calls_before = len(provider.calls)
+
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary="called news_fetch, reading headline 3 of 8",
+            goal_done=False,
+            phase=AgentPhase.ACTING,
+            worked=True,
+            step="reading headline 3 of 8",
+        ),
+        goal,
+    )
+
+    assert len(provider.calls) == calls_before, "an unfinished cycle must never call the model"
+
+
+async def test_report_pattern_falls_back_to_the_sanitizer_only_on_the_finishing_cycle(
+    tmp_path: Path,
+) -> None:
+    """When the finishing cycle's raw answer has something real but not
+    already pattern-shaped, the sanitizer call is the one place that is
+    worth spending a model call on -- and it should get one more chance to
+    match after that call, not be trusted unfiltered."""
+    provider = ScriptedProvider(step="XAU bullish: extracted from narration.")
+    environment, agent = await worker(tmp_path, provider)
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=r"^[A-Z]+ (bullish|bearish): .+$",
+    )
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary="I noticed gold looks bullish on the Fed pause headline.",
+            goal_done=True,
+            phase=AgentPhase.IDLE,
+            worked=True,
+        ),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "XAU bullish: extracted from narration." in announced[0]
+
+
+async def test_a_finished_cycle_that_matches_nothing_logs_the_raw_answer(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A human who never sees this agent announce anything has no way to
+    tell "it never found anything" from "the pattern eats everything it
+    finds" -- the raw answer has to survive somewhere even when chat stays
+    silent, or a broken pattern looks identical to a quiet news day forever."""
+    provider = ScriptedProvider(step="Still nothing shaped like the format.")
+    environment, agent = await worker(tmp_path, provider)
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=r"^[A-Z]+ (bullish|bearish): .+$",
+    )
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    with caplog.at_level(logging.INFO):
+        await runtime._apply(  # noqa: SLF001
+            CycleOutcome(
+                summary="Read three headlines, none of them moved anything.",
+                goal_done=True,
+                phase=AgentPhase.IDLE,
+                worked=True,
+            ),
+            goal,
+        )
+
+    assert announced == []
+    assert any(
+        "matched nothing" in record.message
+        and "Read three headlines" in record.message
+        for record in caplog.records
+    )
+
+
 async def test_a_one_shot_goals_first_completion_is_progress_not_finished(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

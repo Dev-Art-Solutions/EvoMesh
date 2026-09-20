@@ -327,7 +327,16 @@ class AgentRuntime:
                 # should send nothing, not a "found nothing to report" filler
                 # every single cycle forever.
                 summary = outcome.summary
-                if goal.recurring and goal.report_pattern:
+                # Only worth running -- and only meaningful to run -- on the
+                # cycle that actually finished. Every earlier cycle's summary
+                # is mid-plan chatter ("called news_fetch", "still reading
+                # headline 3 of 8"), never the report itself, so filtering it
+                # here only ever produced empty and _sanitize_report's extra
+                # model call was spent for nothing on every single tick a
+                # cron goal was in progress -- found live: NewsAnalyzer,
+                # which runs 3-4 cycles per cron window before finishing,
+                # paying for the sanitizer 3-4 times as often as it needed to.
+                if genuinely_done and goal.recurring and goal.report_pattern:
                     filtered = _apply_report_pattern(summary, goal.report_pattern)
                     if not filtered.strip() and not _is_silent_outcome(summary):
                         # The regex found nothing to keep, but the model did
@@ -348,6 +357,20 @@ class AgentRuntime:
                             )
                             distilled = ""
                         filtered = _apply_report_pattern(distilled, goal.report_pattern)
+                    if not filtered.strip() and summary.strip():
+                        # A human who never sees this agent announce anything
+                        # has no way to tell "it never found anything" from
+                        # "the pattern is silently eating everything it
+                        # finds" -- this is the one place that distinction is
+                        # still knowable, so it goes to the log even though
+                        # it never reaches chat.
+                        logger.info(
+                            "%s: report_pattern %r matched nothing in this cycle's "
+                            "raw answer, staying silent -- raw answer was: %r",
+                            self.definition.name,
+                            goal.report_pattern,
+                            summary,
+                        )
                     summary = filtered
                 silent = goal.recurring and _is_silent_outcome(summary)
                 if genuinely_done and not silent:
