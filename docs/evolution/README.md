@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1069](001069.md) — The model changed `src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1058](001058.md) — The model changed `src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1056](001056.md) — The model changed `src/evomesh/mesh.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1054](001054.md) — The model changed `src/evomesh/environment.py` but gave no rationale for it -- see the diff below for what actually moved.
