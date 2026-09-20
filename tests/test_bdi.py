@@ -712,6 +712,69 @@ async def test_the_evolver_keeps_one_commitment_across_the_whole_pipeline(
     assert (await evolver.pipeline_state())["stage"] == "await-human"
 
 
+async def test_entering_await_human_announces_once_to_chat(tmp_path: Path) -> None:
+    """A human away from the console must hear that evolution is parked, and
+    why -- not just find out by checking /evolution status days later."""
+    from evomesh.behaviors import EvolverBehavior
+    from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver, ValidationResult
+    from evomesh.storage import SQLiteRepository
+
+    from .fakes import FakeHarness
+
+    class StubValidator:
+        async def validate(self, generation: object) -> ValidationResult:
+            return ValidationResult(passed=True, commands=[{"command": "stub", "exit_code": 0}])
+
+    class FakeEnvironment:
+        def __init__(self) -> None:
+            self.announced: list[str] = []
+
+        async def announce(self, text: str) -> None:
+            self.announced.append(text)
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "app.py").write_text("ACTIVE = True\n", encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    mutation = '{"relative_path": "src/app.py", "content": "X = 1\\n", "rationale": "flip"}'
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider([mutation]),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    fake_environment = FakeEnvironment()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={
+            "evolver": evolver,
+            "harness": FakeHarness([[("src/app.py", "X = 1\n")]]),
+            "environment": fake_environment,
+        },
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    for _ in range(4):
+        await behavior.cycle(context)
+    assert (await evolver.pipeline_state())["stage"] == "await-human"
+    assert len(fake_environment.announced) == 1, "announced exactly once, on the transition"
+    assert fake_environment.announced[0].startswith("Evolution needs you: ")
+    assert "generation" in fake_environment.announced[0]
+
+    # Parked cycles that follow must not repeat the announcement.
+    for _ in range(3):
+        await behavior.cycle(context)
+    assert len(fake_environment.announced) == 1, "still just the one announcement"
+
+
 async def test_a_waiting_evolver_keeps_its_commitment_instead_of_re_adopting(
     tmp_path: Path,
 ) -> None:

@@ -509,6 +509,15 @@ class EvolverBehavior(BDIBehavior):
         # move is the thing worth seeing, so it is logged too.
         moved = str((await evolver.pipeline_state()).get("stage", STAGE_PLAN))
         logger.info("Evolution stage %s -> %s: %s", stage, moved, result.summary)
+        if moved == STAGE_AWAIT_HUMAN and stage != STAGE_AWAIT_HUMAN:
+            # Only on the transition into the stage, never on the cycles that
+            # follow while parked there (those return early via the holding
+            # branch above `_run_stage`, so this never repeats) -- a human
+            # should hear about this once, not every couple of minutes for as
+            # long as they are away from the console.
+            environment = cast("Any", context.service("environment"))
+            if environment is not None:
+                await environment.announce(f"Evolution needs you: {result.summary}")
         return result
 
     async def _run_stage(

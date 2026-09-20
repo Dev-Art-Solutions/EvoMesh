@@ -690,6 +690,7 @@ class Environment:
 
     def _services(self) -> dict[str, object]:
         return {
+            "environment": self,
             "evolver": self.evolver,
             "skills": self.skills,
             "tools": self.tools,
