@@ -1453,6 +1453,40 @@ async def test_the_queue_refuses_past_its_limit(tmp_path: Path) -> None:
         queue.submit("three", tmp_path)
 
 
+def test_a_finished_job_is_pruned_once_retention_is_exceeded(tmp_path: Path) -> None:
+    """`jobs` is process memory kept for the mesh's entire uptime -- nothing
+    here ever stops running on its own, so an unpruned dict has no ceiling,
+    the same class of bug already fixed for generation worktrees, filesystem
+    grants, and mesh.log. A finished job's own consumer reads its result once
+    and moves on; nothing needs it kept around indefinitely."""
+    queue = HarnessQueue(retain_finished=2)
+    first = queue.submit("one", tmp_path)
+    queue.finish(first, HarnessResult(outcome="answered"))
+    second = queue.submit("two", tmp_path)
+    queue.finish(second, HarnessResult(outcome="answered"))
+    third = queue.submit("three", tmp_path)
+    queue.finish(third, HarnessResult(outcome="answered"))
+
+    # Pruning runs on submit, against the finished jobs on record at that
+    # moment -- one more submit is what actually pushes the count over
+    # retain_finished and prunes the oldest.
+    queue.submit("four", tmp_path)
+
+    assert first.number not in queue.jobs
+    assert second.number in queue.jobs
+    assert third.number in queue.jobs
+
+
+def test_an_open_job_is_never_pruned_regardless_of_retention(tmp_path: Path) -> None:
+    queue = HarnessQueue(retain_finished=1)
+    still_open = queue.submit("standing job", tmp_path, agent_id="watcher")
+    for index in range(5):
+        finished = queue.submit(f"job {index}", tmp_path)
+        queue.finish(finished, HarnessResult(outcome="answered"))
+
+    assert still_open.number in queue.jobs
+
+
 async def test_an_agent_with_an_open_job_is_reported_as_awaiting_harness(
     tmp_path: Path,
 ) -> None:

@@ -132,11 +132,32 @@ class HarnessQueue:
     is still running, and every copy would edit the same files.
     """
 
-    def __init__(self, max_queue: int = 8) -> None:
+    def __init__(self, max_queue: int = 8, retain_finished: int = 200) -> None:
         self.max_queue = max_queue
+        # `jobs` is process memory, not a database -- nothing here ever stops
+        # running on its own, so an unpruned dict has no ceiling (the same
+        # class of bug this project has already fixed for generation
+        # worktrees, filesystem grants, and mesh.log). A queue this small
+        # loses no functionality: every real caller either polls the job it
+        # just submitted until it finishes and consumes the result in that
+        # same stretch (a plan step, an evolution pipeline stage, a reactive
+        # question's synchronous wait), or asks `recent()` for a short,
+        # bounded status listing -- nothing holds a *finished* job's number
+        # across an arbitrarily long stretch of the mesh's own uptime. An
+        # *open* job is never pruned regardless of age or count.
+        self.retain_finished = retain_finished
         self.jobs: dict[int, HarnessJob] = {}
         self._waiting: asyncio.Queue[int] = asyncio.Queue()
         self._next = 1
+
+    def _prune_finished(self) -> None:
+        finished = sorted(
+            (job for job in self.jobs.values() if not job.open),
+            key=lambda job: job.number,
+            reverse=True,
+        )
+        for job in finished[self.retain_finished :]:
+            del self.jobs[job.number]
 
     def open_job_for(self, agent_id: str) -> HarnessJob | None:
         if not agent_id:
@@ -182,6 +203,7 @@ class HarnessQueue:
         self._next += 1
         self.jobs[job.number] = job
         self._waiting.put_nowait(job.number)
+        self._prune_finished()
         return job
 
     async def take(self) -> HarnessJob:
