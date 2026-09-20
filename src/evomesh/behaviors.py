@@ -937,6 +937,16 @@ class EvolverBehavior(BDIBehavior):
         touched = await recorder(
             generation, harness.changes(job), record_objective, rationale, status
         )
+        # `touched` is the session's own log of what it wrote, not what is
+        # still there -- a job that edits a file and then edits it back within
+        # the same session reports both, non-empty, even though the working
+        # tree nets to byte-identical with its parent. Left unchecked, that
+        # candidate goes on to validate (trivially: nothing changed, so
+        # nothing broke) and can be promoted and committed for real -- the
+        # same D5 failure this stage already catches for a job that wrote
+        # nothing at all, just reached from the other side.
+        if touched and await evolver.candidate_changed_nothing(generation):
+            touched = []
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
             if on_no_op is not None:

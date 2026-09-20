@@ -198,6 +198,56 @@ async def test_a_detached_head_is_refused_by_name(tmp_path: Path) -> None:
     assert "detached" in evolver.last_publish
 
 
+async def test_a_candidate_that_nets_to_zero_is_refused_not_landed_as_a_docs_only_commit(
+    tmp_path: Path,
+) -> None:
+    """A harness session that edits a file and then edits it back leaves
+    `generation.changes` non-empty (both edits were recorded) even though the
+    working tree is byte-identical to its parent. `apply_generation` used to
+    write the backlog doc into the candidate before checking `git status` --
+    which meant that doc, being a new untracked file, always made the status
+    non-empty and defeated the "changed nothing" guard entirely. The result
+    was a real commit on main carrying only a docs/evolution/*.md entry and no
+    actual code change: an "evolution" that evolved nothing."""
+    project = await checkout(tmp_path / "project")
+    # Mirrors the real project's own .gitignore: MUTATION_OBJECTIVE.md is
+    # deliberately untracked scratch a candidate always carries, and it must
+    # not itself count as "the candidate still has a real change" -- without
+    # this line the test fixture's own repo, not the fix, would be why the
+    # candidate looked dirty.
+    repository = GitRepository(project)
+    (project / ".gitignore").write_text(
+        (project / ".gitignore").read_text(encoding="utf-8") + "MUTATION_OBJECTIVE.md\n",
+        encoding="utf-8",
+    )
+    await repository.run("add", "-A")
+    await repository.run("commit", "-m", "ignore scratch files")
+    evolver = await evolver_for(tmp_path, project)
+    before = await GitRepository(project).run("rev-parse", "HEAD")
+
+    generation = await evolver.create_candidate("keep the mesh honest")
+    await change(evolver, generation, "keep the mesh honest", "flip it")
+    (generation.path / "src" / "app.py").write_text("ACTIVE = True\n", encoding="utf-8")
+    await evolver.record_harness_changes(
+        generation,
+        [{"kind": "edit", "path": "src/app.py", "diff": ""}],
+        "keep the mesh honest",
+        "flip it back",
+        "applied",
+    )
+
+    try:
+        await evolver.apply_generation(generation.number, "keep the mesh honest")
+    except GitError as exc:
+        assert "changed nothing" in str(exc)
+    else:
+        raise AssertionError("a net-zero candidate must not be applied")
+
+    after = await GitRepository(project).run("rev-parse", "HEAD")
+    assert after.strip() == before.strip(), "nothing should have landed on main"
+    assert not (project / "docs" / "evolution").exists()
+
+
 # -- restarting into the new code ---------------------------------------
 
 

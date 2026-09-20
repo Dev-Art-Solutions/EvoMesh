@@ -1515,13 +1515,22 @@ class EnvironmentEvolver:
         commit = generation.git_commit
         if commit is None:
             candidate = GitRepository(generation.path, self.identity)
-            # Written before the status check, so a generation always carries its
+            # Checked before the backlog doc is written: write_backlog() adds a
+            # new file to the candidate's own tree, which makes `status()`
+            # non-empty on its own -- checking after that write, as this used
+            # to, meant a candidate whose real edits net to zero (an edit and
+            # its own later revert, both "recorded" but cancelling out) always
+            # had *something* to commit: the doc describing a change that was
+            # not actually there. That is exactly how a no-op generation
+            # landed on main with nothing but a docs/evolution/*.md entry to
+            # show for it.
+            if not (await candidate.status()).strip():
+                raise GitError(f"generation {number} changed nothing to apply")
+            # Written before the commit, so a generation always carries its
             # own explanation into the commit that lands it.
             generation.objective = generation.objective or objective
             state = await self.pipeline_state()
             self.write_backlog(generation, int(state.get("repairs", 0)))
-            if not (await candidate.status()).strip():
-                raise GitError(f"generation {number} changed nothing to apply")
             commit = await candidate.commit_mutation(number, objective)
             generation.git_commit = commit
             self.workspace.supervisor.record_candidate(generation)
