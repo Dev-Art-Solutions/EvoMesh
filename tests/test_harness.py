@@ -36,6 +36,7 @@ from evomesh.harness_queue import (
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
     ALL_TOOLS,
+    ASK_TOOLS,
     SHELL_TOOLS,
     WEB_TOOLS,
     ToolContext,
@@ -1083,6 +1084,73 @@ async def test_a_failed_fetch_is_named_in_the_refusal(
 
     assert "DENIED" in result
     assert "name resolution failed" in result
+
+
+async def test_ask_agent_returns_the_other_agents_real_answer(project: Path) -> None:
+    async def fake_ask(agent: str, question: str) -> str:
+        assert agent == "Trader"
+        assert question == "what is your current position?"
+        return "Flat, no open positions."
+
+    context = ToolContext(root=project, ask_agent=fake_ask)
+
+    result = await ToolRegistry(ASK_TOOLS).invoke(
+        context, "ask_agent", {"agent": "Trader", "question": "what is your current position?"}
+    )
+
+    assert result == "Flat, no open positions."
+
+
+async def test_ask_agent_is_denied_without_agent_or_question(project: Path) -> None:
+    async def unreachable(agent: str, question: str) -> str:
+        raise AssertionError("must not be called with missing arguments")
+
+    context = ToolContext(root=project, ask_agent=unreachable)
+
+    missing_agent = await ToolRegistry(ASK_TOOLS).invoke(
+        context, "ask_agent", {"question": "hello"}
+    )
+    missing_question = await ToolRegistry(ASK_TOOLS).invoke(
+        context, "ask_agent", {"agent": "Trader"}
+    )
+
+    assert "DENIED" in missing_agent
+    assert "DENIED" in missing_question
+
+
+async def test_ask_agent_names_a_timeout_or_missing_agent_in_the_refusal(
+    project: Path,
+) -> None:
+    async def times_out(agent: str, question: str) -> str:
+        raise TimeoutError
+
+    async def not_found(agent: str, question: str) -> str:
+        raise KeyError(agent)
+
+    timed_out = await ToolRegistry(ASK_TOOLS).invoke(
+        ToolContext(root=project, ask_agent=times_out),
+        "ask_agent",
+        {"agent": "Trader", "question": "hi"},
+    )
+    missing = await ToolRegistry(ASK_TOOLS).invoke(
+        ToolContext(root=project, ask_agent=not_found),
+        "ask_agent",
+        {"agent": "Nobody", "question": "hi"},
+    )
+
+    assert "DENIED" in timed_out and "Trader" in timed_out
+    assert "DENIED" in missing and "Nobody" in missing
+
+
+def test_ask_agent_is_absent_from_the_schema_until_it_is_configured(project: Path) -> None:
+    async def fake_ask(agent: str, question: str) -> str:
+        return "unused"
+
+    off = build_runner(MockProvider(responses=["x"]), project)
+    on = build_runner(MockProvider(responses=["x"]), project, ask_agent=fake_ask)
+
+    assert "ask_agent" not in off.registry.tools
+    assert "ask_agent" in on.registry.tools
 
 
 def test_fetch_is_absent_from_the_schema_until_it_is_configured(project: Path) -> None:

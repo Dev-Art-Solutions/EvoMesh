@@ -218,7 +218,15 @@ class AgentRuntime:
             self.state.phase = AgentPhase.ERROR if error else AgentPhase.IDLE
         outgoing = Message(
             sender_id=self.definition.id,
-            recipient_id=incoming.sender_id,
+            # A plain message replies to its sender's own mailbox -- but that
+            # mailbox is also this agent's own _message_loop's, for a human
+            # asking through the console. An agent asking another agent (see
+            # harness_tools.tool_ask_agent) is a second listener on its own
+            # mailbox at the same time (its _message_loop never stops), so a
+            # bare reply-to-sender there would race the tool call for the
+            # very reply it is waiting on. reply_to opts into a private,
+            # one-shot mailbox nothing else is listening on instead.
+            recipient_id=incoming.metadata.get("reply_to") or incoming.sender_id,
             conversation_id=incoming.conversation_id,
             correlation_id=incoming.id,
             content=response,

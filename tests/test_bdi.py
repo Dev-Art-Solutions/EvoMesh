@@ -1,5 +1,6 @@
 """What makes these agents BDI rather than a loop with nice field names."""
 
+import asyncio
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -638,6 +639,57 @@ async def test_environment_announce_is_also_kept_for_pull_based_polling(tmp_path
     texts = [item[2] for item in environment.announcement_log]
     assert texts == ["first", "second"]
     assert ids == sorted(ids)
+    await environment.stop()
+
+
+async def test_ask_agent_reaches_a_live_agents_reactive_answer(tmp_path: Path) -> None:
+    """The whole point of ask_agent (harness_tools.tool_ask_agent, wired
+    through Environment._make_ask_agent): a real synchronous round trip
+    through the same reactive path a human's /chat command uses, not a
+    message left for some later cycle to notice."""
+    provider = MockProvider(["Flat, no open positions."])
+    environment = Environment(settings_for(tmp_path), {"ollama": provider})
+    await environment.start()
+    trader = AgentDefinition(name="Trader", purpose="Trade")
+    await environment.register_agent(trader)
+    await environment.start_agent(trader.id, start_delay=3600)
+
+    ask = environment._make_ask_agent("news-watcher")  # noqa: SLF001
+    answer = await ask("Trader", "what is your current position?")
+
+    assert answer == "Flat, no open positions."
+    await environment.stop()
+
+
+async def test_ask_agent_reply_cannot_be_stolen_by_the_targets_own_message_loop(
+    tmp_path: Path,
+) -> None:
+    """The reason for the private reply_to mailbox: the target agent's own
+    _message_loop never stops listening on its own agent_id mailbox, so a
+    naive reply-to-sender would be a race between this call's own wait and
+    that loop's next iteration -- run several askers at once and every one
+    of them still has to get back its own answer, not someone else's."""
+    provider = MockProvider(["the only answer this mock ever gives"])
+    environment = Environment(settings_for(tmp_path), {"ollama": provider})
+    await environment.start()
+    trader = AgentDefinition(name="Trader", purpose="Trade")
+    await environment.register_agent(trader)
+    await environment.start_agent(trader.id, start_delay=3600)
+    ask = environment._make_ask_agent("asker")  # noqa: SLF001
+
+    answers = await asyncio.gather(*(ask("Trader", f"question {i}") for i in range(5)))
+
+    assert answers == ["the only answer this mock ever gives"] * 5
+    await environment.stop()
+
+
+async def test_ask_agent_refuses_to_ask_itself(tmp_path: Path) -> None:
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    ask = environment._make_ask_agent(agent.id)  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="cannot ask itself"):
+        await ask(agent.id, "anything")
+
     await environment.stop()
 
 

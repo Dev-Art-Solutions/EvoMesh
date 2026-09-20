@@ -10,6 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
@@ -594,6 +595,43 @@ class Environment:
             if custom_tool_program(definition) in allow
         )
 
+    def _make_ask_agent(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
+        """A harness job's ``ask_agent`` tool, bound to the agent it runs for.
+
+        Reaches AgentRuntime._handle's reactive path (the same one a human's
+        `/chat <agent>` uses) rather than send_message() alone, so this is a
+        real question-then-answer instead of a fire-and-forget inbox drop.
+        Replies to a private, one-shot mailbox (never the sender's own
+        agent_id) because that agent's ordinary _message_loop never stops
+        listening on its own mailbox -- a bare reply-to-sender there would
+        race this call for the very reply it is waiting on.
+        """
+
+        async def ask(agent: str, question: str) -> str:
+            target = self.registry.get(agent)
+            if target.id == sender_id:
+                # This agent's own reactive handler is what would have to
+                # answer -- and if this call is itself running inside that
+                # same handler's lock (a harness job started from _handle or
+                # run_cycle), asking itself would deadlock rather than just
+                # look silly. Refused before the round-trip, not after a
+                # timeout.
+                raise ValueError("an agent cannot ask itself")
+            reply_mailbox = f"ask:{uuid4()}"
+            self.bus.register(reply_mailbox)
+            await self.send_message(
+                Message(
+                    sender_id=sender_id,
+                    recipient_id=target.id,
+                    content=question,
+                    metadata={"reply_to": reply_mailbox},
+                )
+            )
+            reply = await self.bus.receive(reply_mailbox, wait_seconds=120)
+            return reply.content
+
+        return ask
+
     async def _run_harness_job(self, job: HarnessJob) -> HarnessResult:
         settings = self.settings.harness
         provider_name = self.settings.models.default_provider
@@ -632,6 +670,7 @@ class Environment:
                 self.settings.scraping.executable if self.settings.scraping.enabled else ""
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
+            ask_agent=self._make_ask_agent(job.agent_id) if job.agent_id else None,
             custom_tools=self.active_custom_tools(),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,

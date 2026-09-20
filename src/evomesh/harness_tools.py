@@ -105,6 +105,14 @@ class ToolContext:
     # registered, same reasoning as shell_allow above.
     scraping_executable: str = ""
     scraping_timeout: float = 30.0
+    # Bound to this job's own agent_id by the caller (environment.py's
+    # submit_harness_job), so the tool itself never needs the mesh's message
+    # bus or agent registry directly -- it asks by name, waits for the
+    # reply, and gets back a string like every other tool. None is why
+    # ask_agent is not even registered (see build_runner): a harness job run
+    # for the human at the console, or with no live mesh behind it at all
+    # (a test), has no other agent to ask.
+    ask_agent: Callable[[str, str], Awaitable[str]] | None = None
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -734,6 +742,38 @@ async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
     return _clip(content, context.limits, unit="lines")
 
 
+async def tool_ask_agent(context: ToolContext, args: dict[str, Any]) -> str:
+    """Ask another live agent a question and return its answer.
+
+    The mesh already lets one agent's own goal cycle send another a message
+    (NewsWatcher -> Trader, say), but that lands in an inbox some unknown
+    number of cycles later -- fine for "here is something you should know",
+    wrong for "what is your current position" answered mid-plan. This
+    reaches the exact same reactive path a human's own `/chat <agent>`
+    console command uses (AgentRuntime._handle, via a private one-shot
+    mailbox so this call's own reply can never be raced by that agent's
+    ordinary background message loop) and waits for a real answer.
+    """
+    if context.ask_agent is None:
+        raise ToolDenied("DENIED: no other agent is reachable from this job.")
+    agent = str(args.get("agent") or "").strip()
+    question = str(args.get("question") or "").strip()
+    if not agent:
+        raise ToolDenied("DENIED: ask_agent needs an agent name or id.")
+    if not question:
+        raise ToolDenied("DENIED: ask_agent needs a question.")
+    try:
+        answer = await context.ask_agent(agent, question)
+    except TimeoutError:
+        raise ToolDenied(f"DENIED: {agent} did not answer in time.") from None
+    except (KeyError, LookupError):
+        raise ToolDenied(f"DENIED: no agent named {agent!r} is running.") from None
+    except ValueError as exc:
+        raise ToolDenied(f"DENIED: {exc}") from None
+    context.tally.reads += 1
+    return _clip(answer, context.limits, unit="lines")
+
+
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
@@ -894,6 +934,30 @@ WEB_TOOLS: tuple[Tool, ...] = (
             "required": ["url"],
         },
         run=tool_fetch,
+    ),
+)
+
+ASK_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="ask_agent",
+        description=(
+            "Ask another live agent in this mesh a question and wait for its "
+            "real answer -- not a message that sits in its inbox until its "
+            "next cycle. Use the agent's name or id (see the mesh roster, "
+            "or /agents on the console)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "The other agent's name or id.",
+                },
+                "question": {"type": "string", "description": "What to ask it."},
+            },
+            "required": ["agent", "question"],
+        },
+        run=tool_ask_agent,
     ),
 )
 
