@@ -18,9 +18,15 @@ from pathlib import Path
 PACKAGE = "evomesh"
 
 # Reachable without an importer. ``__init__`` is the package itself, ``__main__``
-# is the console script's entry point, and ``smoke`` is executed as
-# ``python -m evomesh.smoke`` by the candidate validator.
-ENTRY_POINTS = frozenset({"__init__", "__main__", "smoke"})
+# is the console script's entry point, ``smoke`` is executed as
+# ``python -m evomesh.smoke`` by the candidate validator, and
+# ``browser_bridge`` is executed as ``python -m evomesh.browser_bridge`` --
+# not by anything in this package, but by Chrome itself, spawning
+# scripts/chrome-native-host.bat the moment browser-extension/background.js
+# calls connectNative. A module nothing in this repository imports is
+# usually genuinely dead; one whose only caller is an external process this
+# repository does not control is not the same thing.
+ENTRY_POINTS = frozenset({"__init__", "__main__", "smoke", "browser_bridge"})
 
 
 @dataclass(frozen=True)
