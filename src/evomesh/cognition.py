@@ -14,6 +14,7 @@ hoping the server copes, is what keeps memory from evaporating mid-goal.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from typing import Protocol
 from evomesh.contracts import AgentDefinition, AgentPhase, Goal, Message
 from evomesh.memory import AgentMemory, MemoryBudget, clip
 from evomesh.models import ModelProvider
+
+logger = logging.getLogger(__name__)
 
 REASONING_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 REASONING_START = re.compile(r"<(think|thinking|reasoning)>", re.IGNORECASE)

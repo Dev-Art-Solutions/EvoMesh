@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 987](000987.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 981](000981.md) — I replaced the no-op catch-up branch in `agents.py`'s `run_cycle` — which called a nonexistent reason and stored empty strings in the outcome — with a call to the dead module's `explain_not_running()`, wiring the `cycles` module into a load-bearing path so its code actually executes while leaving behavior otherwise identical.
 - [Generation 952](000952.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 913](000913.md) — # Plan: expose a Mesh.edge_count() backed by the mesh_utils graph helpers ## What this candidate changes and what it does not Wires the currently-dead `src/evomesh/mesh_utils.py` into the live mesh by giving the `Mesh` class a public edge-count method. It does **not** touch `cycles.py` or `node.py` (those belong to later generations), and it does **not** create a new graph module. Specifically, on...
