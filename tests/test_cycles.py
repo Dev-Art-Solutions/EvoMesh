@@ -1207,6 +1207,30 @@ async def test_changing_a_model_does_not_disable_the_agent(tmp_path: Path) -> No
     await environment.stop()
 
 
+async def test_an_agent_on_a_small_model_gets_a_correspondingly_small_budget(
+    tmp_path: Path,
+) -> None:
+    """One mesh, models of different sizes: a global prompt_chars is only
+    ever safe for whichever agent has the smallest context window. An agent
+    whose own num_ctx is small enough to need a tighter budget has to get
+    one automatically, not only when a human remembers to lower the shared
+    setting for everyone."""
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider(list(BDI_REPLIES))})
+    await environment.start()
+    small = AgentDefinition(name="Small", purpose="Work", num_ctx=512)
+    large = AgentDefinition(name="Large", purpose="Work")
+    await environment.register_agent(small)
+    await environment.register_agent(large)
+
+    small_budget = environment.budget_for(small)
+    large_budget = environment.budget_for(large)
+
+    assert small_budget.prompt_chars < large_budget.prompt_chars
+    assert large_budget.prompt_chars == environment.settings.runtime.prompt_chars
+    assert environment.memory_for(small).budget.prompt_chars == small_budget.prompt_chars
+    await environment.stop()
+
+
 async def test_a_candidate_never_contains_live_runtime_state(tmp_path: Path) -> None:
     """Promoting a generation must not ship someone's database or agent memory."""
     environment = Environment(settings_for(tmp_path), {"ollama": MockProvider(list(BDI_REPLIES))})

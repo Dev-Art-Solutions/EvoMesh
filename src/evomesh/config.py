@@ -72,6 +72,17 @@ class AgentModelSettings(BaseModel):
     num_ctx: int | None = None
 
 
+# The ratio this class's own defaults already assume, made explicit: 6000
+# prompt_chars was picked so a 4096-token model is never silently truncated,
+# once the system prompt, tool schemas and the model's own reply are left
+# room for. RuntimeSettings.budget() applies that ratio uniformly to every
+# agent, sized for the smallest model anyone in the mesh happens to be
+# running -- safe, but only by accident for an agent on a genuinely small
+# model whose own num_ctx nobody has told this setting about.
+# budget_for_num_ctx() is what makes it deliberate.
+SAFE_CHARS_PER_CONTEXT_TOKEN = 6000 / 4096
+
+
 class RuntimeSettings(BaseModel):
     """How often agents think, and how much text they are allowed to think with.
 
@@ -95,6 +106,37 @@ class RuntimeSettings(BaseModel):
             inbox_chars=self.inbox_chars,
             beliefs_chars=self.beliefs_chars,
             prompt_chars=self.prompt_chars,
+        )
+
+    def budget_for_num_ctx(self, num_ctx: int | None) -> MemoryBudget:
+        """This agent's own budget -- shrunk below the configured defaults
+        when its own resolved num_ctx is small enough to need it, never
+        grown past them.
+
+        Two agents in the same mesh can run genuinely different models (a
+        35b generalist next to a 4b specialist kept small on purpose for
+        cost or speed); a single global prompt_chars can only ever be safe
+        for whichever one has the smallest window, wasting headroom for
+        every other agent or -- worse, if a human raises it for the big
+        model without noticing the small one -- silently truncating the
+        small one's memory again, exactly the failure these budgets exist
+        to prevent. Ungrown past the configured ceiling even for a large
+        num_ctx: these are a deliberate cost/discipline choice (see
+        evomesh.yaml's own comments), not "use all available context".
+        """
+        base = self.budget()
+        if not num_ctx:
+            return base
+        safe_chars = num_ctx * SAFE_CHARS_PER_CONTEXT_TOKEN
+        if safe_chars >= self.prompt_chars:
+            return base
+        scale = safe_chars / self.prompt_chars
+        return MemoryBudget(
+            memory_chars=max(200, round(base.memory_chars * scale)),
+            context_chars=max(200, round(base.context_chars * scale)),
+            inbox_chars=max(150, round(base.inbox_chars * scale)),
+            beliefs_chars=max(150, round(base.beliefs_chars * scale)),
+            prompt_chars=max(800, round(base.prompt_chars * scale)),
         )
 
 

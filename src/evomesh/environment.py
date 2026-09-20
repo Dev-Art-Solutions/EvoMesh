@@ -32,7 +32,7 @@ from evomesh.harness import HarnessResult, build_runner
 from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue, HarnessWorker
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
-from evomesh.memory import AgentMemory, WorldContext
+from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
 from evomesh.messaging import MessageBus
 from evomesh.models import (
     AnthropicProvider,
@@ -437,7 +437,13 @@ class Environment:
         return self.memory_for(definition).playground_path
 
     def memory_for(self, definition: AgentDefinition) -> AgentMemory:
-        return AgentMemory(self.settings.workspace_path, definition, self.budget)
+        return AgentMemory(self.settings.workspace_path, definition, self.budget_for(definition))
+
+    def budget_for(self, definition: AgentDefinition) -> MemoryBudget:
+        """This agent's own character budget -- see RuntimeSettings.
+        budget_for_num_ctx for why this is not just ``self.budget`` for
+        every agent regardless of which model it actually runs."""
+        return self.settings.runtime.budget_for_num_ctx(self.num_ctx_for(definition))
 
     def cycle_seconds_for(self, definition: AgentDefinition) -> float:
         if definition.cycle_seconds:
@@ -484,7 +490,7 @@ class Environment:
             repository=self.repository,
             memory=self.memory_for(definition),
             behavior=self.behaviors.get(definition.id, ReflectiveBehavior()),
-            budget=self.budget,
+            budget=self.budget_for(definition),
             cycle_seconds=self.cycle_seconds_for(definition),
             num_ctx=self.num_ctx_for(definition),
             start_delay=start_delay,
