@@ -186,6 +186,44 @@ async def test_publishing_can_be_switched_off(tmp_path: Path) -> None:
         raise AssertionError("the remote received a commit with auto_push off")
 
 
+async def test_a_promoted_generation_stops_being_an_open_candidate(tmp_path: Path) -> None:
+    """promote() used to only move the active/last_known_good numbers,
+    leaving the promoted generation's own entry sitting in the candidates
+    dict forever -- indistinguishable, to prune_stale()'s "still an open
+    candidate" protection, from a generation nobody has decided on yet. That
+    kept every promoted generation's worktree, branch and directory alive
+    forever, the exact unbounded growth prune_stale() exists to stop, just
+    reached from a case discard() already handled and promote() never did."""
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project)
+
+    async def promote(content: str) -> int:
+        generation = await evolver.create_candidate("evolve")
+        (generation.path / "src" / "app.py").write_text(content, encoding="utf-8")
+        await evolver.record_harness_changes(
+            generation, [{"kind": "edit", "path": "src/app.py"}], "evolve", "change it"
+        )
+        await evolver.promote_candidate(generation.number, "evolve")
+        return generation.number
+
+    first = await promote("ACTIVE = False\n")
+    assert str(first) not in dict(evolver.workspace.supervisor.metadata()["candidates"])
+
+    second = await promote("ACTIVE = True\n")
+    # first is no longer active/last_known_good either, once a second
+    # promotion moves both numbers past it.
+    third = await promote("ACTIVE = False\n")
+
+    candidates = dict(evolver.workspace.supervisor.metadata()["candidates"])
+    assert str(first) not in candidates
+    assert str(second) not in candidates
+    assert str(third) not in candidates
+
+    removed = await evolver.workspace.prune_stale(keep=0)
+    assert first in removed
+    assert not (evolver.workspace.supervisor.root / f"{first:06d}-candidate").exists()
+
+
 async def test_a_detached_head_is_refused_by_name(tmp_path: Path) -> None:
     project = await checkout(tmp_path / "project")
     await remote_for(project, tmp_path / "remote.git")

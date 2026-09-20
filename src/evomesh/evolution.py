@@ -519,6 +519,21 @@ class GenerationSupervisor:
         self._write(metadata)
 
     def promote(self, number: int) -> None:
+        """Land the numbers, then drop the candidate entry the same way
+        discard() does -- a promoted generation's code lives on as a real
+        commit on main (and its own docs/evolution/NNNNNN.md, committed
+        alongside it), so nothing is lost by no longer treating its
+        directory as "still open".
+
+        Found live: it never had before. `candidates()` -- and, through it,
+        prune_stale()'s "still an open candidate" protection -- stayed
+        entangled with every generation this pipeline had ever promoted,
+        forever, because nothing here ever popped the entry the way
+        discard() already did for its own case. On a mesh that has been
+        promoting real work for hundreds of generations, that is the exact
+        unbounded worktree/branch/directory growth prune_stale() exists to
+        stop, just reached from its one remaining blind spot.
+        """
         metadata = self.metadata()
         candidates = dict(metadata.get("candidates", {}))
         candidate = candidates.get(str(number))
@@ -526,6 +541,8 @@ class GenerationSupervisor:
             raise ValueError(f"Generation {number} is not promotable")
         metadata["last_known_good"] = metadata["active"]
         metadata["active"] = number
+        candidates.pop(str(number), None)
+        metadata["candidates"] = candidates
         self._write(metadata)
 
     def discard(self, number: int) -> None:
