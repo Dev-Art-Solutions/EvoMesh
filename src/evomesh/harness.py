@@ -34,6 +34,7 @@ from evomesh.harness_tools import (
     READ_ONLY_TOOLS,
     SHELL_TOOLS,
     WEB_TOOLS,
+    WRITE_TOOLS,
     Tool,
     ToolContext,
     ToolLimits,
@@ -204,6 +205,16 @@ def call_key(call: ToolCall) -> str:
     return f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"
 
 
+# Safe to answer from cache no matter how many other calls came between the
+# two identical ones, because these three (and only these three) are pure:
+# same path, same args, same job root untouched by a write since -> same
+# bytes back, guaranteed. WRITE_NAMES is the other half of that guarantee --
+# the exact tool names that can invalidate the cache below, kept in sync
+# with harness_tools.WRITE_TOOLS rather than spelled out separately.
+CACHEABLE_NAMES = frozenset(tool.name for tool in READ_ONLY_TOOLS)
+WRITE_NAMES = frozenset(tool.name for tool in WRITE_TOOLS)
+
+
 @dataclass
 class HarnessRunner:
     provider: ModelProvider
@@ -340,9 +351,31 @@ class HarnessRunner:
                         "time, and the same answer. Do something else.]"
                     )
                     self.session.record("repeat", name=call.name, args=call.arguments)
+                elif call.name in CACHEABLE_NAMES and key in seen:
+                    # Not just the immediately previous call -- found live: 116
+                    # of 1870 tool calls across 60 recent jobs were an exact
+                    # repeat of an earlier call in the same job, and every one
+                    # of them was non-adjacent (something else came between),
+                    # so the check above never once caught it. A small model
+                    # re-reading a file it already has is a step spent
+                    # producing nothing new, not a mistake worth re-running.
+                    repeats = 0
+                    result = (
+                        f"{seen[key]}\n[this is the same {call.name} call as "
+                        "earlier in this job, and nothing has written to this "
+                        "job's files since -- the same answer. Do something else.]"
+                    )
+                    self.session.record("cached", name=call.name, args=call.arguments)
                 else:
                     repeats = 0
                     result = await self._invoke(call)
+                    if call.name in WRITE_NAMES:
+                        # A cached read answered from before this write would
+                        # be stale, possibly hiding the model's own edit from
+                        # it. Correctness over cache-hit rate: every prior
+                        # read in this job is invalidated, not just the one
+                        # whose path this write actually touched.
+                        seen.clear()
                     seen[key] = result
                     self.tool_chars += len(result)
                 last_call = key

@@ -594,6 +594,85 @@ async def test_a_repeat_that_stops_repeating_does_not_end_the_job(project: Path)
     assert result.answer == "the note says nothing to see"
 
 
+async def test_a_non_adjacent_repeat_read_is_answered_from_cache(project: Path) -> None:
+    """Found live: 116 of 1870 tool calls across 60 recent harness sessions
+    were an exact repeat of an earlier call in the same job -- every one of
+    them non-adjacent (something else ran in between), so the "same call
+    three times running" guard above never once caught it. A small model
+    re-reading a file it already has should not cost a real tool call."""
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(text="the note says nothing to see"),
+        ]
+    )
+    runner = build_runner(provider, project, max_steps=10)
+
+    result = await runner.run("read it, look around, read it again")
+
+    assert result.outcome == "answered"
+    assert "cached" in runner.session.kinds()
+    # Two read calls happened; only the first one was a real tool invocation.
+    assert runner.session.kinds().count("tool") == 2  # one read, one ls
+
+
+async def test_a_write_between_two_identical_reads_forces_a_real_reread(
+    project: Path,
+) -> None:
+    """The one thing that would make the cache above actively wrong: serving
+    a read from before the job's own write, hiding its own edit from it."""
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="write",
+                        arguments={
+                            "path": "notes.md",
+                            "content": "something to see now\n",
+                            "overwrite": True,
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "notes.md"})]),
+            ChatTurn(text="done"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=10)
+
+    await runner.run("read it, change it, read it again")
+
+    assert "cached" not in runner.session.kinds()
+    # read, write, read -- all three real, nothing served from a stale cache.
+    assert runner.session.kinds().count("tool") == 3
+
+
+async def test_shell_is_never_served_from_the_read_cache(project: Path) -> None:
+    """Deliberately excluded: a shell command is neither guaranteed pure
+    (side effects) nor guaranteed idempotent (the world can change between
+    two calls to the same command) the way read/grep/ls are."""
+    provider = MockProvider(
+        turns=[
+            ChatTurn(tool_calls=[ToolCall(name="shell", arguments={"command": "python -V"})]),
+            ChatTurn(tool_calls=[ToolCall(name="ls", arguments={"path": "."})]),
+            ChatTurn(tool_calls=[ToolCall(name="shell", arguments={"command": "python -V"})]),
+            ChatTurn(text="done"),
+        ]
+    )
+    runner = build_runner(
+        provider, project, shell_allow=frozenset({"python"}), max_steps=10
+    )
+
+    await runner.run("run it, look around, run it again")
+
+    assert "cached" not in runner.session.kinds()
+    assert runner.session.kinds().count("tool") == 3
+
+
 async def test_a_writing_job_is_told_once_that_it_has_changed_nothing(
     project: Path,
 ) -> None:
