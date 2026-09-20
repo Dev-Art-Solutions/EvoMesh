@@ -541,6 +541,89 @@ async def test_a_human_objective_is_never_overridden_by_the_backlog(
     assert state["objective"] == "make the console faster"
 
 
+async def test_the_backlog_rotation_seed_survives_a_discard(
+    tmp_path: Path, project: Path
+) -> None:
+    """Seeding the rotation from the open-candidate count broke the moment a
+    discard became the common case: it resets to ~0 every time, so a two
+    -module backlog kept handing back module #0 forever instead of ever
+    reaching module #1."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "alpha.py").write_text('"""First."""\n', encoding="utf-8")
+    (package / "beta.py").write_text('"""Second."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+
+    first = await evolver.create_candidate("placeholder")
+    evolver.workspace.supervisor.discard(first.number)  # back to zero open candidates
+    second = await evolver.create_candidate("placeholder")
+
+    assert evolver.workspace.supervisor.total_created() == 2
+    target_0 = evolver.backlog_target(0)
+    target_1 = evolver.backlog_target(1)
+    assert target_0 is not None
+    assert target_1 is not None
+    assert target_0.name != target_1.name
+    # The point isn't the exact number (directory-skipping already makes that
+    # monotonic on its own) -- it's that total_created() reflects two
+    # generations having been opened, discard included, not zero.
+    assert second.number > first.number
+
+
+async def test_a_backlog_target_that_keeps_failing_gets_nudged_toward_deletion(
+    tmp_path: Path, project: Path
+) -> None:
+    """Three generations straight failing to wire in the same lone dead
+    module should make the fourth attempt recommend deleting it instead of
+    repeating an edit that keeps not fitting in the step budget."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    for _ in range(3):
+        await behavior.cycle(context)
+        state = await evolver.pipeline_state()
+        assert state["objective"].startswith("Wire src/evomesh/lonely.py")
+        evolver.workspace.supervisor.discard(int(state["generation"]))
+        await evolver.reset_pipeline()
+
+    await behavior.cycle(context)
+    state = await evolver.pipeline_state()
+    assert state["objective"].startswith("Delete src/evomesh/lonely.py")
+
+
 async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
     tmp_path: Path, project: Path
 ) -> None:

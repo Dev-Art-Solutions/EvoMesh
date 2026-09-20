@@ -16,7 +16,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from evomesh.codebase import (
+    Module,
     backlog_objective,
+    backlog_target,
     fabricated_references,
     new_orphans,
     project_map,
@@ -481,6 +483,22 @@ class GenerationSupervisor:
         self.initialize()
         return json.loads(self.metadata_path.read_text(encoding="utf-8"))
 
+    def total_created(self) -> int:
+        """How many generations have ever been opened, discards included.
+
+        Unlike ``candidates()`` (open only -- ``discard()`` removes the
+        metadata entry) or ``metadata()['active']`` (only moves on a real
+        land), a discarded candidate's directory is kept on disk, so this
+        keeps climbing by exactly one on every single ``create()`` call
+        regardless of what happens to it after. A rotation seed built from
+        either of the other two can sit still for many discards in a row --
+        found live: a length-1 dead-module backlog handed the same stubborn
+        module to five generations straight because the open-candidate count
+        it was seeded from kept resetting to 0 on every discard.
+        """
+        self.initialize()
+        return sum(1 for _ in self.root.glob("*-candidate"))
+
     def candidates(self) -> list[Generation]:
         raw = dict(self.metadata().get("candidates", {}))
         items = [Generation.model_validate(value) for value in raw.values()]
@@ -937,9 +955,49 @@ class EnvironmentEvolver:
         """What the package looks like right now, for the model to aim at."""
         return project_map(self.workspace.repository_root)
 
-    def backlog_objective(self, seed: int) -> str | None:
+    def backlog_target(self, seed: int) -> Module | None:
+        """The dead module a backlog objective would target right now."""
+        return backlog_target(self.workspace.repository_root, seed)
+
+    def backlog_objective(self, seed: int, *, nudge_delete: bool = False) -> str | None:
         """A concrete dead-module objective, or ``None`` when the backlog is empty."""
-        return backlog_objective(self.workspace.repository_root, seed)
+        return backlog_objective(
+            self.workspace.repository_root, seed, nudge_delete=nudge_delete
+        )
+
+    def recent_backlog_streak(self, module_name: str, lookback: int = 3) -> int:
+        """How many of the most recent generations, newest first, targeted
+        this exact backlog module and consecutively failed to land it.
+
+        Reads generation directories directly rather than
+        ``workspace.supervisor.candidates()`` -- that only holds still-open
+        candidates, and a discarded one's directory (with its
+        MUTATION_OBJECTIVE.md) is deliberately kept on disk for exactly this
+        kind of look-back. Counts back from the newest generation and stops
+        at the first one that either targeted something else or is not a
+        backlog objective at all, so a streak never counts through an
+        unrelated generation in between.
+        """
+        numbered = sorted(
+            (
+                (int(entry.name.split("-", 1)[0]), entry)
+                for entry in self.workspace.supervisor.root.glob("*-candidate")
+                if entry.name.split("-", 1)[0].isdigit()
+            ),
+            key=lambda pair: -pair[0],
+        )
+        needle = f"Wire src/evomesh/{module_name}.py "
+        streak = 0
+        for _, entry in numbered[:lookback]:
+            objective_path = entry / "MUTATION_OBJECTIVE.md"
+            if not objective_path.is_file():
+                break
+            if not objective_path.read_text(encoding="utf-8", errors="replace").startswith(
+                needle
+            ):
+                break
+            streak += 1
+        return streak
 
     def mutation_objective(self, objective: str, context: str = "") -> str:
         """The harness job that authors this generation."""

@@ -161,6 +161,24 @@ def test_backlog_objective_rotates_by_seed_instead_of_repeating(tmp_path: Path) 
     assert "beta.py" in second  # type: ignore[operator]
 
 
+def test_backlog_objective_nudges_toward_deletion_after_repeated_failure(
+    tmp_path: Path,
+) -> None:
+    """A module hard enough to fail several generations straight should be
+    told to delete it first, not have that option buried as an aside."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+
+    normal = backlog_objective(tmp_path, seed=0)
+    nudged = backlog_objective(tmp_path, seed=0, nudge_delete=True)
+
+    assert normal is not None and nudged is not None
+    assert normal.startswith("Wire src/evomesh/lonely.py")
+    assert nudged.startswith("Delete src/evomesh/lonely.py")
+
+
 def test_backlog_objective_suggests_the_most_used_module_as_a_home(
     tmp_path: Path,
 ) -> None:

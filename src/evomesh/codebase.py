@@ -351,7 +351,20 @@ def project_map(root: Path, limit: int = 1800) -> str:
     return text if len(text) <= limit else text[:limit] + "\n..."
 
 
-def backlog_objective(root: Path, seed: int) -> str | None:
+def backlog_target(root: Path, seed: int) -> Module | None:
+    """The dead module a backlog objective would target, or ``None`` if empty.
+
+    Exposed separately from :func:`backlog_objective` so a caller can check,
+    before committing to it, whether this exact module is one it has already
+    thrown several generations at -- see that function's ``nudge_delete``.
+    """
+    dead = sorted((item for item in survey(root) if item.is_orphan), key=lambda item: item.name)
+    if not dead:
+        return None
+    return dead[seed % len(dead)]
+
+
+def backlog_objective(root: Path, seed: int, *, nudge_delete: bool = False) -> str | None:
     """A concrete objective from the dead-module backlog, or ``None`` if empty.
 
     The Evolver's standing goal ("improve EvoMesh by one validated candidate
@@ -367,28 +380,47 @@ def backlog_objective(root: Path, seed: int) -> str | None:
     ``seed`` rotates the pick deterministically (mod the backlog length) so a
     module a model cannot manage does not get handed to it again next
     generation -- pass something that increases on every open, such as the
-    running count of candidates opened so far.
+    total count of generations ever opened (``GenerationSupervisor.
+    total_created()``, not the open-candidate count: that resets on every
+    discard, which is exactly what let a length-1 backlog hand the same
+    module to five generations running).
+
+    ``nudge_delete``: set when the caller has seen this same module fail
+    several generations straight -- wiring in a real dependency (as opposed
+    to a leaf utility) can be a genuinely harder edit than a 40-step budget
+    allows, and "wire it in, or delete it" buried as an aside inside a longer
+    objective was apparently easy to read past. When true, deletion is put
+    first and made the recommended answer instead of an aside.
     """
-    modules = survey(root)
-    dead = sorted((item for item in modules if item.is_orphan), key=lambda item: item.name)
-    if not dead:
+    target = backlog_target(root, seed)
+    if target is None:
         return None
-    target = dead[seed % len(dead)]
+    modules = survey(root)
     live = sorted(
         (item for item in modules if item.imported_by),
         key=lambda item: -len(item.imported_by),
     )
-    lines = [
-        f"Wire src/evomesh/{target.name}.py into the running mesh, or delete it if it "
-        "is not worth keeping -- both are a complete answer. Nothing imports this "
-        "module right now, so none of its code ever executes.",
-        "What it exports, verbatim -- call one of these, never a name that "
-        "sounds plausible but is not here: "
-        f"{', '.join(target.exports) if target.exports else '(nothing exported)'}.",
-    ]
+    exports = ", ".join(target.exports) if target.exports else "(nothing exported)"
+    if nudge_delete:
+        lines = [
+            f"Delete src/evomesh/{target.name}.py. Earlier generations tried to wire "
+            "it into the running mesh and none of them managed it in the steps they "
+            "had -- deleting an orphan module nothing imports is a complete, valid "
+            "answer on its own, and the safer one at this point.",
+            "If you are confident you can wire it in properly in the steps you have "
+            f"left, that is still a fine answer too. What it exports, verbatim: {exports}.",
+        ]
+    else:
+        lines = [
+            f"Wire src/evomesh/{target.name}.py into the running mesh, or delete it "
+            "if it is not worth keeping -- both are a complete answer. Nothing "
+            "imports this module right now, so none of its code ever executes.",
+            "What it exports, verbatim -- call one of these, never a name that "
+            f"sounds plausible but is not here: {exports}.",
+        ]
     if target.summary:
         lines.append(f"Its own docstring says what it is for: {target.summary}")
-    if live:
+    if live and not nudge_delete:
         lines.append(
             f"A natural place to call it from is {live[0].name}.py, the most-used "
             f"module in the package (used by {len(live[0].imported_by)} others)."

@@ -556,8 +556,21 @@ class EvolverBehavior(BDIBehavior):
             # list is already documented (codebase.py) as "the Evolver's
             # backlog". A human's own `/evolution start "<objective>"` is a
             # one-shot goal (recurring=False), so it is never overridden here.
-            seed = len(evolver.workspace.supervisor.candidates())
-            backlog = evolver.backlog_objective(seed)
+            #
+            # Seeded from total_created(), not len(candidates()) -- the
+            # latter only counts still-open candidates and resets to ~0 on
+            # every discard, so `seed % len(backlog)` stopped rotating at
+            # all the moment a discard became the common case. Found live:
+            # cycles.py, the sole entry left once the rest of the original
+            # ten-module backlog had already been wired in, handed to five
+            # generations straight.
+            seed = evolver.workspace.supervisor.total_created()
+            target = evolver.backlog_target(seed)
+            nudge_delete = (
+                target is not None
+                and evolver.recent_backlog_streak(target.name) >= 3
+            )
+            backlog = evolver.backlog_objective(seed, nudge_delete=nudge_delete)
             if backlog is not None:
                 objective = backlog
         generation = await evolver.create_candidate(objective)
