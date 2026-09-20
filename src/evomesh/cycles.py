@@ -5,9 +5,10 @@ from an agent to every agent it ``depends_on``.  A mesh that depends on itself,
 directly or transitively, cannot be started, so :func:`cycle_agents` is run
 against that graph before any agent is instantiated.
 
-This module is wired into :func:`evomesh.contracts.validate_dependencies` -- the
-one place the whole mesh already assembles that graph -- so the check runs on
-every validation pass without the caller having to know a cycle checker exists.
+This module is wired into :class:`evomesh.cognition.Cogniser.run` -- the loop every
+agent runs when the mesh starts -- so that a circular dependency in the agent
+graph fails the whole cycle rather than leaving an agent spinning in an infinite
+reasoning loop, without the caller having to know a cycle checker exists.
 """
 from __future__ import annotations
 
