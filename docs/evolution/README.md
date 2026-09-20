@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1014](001014.md) — The model changed `src/evomesh/agents.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 992](000992.md) — The `node.py` module's only export, `Node`, was referenced by name in the most-used module `contracts.py` but never imported; adding the missing import makes the dead module's code reachable from live code with the smallest possible change.
 - [Generation 987](000987.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 981](000981.md) — I replaced the no-op catch-up branch in `agents.py`'s `run_cycle` — which called a nonexistent reason and stored empty strings in the outcome — with a call to the dead module's `explain_not_running()`, wiring the `cycles` module into a load-bearing path so its code actually executes while leaving behavior otherwise identical.
