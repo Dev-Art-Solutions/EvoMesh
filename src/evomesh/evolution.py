@@ -1065,15 +1065,25 @@ class EnvironmentEvolver:
             ),
             key=lambda pair: -pair[0],
         )
-        needle = f"Wire src/evomesh/{module_name}.py "
+        # Both phrasings backlog_objective() can produce for this module --
+        # not just "Wire". Checking only the wire phrasing meant the streak
+        # reset to zero the instant nudge_delete=True actually fired: that
+        # generation's own objective starts with "Delete", which broke the
+        # very next lookback immediately and reverted the one after it back
+        # to "Wire" -- found live, cycles.py flip-flopping Wire/Delete/Wire
+        # every four generations instead of staying escalated until the
+        # delete attempt either landed or the module stopped being an orphan.
+        needles = (
+            f"Wire src/evomesh/{module_name}.py",
+            f"Delete src/evomesh/{module_name}.py",
+        )
         streak = 0
         for _, entry in numbered[:lookback]:
             objective_path = entry / "MUTATION_OBJECTIVE.md"
             if not objective_path.is_file():
                 break
-            if not objective_path.read_text(encoding="utf-8", errors="replace").startswith(
-                needle
-            ):
+            text = objective_path.read_text(encoding="utf-8", errors="replace")
+            if not text.startswith(needles):
                 break
             streak += 1
         return streak

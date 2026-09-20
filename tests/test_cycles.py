@@ -666,6 +666,62 @@ async def test_a_backlog_target_that_keeps_failing_gets_nudged_toward_deletion(
     assert state["objective"].startswith("Delete src/evomesh/lonely.py")
 
 
+async def test_the_delete_nudge_stays_on_once_it_fires_instead_of_flip_flopping(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live: cycles.py flip-flopped Wire/Delete/Wire every four
+    generations instead of staying escalated. recent_backlog_streak() only
+    ever recognized the "Wire ..." phrasing as a streak-continuing entry, so
+    the moment nudge_delete=True actually produced a "Delete ..." objective,
+    the very next lookback saw a newest entry that did not start with "Wire"
+    and broke immediately -- resetting the streak to zero and reverting the
+    generation after that back to the plain wire-or-delete phrasing, letting
+    a module that has already proven itself too hard to wire in keep getting
+    asked to anyway most of the time."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    # Three failed "Wire" attempts escalate to "Delete"; two more failed
+    # attempts (the "Delete" one included) must never fall back to "Wire".
+    objectives: list[str] = []
+    for _ in range(5):
+        await behavior.cycle(context)
+        state = await evolver.pipeline_state()
+        objectives.append(state["objective"])
+        evolver.workspace.supervisor.discard(int(state["generation"]))
+        await evolver.reset_pipeline()
+
+    assert [o.split(" ", 1)[0] for o in objectives] == [
+        "Wire", "Wire", "Wire", "Delete", "Delete",
+    ]
+
+
 async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
     tmp_path: Path, project: Path
 ) -> None:
