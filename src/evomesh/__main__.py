@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import logging.handlers
 from pathlib import Path
 
 from evomesh.config import load_settings
@@ -25,6 +26,17 @@ RESTART_EXIT_CODE = 86
 # it is not success either, so a launcher (or a human) can tell the two
 # apart from the exit code alone.
 ALREADY_RUNNING_EXIT_CODE = 2
+
+# --log-file grew unbounded before this: 24.8MB and 166542 lines on the
+# day this was added, months into one continuous run, with nothing ever
+# rotating it. A plain FileHandler has no ceiling on its own; this caps it
+# at MESH_LOG_MAX_BYTES per segment and keeps MESH_LOG_BACKUP_COUNT old
+# ones (mesh.log.1, .2, ...) rather than one file that grows forever. The
+# Control Center's own tailer (EvoMeshRuntimeProcess.StartTailingMeshLog)
+# already resets to the top when it sees the file shrink -- exactly what a
+# rotation does -- so this needed no matching change on that side.
+MESH_LOG_MAX_BYTES = 20 * 1024 * 1024
+MESH_LOG_BACKUP_COUNT = 5
 
 
 async def _restart_when_asked(environment: Environment, shutdown: asyncio.Event) -> None:
@@ -61,7 +73,14 @@ async def application(
     handlers: list[logging.Handler] = [] if headless else [logging.StreamHandler()]
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        handlers.append(
+            logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=MESH_LOG_MAX_BYTES,
+                backupCount=MESH_LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+        )
     if not handlers:
         handlers.append(logging.NullHandler())
     logging.basicConfig(
