@@ -657,6 +657,7 @@ class Environment:
         if provider is None:
             raise RuntimeError(f"Provider '{provider_name}' is not configured")
         session = HarnessSession(next_session_path(settings.session_path))
+        job_num_ctx = self.resolve_num_ctx(provider_name, model, num_ctx_override)
         runner = build_runner(
             provider,
             job.root,
@@ -665,13 +666,13 @@ class Environment:
             model=model,
             max_steps=job.max_steps if job.max_steps is not None else settings.max_steps,
             max_seconds=job.max_seconds if job.max_seconds is not None else settings.max_seconds,
-            transcript_chars=settings.transcript_chars,
+            transcript_chars=settings.transcript_chars_for_num_ctx(job_num_ctx),
             shell_allow=settings.shell_programs(),
             shell_seconds=settings.shell_seconds,
             read_only=not job.allow_write,
             allow_write=job.allow_write,
             write_prefix=job.write_prefix,
-            num_ctx=self.resolve_num_ctx(provider_name, model, num_ctx_override),
+            num_ctx=job_num_ctx,
             scraping_executable=(
                 self.settings.scraping.executable if self.settings.scraping.enabled else ""
             ),

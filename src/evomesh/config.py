@@ -234,6 +234,29 @@ class HarnessSettings(BaseModel):
 
     def shell_programs(self) -> frozenset[str]:
         return frozenset(name.strip().lower() for name in self.shell_allow if name.strip())
+
+    def transcript_chars_for_num_ctx(self, num_ctx: int | None) -> int:
+        """This job's own transcript budget -- shrunk below the configured
+        default when the agent it runs for has a smaller resolved num_ctx,
+        never grown past it.
+
+        Mirrors RuntimeSettings.budget_for_num_ctx: transcript_chars was
+        sized in characters "on the assumption that the server actually has
+        room for them" (see the field's own comment) -- true only for
+        whichever num_ctx that sizing had in mind. A harness job for an
+        agent on a genuinely smaller model (a per-agent num_ctx override, a
+        provider default nobody raised, or an Ollama endpoint that falls
+        back to its own built-in 2048) got the same flat 12000-char pile
+        regardless, silently truncated from the oldest end by the model
+        server -- the objective's own instructions, which live at the start
+        of the transcript. Exactly the failure this project's character
+        budgets exist to prevent, just not reached from this field before.
+        """
+        if not num_ctx:
+            return self.transcript_chars
+        safe_chars = round(num_ctx * SAFE_CHARS_PER_CONTEXT_TOKEN)
+        return min(self.transcript_chars, max(1500, safe_chars))
+
     # How much of a file may enter the transcript. Rule of the house: the trim
     # is ours, and the tool says what it withheld so the model can ask again.
     tool_result_chars: int = 4000
