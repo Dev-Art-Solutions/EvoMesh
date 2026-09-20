@@ -3,31 +3,25 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from evomesh.node import Node
+
 from .mesh_utils import directed_pair_count
 
 
 @dataclass
-class MeshNode:
-    """A single node in the agent mesh."""
-
-    id: str
-    kind: str = "agent"
-    payload: dict = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        self.payload.setdefault("kind", self.kind)
-
-
-@dataclass
 class Mesh:
-    """A directed, labelled graph of agents and their connections."""
+    """A directed, labelled graph of agents and their connections.
 
-    nodes: dict[str, MeshNode] = field(default_factory=dict)
+    Vertices are :class:`evomesh.node.Node` objects, the package's core node
+    abstraction for the EvoMesh graph.
+    """
+
+    nodes: dict[str, Node] = field(default_factory=dict)
     edges: dict[str, dict[str, str]] = field(default_factory=dict)
 
-    def add_node(self, node: MeshNode) -> None:
-        self.nodes[node.id] = node
-        self.edges.setdefault(node.id, {})
+    def add_node(self, node: Node) -> None:
+        self.nodes[node.node_id] = node
+        self.edges.setdefault(node.node_id, {})
 
     def add_edge(self, source: str, target: str, label: str = "") -> None:
         if source not in self.nodes or target not in self.nodes:
@@ -43,7 +37,7 @@ class Mesh:
     def in_degree(self, node_id: str) -> int:
         return sum(1 for outs in self.edges.values() if node_id in outs)
 
-    def iter_nodes(self) -> Iterable[MeshNode]:
+    def iter_nodes(self) -> Iterable[Node]:
         return self.nodes.values()
 
     def iter_edges(self) -> Iterable[tuple[str, str, str]]:
