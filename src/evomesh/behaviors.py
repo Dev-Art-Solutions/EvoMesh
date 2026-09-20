@@ -529,7 +529,7 @@ class EvolverBehavior(BDIBehavior):
         objective: str,
     ) -> StepResult:
         if stage == STAGE_PLAN:
-            return await self._open(evolver, objective)
+            return await self._open(context, evolver, objective)
         if stage == STAGE_DRAFT:
             return await self._draft_plan(context, evolver, state)
         if stage == STAGE_EVALUATE:
@@ -546,7 +546,20 @@ class EvolverBehavior(BDIBehavior):
             return await self._report(evolver, state)
         return StepResult.blocked(f"unknown evolution stage '{stage}'")
 
-    async def _open(self, evolver: EnvironmentEvolver, objective: str) -> StepResult:
+    async def _open(
+        self, context: CycleContext, evolver: EnvironmentEvolver, objective: str
+    ) -> StepResult:
+        goal = context.goal
+        if goal is not None and goal.recurring:
+            # The standing goal names no file and no change -- concrete beats
+            # vague for a small model with a step budget, and the dead-module
+            # list is already documented (codebase.py) as "the Evolver's
+            # backlog". A human's own `/evolution start "<objective>"` is a
+            # one-shot goal (recurring=False), so it is never overridden here.
+            seed = len(evolver.workspace.supervisor.candidates())
+            backlog = evolver.backlog_objective(seed)
+            if backlog is not None:
+                objective = backlog
         generation = await evolver.create_candidate(objective)
         next_stage = STAGE_DRAFT if self.auto_plan else STAGE_PROPOSE
         await evolver.set_pipeline_state(

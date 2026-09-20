@@ -458,6 +458,89 @@ async def test_evolver_pipeline_advances_one_stage_per_cycle(
     assert len(evolver.workspace.supervisor.candidates()) == 1
 
 
+async def test_opening_on_the_standing_goal_targets_the_dead_module_backlog(
+    tmp_path: Path, project: Path
+) -> None:
+    """The recurring goal names no file -- most of a 35b model's step budget
+    went to guessing one (generation history: 969-980, ten of twelve capped
+    with nothing written). A concrete backlog objective should replace it."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert "lonely.py" in state["objective"]
+    generation = evolver.candidate(int(state["generation"]))
+    assert "lonely.py" in (generation.path / "MUTATION_OBJECTIVE.md").read_text(
+        encoding="utf-8"
+    )
+
+
+async def test_a_human_objective_is_never_overridden_by_the_backlog(
+    tmp_path: Path, project: Path
+) -> None:
+    """`/evolution start "<objective>"` is a one-shot, non-recurring goal --
+    what a human explicitly asked for has to survive untouched."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("make the console faster", priority=1)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert state["objective"] == "make the console faster"
+
+
 async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
     tmp_path: Path, project: Path
 ) -> None:

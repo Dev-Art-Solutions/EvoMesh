@@ -349,3 +349,48 @@ def project_map(root: Path, limit: int = 1800) -> str:
     )
     text = "\n".join(lines)
     return text if len(text) <= limit else text[:limit] + "\n..."
+
+
+def backlog_objective(root: Path, seed: int) -> str | None:
+    """A concrete objective from the dead-module backlog, or ``None`` if empty.
+
+    The Evolver's standing goal ("improve EvoMesh by one validated candidate
+    generation at a time") names no file and no change -- on a 35b model with
+    a 40-step budget, most of that budget was going to figuring out what to
+    even attempt, not to attempting it (see generation history: 969-980, ten
+    of twelve capped with nothing written). The dead-module list below this
+    docstring's own module comment already calls itself "the Evolver's
+    backlog" -- this is what makes that literal: one concrete file, its real
+    exported names, and where it would plug in, so the model's first step can
+    be reading that file instead of guessing what to look for.
+
+    ``seed`` rotates the pick deterministically (mod the backlog length) so a
+    module a model cannot manage does not get handed to it again next
+    generation -- pass something that increases on every open, such as the
+    running count of candidates opened so far.
+    """
+    modules = survey(root)
+    dead = sorted((item for item in modules if item.is_orphan), key=lambda item: item.name)
+    if not dead:
+        return None
+    target = dead[seed % len(dead)]
+    live = sorted(
+        (item for item in modules if item.imported_by),
+        key=lambda item: -len(item.imported_by),
+    )
+    lines = [
+        f"Wire src/evomesh/{target.name}.py into the running mesh, or delete it if it "
+        "is not worth keeping -- both are a complete answer. Nothing imports this "
+        "module right now, so none of its code ever executes.",
+        "What it exports, verbatim -- call one of these, never a name that "
+        "sounds plausible but is not here: "
+        f"{', '.join(target.exports) if target.exports else '(nothing exported)'}.",
+    ]
+    if target.summary:
+        lines.append(f"Its own docstring says what it is for: {target.summary}")
+    if live:
+        lines.append(
+            f"A natural place to call it from is {live[0].name}.py, the most-used "
+            f"module in the package (used by {len(live[0].imported_by)} others)."
+        )
+    return "\n".join(lines)

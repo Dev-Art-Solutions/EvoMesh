@@ -15,7 +15,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from evomesh.codebase import fabricated_references, new_orphans, project_map, stray_root_files
+from evomesh.codebase import (
+    backlog_objective,
+    fabricated_references,
+    new_orphans,
+    project_map,
+    stray_root_files,
+)
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
 from evomesh.processes import run_command
@@ -930,6 +936,10 @@ class EnvironmentEvolver:
     def project_map(self) -> str:
         """What the package looks like right now, for the model to aim at."""
         return project_map(self.workspace.repository_root)
+
+    def backlog_objective(self, seed: int) -> str | None:
+        """A concrete dead-module objective, or ``None`` when the backlog is empty."""
+        return backlog_objective(self.workspace.repository_root, seed)
 
     def mutation_objective(self, objective: str, context: str = "") -> str:
         """The harness job that authors this generation."""

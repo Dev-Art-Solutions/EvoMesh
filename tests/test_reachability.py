@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from evomesh.codebase import (
+    backlog_objective,
     fabricated_references,
     known_dead,
     new_orphans,
@@ -113,6 +114,76 @@ def test_a_module_nobody_imports_is_reported(tmp_path: Path) -> None:
     found = {item.name for item in orphans(tmp_path)}
 
     assert found == {"lonely"}
+
+
+def test_backlog_objective_is_none_with_nothing_dead(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+
+    assert backlog_objective(tmp_path, seed=0) is None
+
+
+def test_backlog_objective_names_a_real_dead_module_and_its_exports(
+    tmp_path: Path,
+) -> None:
+    """The objective has to be concrete enough that the model's first move can
+    be reading the named file, not searching the package for something to do."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text(
+        '"""Nobody calls this."""\n\ndef helper(x):\n    return x\n',
+        encoding="utf-8",
+    )
+
+    text = backlog_objective(tmp_path, seed=0)
+
+    assert text is not None
+    assert "lonely.py" in text
+    assert "helper()" in text
+
+
+def test_backlog_objective_rotates_by_seed_instead_of_repeating(tmp_path: Path) -> None:
+    """A module the model failed to wire in last time should not be handed
+    back to it immediately -- the next attempt should try something else."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "alpha.py").write_text('"""First."""\n', encoding="utf-8")
+    (package / "beta.py").write_text('"""Second."""\n', encoding="utf-8")
+
+    first = backlog_objective(tmp_path, seed=0)
+    second = backlog_objective(tmp_path, seed=1)
+
+    assert first != second
+    assert "alpha.py" in first  # type: ignore[operator]
+    assert "beta.py" in second  # type: ignore[operator]
+
+
+def test_backlog_objective_suggests_the_most_used_module_as_a_home(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    # hub is imported by two modules, helper only by one, so hub has to win
+    # the "most-used" pick regardless of file-name alphabetical order.
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.hub import thing\n', encoding="utf-8"
+    )
+    (package / "hub.py").write_text('"""The busiest module."""\n', encoding="utf-8")
+    (package / "helper.py").write_text(
+        '"""Used once."""\n\nfrom evomesh.hub import thing\n', encoding="utf-8"
+    )
+    (package / "other.py").write_text(
+        '"""Also uses hub."""\n\nfrom evomesh.hub import thing\n', encoding="utf-8"
+    )
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+
+    text = backlog_objective(tmp_path, seed=0)
+
+    assert text is not None
+    assert "hub.py" in text
 
 
 def test_no_stray_file_sits_in_this_repository_root() -> None:
