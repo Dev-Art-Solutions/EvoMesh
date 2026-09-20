@@ -913,6 +913,31 @@ async def test_evolution_console_commands_drive_the_pipeline(tmp_path: Path) -> 
     await environment.stop()
 
 
+async def test_evolution_status_shows_what_it_is_waiting_on(tmp_path: Path) -> None:
+    """A human who missed the chat announcement must be able to ask instead --
+    /evolution status has to say what it's parked for, not just the stage name."""
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    evolver = environment.evolver
+    await evolver.set_pipeline_state(
+        {
+            "stage": "await-human",
+            "generation": 3,
+            "awaiting": (
+                "generation 3 is ready for review (validation passed). "
+                "Promote it with /evolution promote or drop it with /evolution discard."
+            ),
+        }
+    )
+
+    status = await console.route("/evolution status")
+
+    assert "WAITING ON YOU: generation 3 is ready for review" in status
+    assert "/evolution promote" in status
+    await environment.stop()
+
+
 async def test_a_running_agent_comes_back_running_after_a_restart(tmp_path: Path) -> None:
     """Shutting the mesh down is not a decision to disable anyone's agents."""
     settings = settings_for(tmp_path)

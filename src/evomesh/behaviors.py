@@ -1140,12 +1140,18 @@ class EvolverBehavior(BDIBehavior):
         # away work for the host's fault, so it still stops for a human.
         if self.auto_promote and passed is not None:
             return await self._decide(evolver, number, passed=bool(passed), state=state)
-        await evolver.set_pipeline_state({**state, "stage": STAGE_AWAIT_HUMAN})
+        awaiting = (
+            f"generation {number} is ready for review ({self._verdict(state)}). "
+            "Promote it with /evolution promote or drop it with /evolution discard."
+        )
+        # Stored, not just returned: /evolution status (console or Telegram) reads
+        # this back so a human who missed the one-time chat announcement, or who
+        # only just opened the mesh, can still ask instead of digging through logs.
+        await evolver.set_pipeline_state(
+            {**state, "stage": STAGE_AWAIT_HUMAN, "awaiting": awaiting}
+        )
         return StepResult(
-            summary=(
-                f"generation {number} is ready for review ({self._verdict(state)}). "
-                "Promote it with /evolution promote or drop it with /evolution discard."
-            ),
+            summary=awaiting,
             fact=f"generation {number} is awaiting a human decision",
             phase=AgentPhase.WAITING_HUMAN,
             achieved=True,
@@ -1189,14 +1195,15 @@ class EvolverBehavior(BDIBehavior):
             # The tree would not take it -- a human's uncommitted work is in the
             # way, or the change does not apply. Park rather than discard: the
             # candidate is fine, the place it was going is not.
+            awaiting = (
+                f"generation {number} validated but could not be applied to the "
+                f"working tree: {exc}. It is left for you to promote by hand."
+            )
             await evolver.set_pipeline_state(
-                {**state, "stage": STAGE_AWAIT_HUMAN, "error": str(exc)}
+                {**state, "stage": STAGE_AWAIT_HUMAN, "error": str(exc), "awaiting": awaiting}
             )
             return StepResult(
-                summary=(
-                    f"generation {number} validated but could not be applied to the "
-                    f"working tree: {exc}. It is left for you to promote by hand."
-                ),
+                summary=awaiting,
                 fact=f"generation {number} could not be applied to the tree",
                 phase=AgentPhase.WAITING_HUMAN,
                 achieved=True,

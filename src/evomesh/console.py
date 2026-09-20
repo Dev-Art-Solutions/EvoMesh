@@ -866,6 +866,11 @@ class ConsoleChannel:
                 if metadata.get("restart_required")
                 else ""
             )
+            awaiting = (
+                f"\nWAITING ON YOU: {state['awaiting']}"
+                if state.get("stage") == "await-human" and state.get("awaiting")
+                else ""
+            )
             return (
                 f"active generation: {metadata['active']}"
                 f"{f' ({applied[:8]})' if applied else ''}\n"
@@ -873,7 +878,7 @@ class ConsoleChannel:
                 f"published: {self._publish_state(metadata)}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
                 f"self-repairs on this candidate: {state.get('repairs', 0)}\n"
-                f"candidates:\n{candidates or '  none'}{restart}"
+                f"candidates:\n{candidates or '  none'}{restart}{awaiting}"
             )
         if action == "start" and len(parts) > 2:
             definition = self.environment.registry.get("evolver")
