@@ -15,6 +15,20 @@ class MessageBus:
     def register(self, agent_id: str) -> asyncio.Queue[Message]:
         return self._mailboxes[agent_id]
 
+    def unregister(self, agent_id: str) -> None:
+        """Drop a mailbox nobody will ever address again.
+
+        For a real agent's own mailbox, never call this -- its message loop
+        keeps listening on it for as long as the agent runs. It exists for
+        the one-shot, private ``ask:<uuid>`` mailboxes ask_agent creates per
+        call (see Environment._make_ask_agent): with nothing here to ever
+        remove one, every such call -- success or timeout alike -- leaked one
+        entry into this dict forever, the same unbounded-growth failure this
+        project has already fixed for generation worktrees, filesystem
+        grants, mesh.log, and the harness job queue.
+        """
+        self._mailboxes.pop(agent_id, None)
+
     async def send(self, message: Message) -> None:
         await self.repository.save_message(message)
         if message.recipient_id is None:

@@ -683,6 +683,59 @@ async def test_ask_agent_reply_cannot_be_stolen_by_the_targets_own_message_loop(
     await environment.stop()
 
 
+async def test_ask_agents_private_mailbox_is_cleaned_up_after_it_answers(
+    tmp_path: Path,
+) -> None:
+    """Nothing ever removed the one-shot `ask:<uuid>` mailbox each call
+    creates -- every ask_agent call, answered or not, leaked one entry into
+    MessageBus._mailboxes forever, the same unbounded-growth failure already
+    fixed elsewhere in this project (generation worktrees, filesystem
+    grants, mesh.log, the harness job queue)."""
+    provider = MockProvider(["Flat, no open positions."])
+    environment = Environment(settings_for(tmp_path), {"ollama": provider})
+    await environment.start()
+    trader = AgentDefinition(name="Trader", purpose="Trade")
+    await environment.register_agent(trader)
+    await environment.start_agent(trader.id, start_delay=3600)
+    ask = environment._make_ask_agent("news-watcher")  # noqa: SLF001
+    before = set(environment.bus._mailboxes)  # noqa: SLF001
+
+    await ask("Trader", "what is your current position?")
+
+    after = set(environment.bus._mailboxes)  # noqa: SLF001
+    assert after == before, f"a reply mailbox was left behind: {after - before}"
+    await environment.stop()
+
+
+async def test_ask_agents_private_mailbox_is_cleaned_up_even_when_the_call_fails(
+    tmp_path: Path,
+) -> None:
+    """The cleanup has to run on the unhappy path too -- a timed-out or
+    errored ask() must not be the one case that still leaks the mailbox."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    ask = environment._make_ask_agent("asker")  # noqa: SLF001
+    before = set(environment.bus._mailboxes)  # noqa: SLF001
+
+    original_receive = environment.bus.receive
+
+    async def flaky_for_ask_mailboxes(
+        agent_id: str, wait_seconds: float | None = None
+    ) -> object:
+        if agent_id.startswith("ask:"):
+            raise TimeoutError("no reply in time")
+        return await original_receive(agent_id, wait_seconds)
+
+    environment.bus.receive = flaky_for_ask_mailboxes  # type: ignore[method-assign]
+
+    with pytest.raises(TimeoutError):
+        await ask("Worker", "anything")
+
+    after = set(environment.bus._mailboxes)  # noqa: SLF001
+    assert after == before, f"a reply mailbox was left behind: {after - before}"
+    environment.bus.receive = original_receive  # type: ignore[method-assign]
+    await environment.stop()
+
+
 async def test_ask_agent_refuses_to_ask_itself(tmp_path: Path) -> None:
     environment, agent = await worker(tmp_path, ScriptedProvider())
     ask = environment._make_ask_agent(agent.id)  # noqa: SLF001

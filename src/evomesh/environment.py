@@ -625,16 +625,21 @@ class Environment:
                 raise ValueError("an agent cannot ask itself")
             reply_mailbox = f"ask:{uuid4()}"
             self.bus.register(reply_mailbox)
-            await self.send_message(
-                Message(
-                    sender_id=sender_id,
-                    recipient_id=target.id,
-                    content=question,
-                    metadata={"reply_to": reply_mailbox},
+            try:
+                await self.send_message(
+                    Message(
+                        sender_id=sender_id,
+                        recipient_id=target.id,
+                        content=question,
+                        metadata={"reply_to": reply_mailbox},
+                    )
                 )
-            )
-            reply = await self.bus.receive(reply_mailbox, wait_seconds=120)
-            return reply.content
+                reply = await self.bus.receive(reply_mailbox, wait_seconds=120)
+                return reply.content
+            finally:
+                # One-shot: nothing else will ever address this mailbox
+                # again, on either the answered or the timed-out path.
+                self.bus.unregister(reply_mailbox)
 
         return ask
 
