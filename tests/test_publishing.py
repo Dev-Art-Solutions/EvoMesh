@@ -224,6 +224,40 @@ async def test_a_promoted_generation_stops_being_an_open_candidate(tmp_path: Pat
     assert not (evolver.workspace.supervisor.root / f"{first:06d}-candidate").exists()
 
 
+async def test_sweep_applied_clears_out_generations_promote_left_behind_before_the_fix(
+    tmp_path: Path,
+) -> None:
+    """Migration for the state promote()'s own bug (see its docstring) left
+    behind: any already-applied candidate -- a git_commit is recorded --
+    that predates the fix. The currently active and last-known-good numbers
+    are left alone; a candidate with no git_commit (never applied, still a
+    real open decision) is left alone too."""
+    project = await checkout(tmp_path / "project")
+    evolver = await evolver_for(tmp_path, project)
+    supervisor = evolver.workspace.supervisor
+    metadata = supervisor.metadata()
+    metadata["active"] = 3
+    metadata["last_known_good"] = 2
+    metadata["candidates"] = {
+        # Pre-fix leftovers: applied long ago, still marked "open".
+        "1": {"number": 1, "status": "candidate", "path": "x", "parent": 1, "git_commit": "aaa"},
+        # Still protected by number even though it also has a git_commit.
+        "2": {"number": 2, "status": "candidate", "path": "x", "parent": 1, "git_commit": "bbb"},
+        "3": {"number": 3, "status": "candidate", "path": "x", "parent": 2, "git_commit": "ccc"},
+        # A real, still-undecided candidate -- never applied, never touch it.
+        "4": {"number": 4, "status": "candidate", "path": "x", "parent": 3, "git_commit": None},
+    }
+    supervisor._write(metadata)  # noqa: SLF001 - seeding pre-fix state directly
+
+    swept = supervisor.sweep_applied()
+
+    assert swept == [1]
+    remaining = set(supervisor.metadata()["candidates"])
+    assert remaining == {"2", "3", "4"}
+    # Idempotent: nothing left the second time.
+    assert supervisor.sweep_applied() == []
+
+
 async def test_a_detached_head_is_refused_by_name(tmp_path: Path) -> None:
     project = await checkout(tmp_path / "project")
     await remote_for(project, tmp_path / "remote.git")
@@ -313,6 +347,31 @@ async def test_a_landed_generation_asks_the_process_to_restart(tmp_path: Path) -
     assert "landed as" in environment.restart_reason
     # The durable flag is what survives a process that does not come back.
     assert environment.evolver.workspace.supervisor.metadata()["restart_required"] is True
+
+
+async def test_environment_start_sweeps_pre_fix_leftovers_on_boot(tmp_path: Path) -> None:
+    """The migration for promote()'s own past leak runs on every start(), so
+    a mesh that already had leftover entries from before the fix cleans up
+    the moment it next comes up -- no separate maintenance step to remember."""
+    project = await checkout(tmp_path / "project")
+    environment = Environment(
+        settings_for(tmp_path, project, git=GitSettings(auto_push=False)),
+        {"ollama": MockProvider([])},
+    )
+    supervisor = environment.evolver.workspace.supervisor
+    supervisor.initialize()
+    metadata = supervisor.metadata()
+    metadata["active"] = 5
+    metadata["last_known_good"] = 5
+    metadata["candidates"] = {
+        "1": {"number": 1, "status": "candidate", "path": "x", "parent": 1, "git_commit": "aaa"},
+    }
+    supervisor._write(metadata)  # noqa: SLF001 - seeding pre-fix state directly
+
+    await environment.start()
+
+    assert "1" not in supervisor.metadata()["candidates"]
+    await environment.stop()
 
 
 async def test_auto_restart_off_still_records_that_a_restart_is_owed(tmp_path: Path) -> None:

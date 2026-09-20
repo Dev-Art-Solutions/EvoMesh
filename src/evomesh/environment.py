@@ -276,6 +276,14 @@ class Environment:
         # This process is starting from whatever the tree holds right now, so a
         # restart owed by an earlier promotion has just been paid.
         self.evolver.workspace.supervisor.clear_restart_flag()
+        # One-time catch-up for promote()'s own past leak (see sweep_applied's
+        # docstring): every already-landed generation promote() left sitting
+        # in the candidates dict before that fix existed gets its entry
+        # cleared now, and prune_stale() reclaims the worktree/branch/
+        # directory each one was holding open for nothing. A no-op on every
+        # startup after the first.
+        if self.evolver.workspace.supervisor.sweep_applied():
+            await self.evolver.workspace.prune_stale()
         await self.repository.initialize()
         await self.skills.load()
         await self.tools.load()

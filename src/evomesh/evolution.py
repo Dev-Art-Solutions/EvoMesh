@@ -545,6 +545,40 @@ class GenerationSupervisor:
         metadata["candidates"] = candidates
         self._write(metadata)
 
+    def sweep_applied(self) -> list[int]:
+        """One-time catch-up for candidates promote() landed *before* it
+        started clearing its own entry (see promote()'s own docstring).
+
+        Every one of those is still sitting in the candidates dict today,
+        permanently protected from prune_stale() -- a generation that landed
+        as a real commit long ago, still holding its worktree, branch, and
+        directory open forever, for no reason the fix arriving later could
+        undo on its own. Safe by the same test as promote() itself: a
+        candidate with a recorded git_commit already has its code and its
+        own docs/evolution/NNNNNN.md on a real commit, so removing its
+        candidates-dict entry loses nothing. The currently active and
+        last-known-good numbers are left alone regardless -- prune_stale()
+        already protects those through a separate check, but there is no
+        reason for this one to duplicate that judgment.
+
+        Idempotent: a mesh that has never hit the old bug, or has already
+        been swept once, finds nothing to do here on every later call.
+        """
+        metadata = self.metadata()
+        candidates = dict(metadata.get("candidates", {}))
+        protected = {str(metadata["active"]), str(metadata["last_known_good"])}
+        swept: list[int] = []
+        for key, value in list(candidates.items()):
+            if key in protected:
+                continue
+            if value.get("git_commit"):
+                swept.append(int(key))
+                del candidates[key]
+        if swept:
+            metadata["candidates"] = candidates
+            self._write(metadata)
+        return sorted(swept)
+
     def discard(self, number: int) -> None:
         metadata = self.metadata()
         candidates = dict(metadata.get("candidates", {}))
