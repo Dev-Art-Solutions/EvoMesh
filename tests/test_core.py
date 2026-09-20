@@ -78,6 +78,33 @@ async def test_permission_matching_and_traversal(
         await policy.require("a", root / "child.txt", "write")
 
 
+async def test_prune_missing_paths_revokes_grants_for_deleted_directories(
+    repository: SQLiteRepository, tmp_path: Path
+) -> None:
+    """A harness job's grant is meant to die with its generation directory
+    (see environment.py's submit_harness_job), but nothing ever enforced
+    that -- found live: 10193 filesystem_grants rows in state.db, nearly
+    one per harness job this mesh has ever run, none of them ever revoked
+    even as the directories they pointed at were deleted."""
+    policy = FilesystemPolicy(repository)
+    alive = tmp_path / "still-here"
+    alive.mkdir()
+    gone = tmp_path / "already-deleted"
+    gone.mkdir()
+    await policy.grant(FilesystemGrant(agent_id="a", path=str(alive), read=True))
+    await policy.grant(FilesystemGrant(agent_id="a", path=str(gone), read=True))
+    gone.rmdir()
+
+    removed = await policy.prune_missing_paths()
+
+    assert removed == 1
+    assert await policy.require("a", alive / "child.txt", "read") == (
+        alive / "child.txt"
+    ).resolve()
+    with pytest.raises(PermissionDeniedError):
+        await policy.require("a", gone / "child.txt", "read")
+
+
 def test_architect_drafts_a_candidate_without_asking_questions() -> None:
     interview = ArchitectInterview()
     draft = interview.begin("Create an agent called Researcher that reads markdown papers")

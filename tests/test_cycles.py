@@ -406,6 +406,48 @@ def project(tmp_path: Path) -> Path:
     return root
 
 
+async def test_opening_a_generation_sweeps_grants_for_deleted_directories(
+    tmp_path: Path, project: Path
+) -> None:
+    """prune_stale() (called from create_candidate()) may just have deleted
+    old generation directories -- their harness-job grants have to be swept
+    too, or they outlive the directory they were scoped to forever (found
+    live: 10193 filesystem_grants rows, one for nearly every harness job
+    ever run, none ever revoked)."""
+    from evomesh.storage import SQLiteRepository
+
+    class FakePermissions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def prune_missing_paths(self) -> int:
+            self.calls += 1
+            return 0
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal("Improve health reporting", recurring=True)
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    permissions = FakePermissions()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver, "permissions": permissions},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)  # plan -> propose: opens the candidate
+
+    assert permissions.calls == 1
+
+
 async def test_evolver_pipeline_advances_one_stage_per_cycle(
     tmp_path: Path, project: Path
 ) -> None:

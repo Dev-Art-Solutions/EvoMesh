@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any, cast
 
 from evomesh.bdi import (
@@ -574,6 +575,18 @@ class EvolverBehavior(BDIBehavior):
             if backlog is not None:
                 objective = backlog
         generation = await evolver.create_candidate(objective)
+        # create_candidate()/prune_stale() may just have deleted old
+        # generation directories, and a harness job's filesystem grant
+        # (environment.py's submit_harness_job) is scoped to exactly one of
+        # those -- without this, the grant outlives the directory it was
+        # for, forever (found live: 10193 filesystem_grants rows in
+        # state.db, one for nearly every harness job this mesh has ever
+        # run). Best-effort: a sweep failing here is nothing to block a new
+        # generation over.
+        permissions = cast("Any", context.service("permissions"))
+        if permissions is not None:
+            with suppress(Exception):
+                await permissions.prune_missing_paths()
         next_stage = STAGE_DRAFT if self.auto_plan else STAGE_PROPOSE
         await evolver.set_pipeline_state(
             {

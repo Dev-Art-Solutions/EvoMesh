@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -115,6 +115,11 @@ class SQLiteRepository:
         grants = await self.load_grants(agent_id)
         await self._write(
             [("DELETE FROM filesystem_grants WHERE id = ?", (grant.id,)) for grant in grants]
+        )
+
+    async def delete_grants_by_id(self, grant_ids: Iterable[str]) -> None:
+        await self._write(
+            [("DELETE FROM filesystem_grants WHERE id = ?", (grant_id,)) for grant_id in grant_ids]
         )
 
     async def load_grants(self, agent_id: str | None = None) -> list[FilesystemGrant]:
