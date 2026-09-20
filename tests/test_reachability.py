@@ -69,13 +69,31 @@ def test_the_survey_sees_the_package_it_is_pointed_at() -> None:
     assert not modules["__main__"].is_orphan
 
 
-def test_the_map_names_what_is_load_bearing_and_what_is_dead() -> None:
+def test_the_map_names_what_is_load_bearing_and_what_is_dead(tmp_path: Path) -> None:
+    """Built from its own fixture, not PROJECT: the real package's dead-module
+    count is exactly what the Evolver's backlog is meant to shrink to zero, so
+    a test asserting the live repo currently has one would start failing the
+    moment that backlog was ever actually cleared -- as it now is."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "used.py").write_text('"""Used."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+
+    text = project_map(tmp_path)
+
+    assert "used.py" in text
+    assert "DEAD modules" in text
+    assert "lonely.py" in text
+    # The map is prompt text for a small local model, so its size is a contract.
+    assert len(text) <= 1800
+
+
+def test_the_map_omits_the_dead_section_entirely_once_the_backlog_is_empty() -> None:
     text = project_map(PROJECT)
 
     assert "contracts.py" in text
-    assert "DEAD modules" in text
-    # The map is prompt text for a small local model, so its size is a contract.
-    assert len(text) <= 1800
+    assert "DEAD modules" not in text
 
 
 def test_the_map_quotes_a_dead_modules_real_exports(tmp_path: Path) -> None:

@@ -16,7 +16,6 @@
 # one is wired up its line here simply goes stale; prune it when convenient.
 _agent_ids
 agent_label
-cycles
 humanize
 mesh
 mesh_utils
