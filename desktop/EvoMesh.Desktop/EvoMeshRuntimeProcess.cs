@@ -182,13 +182,40 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             // contract already claims to do. StartAsync tries the cheap attach
             // first and only spawns if that fails, so this costs nothing when
             // a mesh is genuinely still there under a transient ping hiccup.
+            // That one attempt inside StartAsync is an 800ms connect -- too
+            // tight for a single-threaded asyncio mesh that is merely busy
+            // (a slow model call, a burst of log writes), not dead. Found
+            // live: four full duplicate `uv run evomesh` processes alive at
+            // once, all logging to the same file and racing the same git
+            // checkout and SQLite state -- every one of them a genuinely
+            // running mesh this exact branch decided, on one missed 800ms
+            // ping, to leave for dead and replace. A few slower retries here
+            // cost nothing when the mesh really is gone (StartAsync still
+            // runs once retries are exhausted) and are the only thing that
+            // tells "busy" apart from "dead" before something as expensive
+            // as a second full process gets spawned alongside the first.
             _restarting = true;
             try
             {
-                await StartAsync();
+                for (var attempt = 0; attempt < 3 && !IsRunning; attempt++)
+                {
+                    if (attempt > 0)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                    }
+                    await TryAttachAsync(announce: false);
+                }
                 if (IsRunning)
                 {
-                    Emit("[the mesh was down; brought it back up]");
+                    Emit("[reconnected to the running mesh after a slow ping]");
+                }
+                else
+                {
+                    await StartAsync();
+                    if (IsRunning)
+                    {
+                        Emit("[the mesh was down; brought it back up]");
+                    }
                 }
             }
             catch (Exception exc)
