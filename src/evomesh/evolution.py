@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 from collections.abc import Callable, Iterable
 from contextlib import suppress
@@ -591,6 +592,12 @@ IGNORED_NAMES = (
     "dist",
 )
 
+# How many old, unprotected generation directories (and the git worktree and
+# branch each one holds) are left on disk for a human to look at directly.
+# Everything beyond this, oldest first, is pruned on the next generation
+# opened -- see CandidateWorkspace.prune_stale.
+GENERATION_RETENTION = 50
+
 
 class CandidateWorkspace:
     """Copies the code into an isolated generation, and nothing else.
@@ -687,7 +694,79 @@ class CandidateWorkspace:
         )
         self.supervisor.record_candidate(generation)
         (destination / "MUTATION_OBJECTIVE.md").write_text(objective + "\n", encoding="utf-8")
+        await self.prune_stale()
         return generation
+
+    async def prune_stale(
+        self, keep: int = GENERATION_RETENTION, *, max_per_call: int = 20
+    ) -> list[int]:
+        """Delete old, no-longer-referenced candidate directories along with
+        the git worktree and branch each one holds open.
+
+        Found live: 1017 generation directories on disk (~2.3MB each, plus a
+        `git worktree add` per one) and 1013 `evomesh/candidate-NNNNNN`
+        branches still registered in this repository, growing by one of each
+        on every single generation this pipeline has ever opened -- discard()
+        only ever drops the JSON metadata entry, never the worktree or
+        branch it came with. Nothing here ever stops running on its own, so
+        that growth has no ceiling; a process meant to run indefinitely
+        cannot carry a resource that does not.
+
+        A generation earns "worth keeping forever" from nothing computed
+        here -- promoted work lives on as a real commit on main, and a
+        discarded one's verdict is already in the mutation log the
+        repository keeps, not only in the directory itself. Only the most
+        recent ``keep`` are left on disk for a human to look at directly;
+        anything still active, still last-known-good, or still an open
+        candidate is protected regardless of age or count.
+
+        ``max_per_call`` caps how much of a backlog this one call works off --
+        called from create(), on the critical path of opening the very next
+        generation. A repository that has been running unpruned for a while
+        (this one: ~967 overflow on the day this was added) does its
+        catch-up a little at a time across many generations rather than
+        making the first `create()` after this ships pay for a thousand
+        `git worktree remove` calls in one blocking stretch.
+        """
+        metadata = self.supervisor.metadata()
+        protected = {int(metadata["active"]), int(metadata["last_known_good"])}
+        protected.update(int(item) for item in dict(metadata.get("candidates", {})))
+        numbered = sorted(
+            (
+                (int(match.group(1)), entry)
+                for entry in self.supervisor.root.iterdir()
+                if entry.is_dir() and (match := re.match(r"(\d+)-candidate$", entry.name))
+            ),
+            key=lambda pair: pair[0],
+        )
+        prunable = [pair for pair in numbered if pair[0] not in protected]
+        overflow = min(max(0, len(prunable) - keep), max_per_call)
+        removed: list[int] = []
+        for number, path in prunable[:overflow]:
+            await self._remove_generation_worktree(number, path)
+            removed.append(number)
+        if removed:
+            await run_command("git", "-C", str(self.repository_root), "worktree", "prune")
+        return removed
+
+    async def _remove_generation_worktree(self, number: int, path: Path) -> None:
+        result = await run_command(
+            "git", "-C", str(self.repository_root), "worktree", "remove", "--force", str(path)
+        )
+        if result.exit_code != 0 and await asyncio.to_thread(path.exists):
+            # Not a worktree at all (the copytree fallback path this class
+            # falls back to outside a real git repository) or the worktree
+            # registration was already gone -- either way a plain directory
+            # left behind is still safe to remove.
+            await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
+        await run_command(
+            "git",
+            "-C",
+            str(self.repository_root),
+            "branch",
+            "-D",
+            f"evomesh/candidate-{number:06d}",
+        )
 
 
 def uv_executable(start: Path) -> str:

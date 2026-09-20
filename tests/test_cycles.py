@@ -1205,6 +1205,89 @@ async def test_a_new_candidate_skips_the_leftovers_of_a_discarded_one(
     await environment.stop()
 
 
+async def test_prune_stale_removes_old_worktrees_and_branches(tmp_path: Path) -> None:
+    """Found live: 1017 generation directories and 1013 stale
+    `evomesh/candidate-NNNNNN` branches, one of each from every generation
+    ever opened -- discard() only ever drops the JSON metadata entry, never
+    the worktree or branch. Beyond the retention count, both must actually
+    go: the directory off disk and the branch out of the repository, not
+    just out of supervisor.json."""
+    from evomesh.storage import SQLiteRepository
+
+    project = await git_project(tmp_path / "project")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+
+    numbers = []
+    for index in range(5):
+        generation = await evolver.create_candidate(f"attempt {index}")
+        numbers.append(generation.number)
+        evolver.workspace.supervisor.discard(generation.number)
+
+    removed = await evolver.workspace.prune_stale(keep=2)
+
+    assert removed == numbers[:3]
+    for number in numbers[:3]:
+        assert not (tmp_path / "generations" / f"{number:06d}-candidate").exists()
+    for number in numbers[3:]:
+        assert (tmp_path / "generations" / f"{number:06d}-candidate").exists()
+    branches = await GitRepository(project).run("branch", "--list", "evomesh/candidate-*")
+    for number in numbers[:3]:
+        assert f"candidate-{number:06d}" not in branches
+    for number in numbers[3:]:
+        assert f"candidate-{number:06d}" in branches
+
+
+async def test_prune_stale_never_removes_a_protected_generation(tmp_path: Path) -> None:
+    """Active, last-known-good, and still-open candidates are exempt from
+    the retention count regardless of how old they are -- pruning is only
+    ever for generations nothing refers to any more."""
+    from evomesh.storage import SQLiteRepository
+
+    project = await git_project(tmp_path / "project")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+
+    protected = await evolver.create_candidate("still open")
+    for index in range(3):
+        generation = await evolver.create_candidate(f"discarded {index}")
+        evolver.workspace.supervisor.discard(generation.number)
+
+    removed = await evolver.workspace.prune_stale(keep=0)
+
+    assert protected.number not in removed
+    assert protected.path.exists()
+
+
+async def test_prune_stale_caps_how_much_it_does_in_one_call(tmp_path: Path) -> None:
+    """create() calls this on the critical path of opening the next
+    generation -- a repository that has been running unpruned for a long
+    time must not make that one call pay for clearing the whole backlog of
+    `git worktree remove` calls at once."""
+    from evomesh.storage import SQLiteRepository
+
+    project = await git_project(tmp_path / "project")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+
+    for index in range(5):
+        generation = await evolver.create_candidate(f"discarded {index}")
+        evolver.workspace.supervisor.discard(generation.number)
+
+    removed = await evolver.workspace.prune_stale(keep=0, max_per_call=2)
+
+    assert len(removed) == 2
+
+
 async def test_the_console_reports_a_discard_in_plain_english(tmp_path: Path) -> None:
     environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
     await environment.start()

@@ -687,6 +687,30 @@ def test_compaction_leaves_a_transcript_that_already_fits_alone() -> None:
     assert size == 5
 
 
+def test_next_session_path_prunes_old_transcripts_beyond_retention(tmp_path: Path) -> None:
+    """Found live: 10168 of these accumulated, one per harness job ever run,
+    none ever removed. Beyond retention, the oldest have to actually go."""
+    directory = tmp_path / "harness"
+    directory.mkdir()
+    for number in range(1, 6):
+        (directory / f"{number:06d}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    next_session_path(directory, keep=2)
+
+    remaining = {path.stem for path in directory.glob("*.jsonl")}
+    assert remaining == {"000004", "000005"}
+
+
+def test_next_session_path_never_prunes_below_the_keep_count(tmp_path: Path) -> None:
+    directory = tmp_path / "harness"
+    directory.mkdir()
+    (directory / "000001.jsonl").write_text("{}\n", encoding="utf-8")
+
+    next_session_path(directory, keep=500)
+
+    assert (directory / "000001.jsonl").exists()
+
+
 async def test_the_session_records_the_job_as_it_runs(project: Path, tmp_path: Path) -> None:
     path = next_session_path(tmp_path / "harness")
     provider = MockProvider(

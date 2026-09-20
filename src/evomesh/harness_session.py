@@ -54,16 +54,31 @@ class HarnessSession:
         return [entry["kind"] for entry in self.entries]
 
 
-def next_session_path(directory: Path) -> Path:
+# How many session transcripts are kept on disk. Found live alongside the
+# generations/ backlog: 10168 of these, one per harness job ever run, none
+# ever removed -- a process meant to run indefinitely cannot let a resource
+# grow forever just because nothing was ever told to stop it.
+SESSION_RETENTION = 500
+
+
+def next_session_path(directory: Path, *, keep: int = SESSION_RETENTION) -> Path:
     """The next free ``000001.jsonl`` in ``directory``.
 
     Numbered rather than timestamped so a sorted listing is chronological on
     every platform, and so the number can be spoken: "job 7 went wrong".
+
+    Prunes the oldest transcripts beyond ``keep`` first -- every job's own
+    verdict and diff already lands in the generation's mutation log or
+    MUTATION_OBJECTIVE.md, which is what a human actually reads back later;
+    the raw turn-by-turn transcript is for debugging a job while it is
+    fresh, not a permanent record.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    used = {
-        int(path.stem)
-        for path in directory.glob("*.jsonl")
-        if path.stem.isdigit()
-    }
+    numbered = sorted(
+        (int(path.stem), path) for path in directory.glob("*.jsonl") if path.stem.isdigit()
+    )
+    overflow = max(0, len(numbered) - keep)
+    for _, path in numbered[:overflow]:
+        path.unlink(missing_ok=True)
+    used = {number for number, _ in numbered[overflow:]}
     return directory / f"{(max(used) + 1 if used else 1):06d}.jsonl"
