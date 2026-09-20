@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -49,6 +50,12 @@ def _load_state() -> dict:
 
 
 def main() -> int:
+    # A watcher's stdout is a pipe captured by run_command, but on Windows a
+    # pipe's default encoding is still the system codepage, not UTF-8 -- so a
+    # non-ASCII headline (Cyrillic, say) raised UnicodeEncodeError out of the
+    # print() below and the whole tick was logged as a bare "exited 1" with no
+    # readable cause.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     news_fetch = _load_news_fetch()
     config = news_fetch._load_config()
     keywords = [str(item).lower() for item in (config.get("keywords") or [])]

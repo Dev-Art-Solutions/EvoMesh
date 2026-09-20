@@ -58,6 +58,10 @@ class TemplateGoal(BaseModel):
     interval_seconds: int | None = None
     cron: str | None = None
     notify: bool = False
+    # See Goal.report_pattern (contracts.py) -- a regex a recurring goal's
+    # own report must match, line by line, before it is announced. Optional;
+    # unset means no filtering, same as before this field existed.
+    report_pattern: str | None = None
 
 
 class AgentTemplateDefinition(BaseModel):
@@ -302,6 +306,7 @@ class AgentTemplateRegistry:
                 interval_seconds=goal.interval_seconds,
                 cron_expression=goal.cron,
                 notify=goal.notify,
+                report_pattern=goal.report_pattern,
             )
         if telegram_token.strip():
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())

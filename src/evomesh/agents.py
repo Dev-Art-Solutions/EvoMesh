@@ -58,6 +58,27 @@ def _is_silent_outcome(summary: str) -> bool:
     return not text or bool(_HARNESS_EMPTY_ANSWER.fullmatch(text))
 
 
+def _apply_report_pattern(summary: str, pattern: str) -> str:
+    """Keep only the lines of a goal's report that match its report_pattern.
+
+    A skill can ask a model for a strict per-line format and tell it, in
+    plain language, never to narrate what it just did -- but that is a
+    request, not an enforcement. A model that ignores it (e.g. NewsAnalyzer
+    reporting "appended this cycle's assessment to the scratch log as the
+    Nth entry" instead of a headline-impact line) would otherwise reach the
+    human verbatim. This is the deterministic backstop: anything that is not
+    a line the goal's own pattern recognizes as its report format is dropped
+    silently rather than announced.
+    """
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        logger.warning("goal has an invalid report_pattern, skipping filter: %r", pattern)
+        return summary
+    kept = [line for line in summary.splitlines() if compiled.fullmatch(line.strip())]
+    return "\n".join(kept)
+
+
 class AgentRegistry:
     def __init__(self) -> None:
         self._agents: dict[str, AgentDefinition] = {}
@@ -305,7 +326,30 @@ class AgentRuntime:
                 # literally: a recurring cycle that found nothing to say
                 # should send nothing, not a "found nothing to report" filler
                 # every single cycle forever.
-                silent = goal.recurring and _is_silent_outcome(outcome.summary)
+                summary = outcome.summary
+                if goal.recurring and goal.report_pattern:
+                    filtered = _apply_report_pattern(summary, goal.report_pattern)
+                    if not filtered.strip() and not _is_silent_outcome(summary):
+                        # The regex found nothing to keep, but the model did
+                        # not report genuine silence either -- it said
+                        # something, just not shaped the way the pattern
+                        # wants (mixed narration, wrapped lines, drifted
+                        # punctuation). Ask the model to pull its own report
+                        # back out, then re-apply the same regex to whatever
+                        # it returns -- never trust that pass unfiltered.
+                        try:
+                            distilled = await self._sanitize_report(
+                                summary, goal.report_pattern
+                            )
+                        except (ModelUnavailableError, RuntimeError, ValueError):
+                            logger.exception(
+                                "%s: report sanitizer call failed, staying silent",
+                                self.definition.name,
+                            )
+                            distilled = ""
+                        filtered = _apply_report_pattern(distilled, goal.report_pattern)
+                    summary = filtered
+                silent = goal.recurring and _is_silent_outcome(summary)
                 if genuinely_done and not silent:
                     # A recurring goal "finishes" every cycle by design, so
                     # re-quoting its whole description (often a paragraph,
@@ -314,7 +358,7 @@ class AgentRuntime:
                     # the human already knows what their standing goal is.
                     # Only a genuine one-shot completion is worth naming.
                     await self.announce(
-                        f"{self.definition.name}: {outcome.summary}"
+                        f"{self.definition.name}: {summary}"
                         if goal.recurring
                         else f'{self.definition.name} finished "{goal.description}": '
                         f"{outcome.summary}"
@@ -378,6 +422,39 @@ class AgentRuntime:
                 "Status": self.state.describe(),
             }
         )
+
+    async def _sanitize_report(self, raw: str, report_pattern: str) -> str:
+        """LLM fallback for when a regex line-filter finds nothing to keep.
+
+        _apply_report_pattern() is the cheap, deterministic filter and stays
+        the first line of defense, but it only ever keeps a line that already
+        matches the goal's report_pattern exactly -- a model that runs its
+        report and its narration together on one line, wraps a "why" clause
+        across two lines, or drifts slightly off the punctuation the pattern
+        expects (an em dash for "--", a smart quote) leaves every line
+        rejected and the regex filter alone would announce silence even
+        though the model actually found something to say. This asks the same
+        model, in a fresh call with no goal/tool context to narrate about, to
+        pull just the report out of its own raw answer -- then the raw regex
+        filter still runs on *that* output before anything is announced, so
+        this step only ever narrows what gets sent, never bypasses the format
+        contract.
+        """
+        raw = await self.provider.generate(
+            "Extract only the lines that already match this exact format from the "
+            f"text below; output nothing else, not even an introduction:\n\n"
+            f"FORMAT (regex): {report_pattern}\n\n"
+            f"TEXT:\n{raw}\n\n"
+            "If no line in TEXT matches, output nothing.",
+            system=(
+                "You are a strict text filter, not an assistant. You never explain, "
+                "apologize, or add commentary -- you output only the matching lines, "
+                "verbatim, or nothing at all."
+            ),
+            model=self.definition.model_name,
+            num_ctx=self.num_ctx,
+        )
+        return strip_reasoning(raw)
 
     async def _summarize(self, text: str) -> str:
         raw = await self.provider.generate(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import threading
 from pathlib import Path
@@ -56,6 +57,9 @@ HELP = """Commands:
   /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]
   /goal done|drop <agent> <goal-id>
   /goal notify <agent> <goal-id> [on|off]  Announce this goal's progress and finish
+  /goal pattern <agent> <goal-id> [<regex>|clear]  Only announce report lines
+                                matching this regex (a deterministic backstop for a
+                                skill's own strict-format rule); clear removes it
   /notifications [since-id]     What the mesh has announced on its own, and their ids
   /memory <agent>               Show the agent's memory.md
   /context <agent>|world        Show context.md
@@ -559,6 +563,7 @@ class ConsoleChannel:
             return (
                 'Usage: /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]'
                 "  |  /goal done|drop <agent> <id>  |  /goal notify <agent> <id> [on|off]"
+                "  |  /goal pattern <agent> <id> [<regex>|clear]"
             )
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
@@ -610,8 +615,26 @@ class ConsoleChannel:
             goal.notify = not (len(parts) > 4 and parts[4].lower() in {"off", "false", "0"})
             state = "will" if goal.notify else "will no longer"
             message = f"Goal {goal.id} {state} announce its progress and when it finishes."
+        elif action == "pattern":
+            # See Goal.report_pattern (contracts.py): a recurring goal spawned
+            # from a template picks this up at instantiate() time, but a goal
+            # added ad hoc (this very command) or one that existed before its
+            # template gained a report_pattern has no way back to one without
+            # this -- the same gap /goal notify closes for the notify flag.
+            goal = definition.mind.goal(parts[3])
+            if len(parts) <= 4 or parts[4].lower() in {"clear", "none", "off"}:
+                goal.report_pattern = None
+                message = f"Goal {goal.id} no longer filters its report through a pattern."
+            else:
+                pattern = parts[4]
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    return f"Bad pattern: {error}"
+                goal.report_pattern = pattern
+                message = f"Goal {goal.id} will only announce report lines matching {pattern!r}."
         else:
-            return "Goal action must be add, done, drop, or notify."
+            return "Goal action must be add, done, drop, notify, or pattern."
         definition.touch()
         await self.environment.repository.save_agent(definition)
         return message

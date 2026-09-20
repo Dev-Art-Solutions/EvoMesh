@@ -25,6 +25,14 @@ goals:
     recurring: true
     cron: "*/30 * * * *"
     notify: true
+    # Deterministic backstop for the skill's "only send report lines, never
+    # narrate what you did" rule (see agents.py's _apply_report_pattern) --
+    # a model that ignores that rule and reports its own bookkeeping instead
+    # (e.g. "appended this cycle's assessment to the scratch log") gets that
+    # line silently dropped rather than forwarded to a human. Must match
+    # news-impact-analysis's own report-line format exactly if that format
+    # ever changes.
+    report_pattern: "^[A-Za-z0-9_.]+ (bullish|bearish|neutral) \\((low|medium|high)\\): .+ -- .+$"
 skills: [news-impact-analysis]
 tools: [news_fetch]
 ---

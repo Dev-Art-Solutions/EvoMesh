@@ -109,6 +109,17 @@ class Goal(BaseModel):
     # with /goal notify <agent> <id> [on|off]: an agent narrating every step
     # of every goal unprompted is noise, not a feature, until asked for.
     notify: bool = False
+    # Optional. A regex a recurring goal's report is expected to match, line
+    # by line, before it reaches a human -- a backstop for goals whose skill
+    # asks the model for a strict format (e.g. news-impact-analysis's
+    # "SYMBOL direction (confidence): headline -- why") and nothing else.
+    # Prompting alone is not enforcement: a model can still narrate its own
+    # bookkeeping ("appended this cycle's assessment to the scratch log as
+    # the Nth entry") instead of the report line the skill asked for, and
+    # that narration would otherwise reach the human verbatim. When set,
+    # _apply() (agents.py) keeps only lines that match and announces nothing
+    # if none do, rather than forwarding an unfiltered summary.
+    report_pattern: str | None = None
     notes: list[str] = Field(default_factory=list)
     last_error: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -317,6 +328,7 @@ class MindState(BaseModel):
         interval_seconds: int | None = None,
         cron_expression: str | None = None,
         notify: bool = False,
+        report_pattern: str | None = None,
     ) -> Goal:
         goal = Goal(
             description=description.strip(),
@@ -325,6 +337,7 @@ class MindState(BaseModel):
             interval_seconds=interval_seconds,
             cron=cron_expression,
             notify=notify,
+            report_pattern=report_pattern,
         )
         if cron_expression:
             if not cron.is_valid_cron_expression(cron_expression):
