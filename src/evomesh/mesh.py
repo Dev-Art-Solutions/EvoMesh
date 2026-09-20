@@ -52,3 +52,4 @@ class Mesh:
             for target in targets
         )
         return len(directed_pair_count(edges))
+
