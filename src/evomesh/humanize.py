@@ -27,6 +27,8 @@ def humanize_size(num_bytes: int) -> str:
 
 def humanize_duration(seconds: float) -> str:
     """Render a duration in seconds as a compact human string."""
+    if seconds is None:
+        raise TypeError("seconds must be a number, not None")
     seconds = max(0, float(seconds))
     if seconds < 1:
         return f"{seconds * 1000:.0f} ms"
