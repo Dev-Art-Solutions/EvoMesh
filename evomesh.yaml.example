@@ -126,6 +126,14 @@ evolution:
 #   # model picked.
 #   self_check_command: ""    # e.g. "ruff check ." or a wrapper script
 #   self_check_max_attempts: 2
+#   # When true, learn_skill/patch_skill never write straight to skills/ --
+#   # they stage the proposed content and a human commits it with
+#   # `/learn approve <n>` (or discards with `/learn reject <n>`), seen first
+#   # with `/learn review`. Off by default: AgentDefinition.can_learn_skills
+#   # is already the deliberate per-agent grant; this is a second, mesh-wide
+#   # dial for a human who wants every write reviewed regardless of which
+#   # agent made it.
+#   skill_write_approval: false
 
 # The Web.Fetch skill and the harness's fetch tool: an agent asks for a URL,
 # gets back its main content as Markdown. Off by default. Scrapling

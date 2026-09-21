@@ -664,6 +664,7 @@ def build_runner(
     scraping_timeout: float = 30.0,
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None,
     learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
+    patch_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
     custom_tools: tuple[Tool, ...] = (),
     self_check_command: str = "",
     self_check_max_attempts: int = 2,
@@ -688,6 +689,7 @@ def build_runner(
         scraping_timeout=scraping_timeout,
         ask_agent=ask_agent,
         learn_skill=learn_skill,
+        patch_skill=patch_skill,
         session=session,
     )
     # Each optional tool joins the registry only when a human has actually

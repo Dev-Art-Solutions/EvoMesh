@@ -122,6 +122,11 @@ class ToolContext:
     # never granted this capability (AgentDefinition.can_learn_skills) has
     # no business writing into the mesh-wide skills/ directory.
     learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None
+    # The same grant as learn_skill, targeted instead: a unique-match text
+    # replacement within a skill this same agent already wrote, the way the
+    # harness's own edit tool works on an ordinary file. Wired alongside
+    # learn_skill (see build_runner) -- one capability, two tools.
+    patch_skill: Callable[[str, str, str], Awaitable[str]] | None = None
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -817,6 +822,31 @@ async def tool_learn_skill(context: ToolContext, args: dict[str, Any]) -> str:
     return result
 
 
+async def tool_patch_skill(context: ToolContext, args: dict[str, Any]) -> str:
+    """A small, targeted fix to a skill this same agent already wrote --
+    replace exactly one occurrence of old_text with new_text, the same
+    unique-match contract the harness's own edit tool uses on a real file.
+    Prefer this over learn_skill for a small correction: cheaper to write,
+    and the refusal on a non-unique match is what keeps a fix from landing
+    somewhere it was not meant to.
+    """
+    if context.patch_skill is None:
+        raise ToolDenied("DENIED: this agent has not been granted skill-authoring access.")
+    name = str(args.get("name") or "").strip()
+    old_text = str(args.get("old_text") or "")
+    new_text = str(args.get("new_text") or "")
+    if not name:
+        raise ToolDenied("DENIED: patch_skill needs a name.")
+    if not old_text:
+        raise ToolDenied("DENIED: patch_skill needs 'old_text', the exact text to replace.")
+    try:
+        result = await context.patch_skill(name, old_text, new_text)
+    except ValueError as exc:
+        raise ToolDenied(f"DENIED: {exc}") from None
+    context.tally.edits += 1
+    return result
+
+
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
@@ -1043,6 +1073,37 @@ LEARN_TOOLS: tuple[Tool, ...] = (
             "required": ["name", "description", "body"],
         },
         run=tool_learn_skill,
+    ),
+    Tool(
+        name="patch_skill",
+        description=(
+            "Fix or extend one exact piece of a skill you already wrote, "
+            "instead of resending the whole thing through learn_skill -- the "
+            "same unique-match contract the edit tool uses on a real file: "
+            "old_text must appear exactly once."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill's name, e.g. 'news-report-export'.",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": (
+                        "The exact text to replace, with enough surrounding "
+                        "context to appear exactly once in the skill's file."
+                    ),
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "What to replace it with.",
+                },
+            },
+            "required": ["name", "old_text", "new_text"],
+        },
+        run=tool_patch_skill,
     ),
 )
 

@@ -25,16 +25,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 
-from evomesh.contracts import SkillDefinition
+from evomesh.contracts import SkillDefinition, now_utc
 
 logger = logging.getLogger(__name__)
 
 SKILL_FILENAME = "SKILL.md"
+
+
+@dataclass
+class PendingSkillWrite:
+    """A learn_skill/patch_skill call staged for a human to review, when
+    HarnessSettings.skill_write_approval is on -- see Environment.
+    _make_learn_skill/_make_patch_skill. ``text`` is already the exact final
+    SKILL.md content install() would write; approving is nothing more than
+    handing it to install() unchanged, so what a human reviews is exactly
+    what lands.
+
+    In-memory only, like HarnessQueue's own jobs -- restarting the mesh
+    loses whatever was awaiting review, the same tradeoff the harness queue
+    already makes and says so for (README: "not durable").
+    """
+
+    number: int
+    agent_id: str
+    kind: str  # "learn" or "patch"
+    name: str
+    summary: str
+    text: str
+    created_at: datetime = field(default_factory=now_utc)
 
 
 class MissingSkillError(LookupError):
@@ -43,6 +69,65 @@ class MissingSkillError(LookupError):
 
 class InvalidSkillError(ValueError):
     pass
+
+
+# A skill's body is prose a future model reads the same way it reads any
+# other file -- with no more scrutiny than that. Two ways that goes wrong:
+# a secret ends up quoted inside a "helpful" procedure and gets echoed back
+# the next time the skill is read, or the body itself carries text meant to
+# steer whatever reads it later (a prompt-injection payload one skill's
+# author staged for a future session to fall into). Small, named regexes
+# rather than a classifier, on purpose -- see CLAUDE.md rule 16: this stays
+# a few lines of stdlib `re`, not a dependency, and every finding names
+# exactly what tripped it instead of a bare "rejected".
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sk-[A-Za-z0-9]{20,}"), "an OpenAI-shaped API key"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "an AWS access key id"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "a private key block"),
+    (
+        re.compile(
+            r"(?i)(api[_-]?key|secret|password|access[_-]?token)\s*[:=]\s*"
+            r"['\"][A-Za-z0-9_\-]{12,}['\"]"
+        ),
+        "a hardcoded credential",
+    ),
+)
+_INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?i)ignore (all |any )?(previous|prior|above|earlier) instructions"),
+        "an instruction-override phrase",
+    ),
+    (
+        re.compile(
+            r"(?i)disregard (your |the )?(system prompt|previous instructions"
+            r"|instructions above)"
+        ),
+        "an instruction-override phrase",
+    ),
+    (
+        re.compile(r"(?i)you are now (DAN|in developer mode|an unrestricted)"),
+        "a known jailbreak phrase",
+    ),
+)
+
+
+def scan_skill_content(text: str) -> list[str]:
+    """What, if anything, a skill's raw text (frontmatter and body alike)
+    should never be allowed to reach disk carrying. Empty means clean.
+
+    Called from every write path -- a human's own `/skill install`, and an
+    agent's own `learn_skill`/`patch_skill` -- so neither source is trusted
+    more than the other; only the content is judged.
+    """
+    findings = [
+        f"looks like it contains {label}"
+        for pattern, label in _SECRET_PATTERNS
+        if pattern.search(text)
+    ]
+    findings += [
+        f"contains {label}" for pattern, label in _INJECTION_PATTERNS if pattern.search(text)
+    ]
+    return findings
 
 
 def parse_skill(path: Path, text: str, *, created_by: str = "system") -> SkillDefinition:
@@ -161,6 +246,8 @@ class SkillRegistry:
         one get shared from.
         """
         definition = parse_skill(Path("<new skill>"), source_text, created_by=created_by)
+        if findings := scan_skill_content(source_text):
+            raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
         target = self.skills_dir / definition.name / SKILL_FILENAME
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, source_text, encoding="utf-8")
@@ -183,6 +270,8 @@ class SkillRegistry:
             raise InvalidSkillError(f"{source}: no {SKILL_FILENAME} in this directory")
         text = await asyncio.to_thread(skill_file.read_text, encoding="utf-8")
         definition = parse_skill(Path("<new skill>"), text, created_by=created_by)
+        if findings := scan_skill_content(text):
+            raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
         target = self.skills_dir / definition.name
         await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
         await asyncio.to_thread(shutil.copytree, source, target)

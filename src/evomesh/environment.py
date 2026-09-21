@@ -42,7 +42,7 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
-from evomesh.skills import MissingSkillError, SkillRegistry
+from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
 from evomesh.watchers import AgentWatcher
@@ -67,6 +67,11 @@ class Environment:
         self.permissions = FilesystemPolicy(self.repository)
         self.skills = SkillRegistry(self.project_root)
         self.tools = CustomToolRegistry(self.project_root)
+        # learn_skill/patch_skill calls awaiting /learn approve|reject when
+        # HarnessSettings.skill_write_approval is on. In-memory only, same
+        # non-durability the harness queue's own jobs already accept.
+        self.pending_skill_writes: dict[int, PendingSkillWrite] = {}
+        self._next_pending_skill_write = 1
         self.agent_templates = AgentTemplateRegistry(self.project_root)
         self.providers = providers or self._build_providers()
         self.runtimes: dict[str, AgentRuntime] = {}
@@ -654,41 +659,128 @@ class Environment:
 
     _SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
+    def _skill_authorship_check(self, name: str, agent_id: str) -> SkillDefinition | None:
+        """Shared by learn_skill, patch_skill and approve_skill_write: the
+        name is well-formed, and if a skill by that name already exists,
+        this agent is the one who wrote it. Returns the existing definition
+        (None if there is none) or raises ValueError -- never lets a name
+        collision with a human-curated skill (news-triage, say) go through
+        just because a model picked the same name.
+        """
+        if not self._SKILL_NAME.match(name):
+            raise ValueError(
+                f"'{name}' is not a valid skill name -- lowercase letters, "
+                "digits and hyphens only, e.g. 'news-report-export'."
+            )
+        try:
+            existing = self.skills.get(name)
+        except MissingSkillError:
+            return None
+        if existing.created_by != f"agent:{agent_id}":
+            raise ValueError(
+                f"'{name}' already exists and this agent did not author it "
+                f"(created_by={existing.created_by!r}) -- pick a different name."
+            )
+        return existing
+
+    async def _commit_or_stage_skill_write(
+        self, agent_id: str, *, kind: str, name: str, text: str, verb: str
+    ) -> str:
+        """The one place learn_skill and patch_skill actually reach disk --
+        or don't, when HarnessSettings.skill_write_approval asks for a human
+        to look first. ``text`` is already the exact SKILL.md content that
+        would be written; staging changes nothing about it, so what a human
+        approves with ``/learn approve <n>`` is exactly what lands.
+        """
+        if self.settings.harness.skill_write_approval:
+            number = self._next_pending_skill_write
+            self._next_pending_skill_write += 1
+            summary = f"{verb} '{name}'"
+            self.pending_skill_writes[number] = PendingSkillWrite(
+                number=number, agent_id=agent_id, kind=kind, name=name, summary=summary, text=text
+            )
+            return (
+                f"Staged as #{number} for human review ({summary}) -- not written yet. "
+                "A human runs /learn approve <n> or /learn reject <n>."
+            )
+        definition = await self.skills.install(text, created_by=f"agent:{agent_id}")
+        return f"{verb} '{definition.name}': {definition.description} ({definition.path})"
+
     def _make_learn_skill(self, agent_id: str) -> Callable[[str, str, str], Awaitable[str]]:
         """A harness job's ``learn_skill`` tool, bound to the agent it runs
         for -- see AgentDefinition.can_learn_skills and harness_tools.
         tool_learn_skill for what gates this being wired in at all.
-
-        ``SkillRegistry.install()`` already overwrites a same-named skill
-        outright (the same one step a human's own ``/skill install`` uses);
-        the only thing this adds on top is refusing to let an agent
-        overwrite a skill it did not itself write -- a name collision with
-        news-triage must never silently replace a human-curated skill just
-        because a model picked the same name.
         """
 
         async def learn(name: str, description: str, body: str) -> str:
             slug = name.strip().lower()
-            if not self._SKILL_NAME.match(slug):
-                raise ValueError(
-                    f"'{name}' is not a valid skill name -- lowercase letters, "
-                    "digits and hyphens only, e.g. 'news-report-export'."
-                )
-            try:
-                existing = self.skills.get(slug)
-            except MissingSkillError:
-                existing = None
-            if existing is not None and existing.created_by != f"agent:{agent_id}":
-                raise ValueError(
-                    f"'{slug}' already exists and this agent did not author it "
-                    f"(created_by={existing.created_by!r}) -- pick a different name."
-                )
+            existing = self._skill_authorship_check(slug, agent_id)
             text = f"---\nname: {slug}\ndescription: {description}\n---\n\n{body}\n"
-            definition = await self.skills.install(text, created_by=f"agent:{agent_id}")
             verb = "Updated" if existing is not None else "Learned"
-            return f"{verb} '{definition.name}': {definition.description} ({definition.path})"
+            return await self._commit_or_stage_skill_write(
+                agent_id, kind="learn", name=slug, text=text, verb=verb
+            )
 
         return learn
+
+    def _make_patch_skill(self, agent_id: str) -> Callable[[str, str, str], Awaitable[str]]:
+        """A harness job's ``patch_skill`` tool -- a targeted, unique-match
+        edit of a skill this same agent already wrote, the same anchor
+        contract the harness's own ``edit`` tool uses on an ordinary file,
+        so a small fix costs one short call instead of re-sending the whole
+        body through learn_skill.
+        """
+
+        async def patch(name: str, old_text: str, new_text: str) -> str:
+            slug = name.strip().lower()
+            existing = self._skill_authorship_check(slug, agent_id)
+            if existing is None:
+                raise ValueError(f"'{slug}' does not exist yet -- use learn_skill to create it.")
+            if not old_text:
+                raise ValueError("patch_skill needs 'old_text', the exact text to replace.")
+            raw = await asyncio.to_thread(
+                (self.skills.root / existing.path).read_text, encoding="utf-8"
+            )
+            count = raw.count(old_text)
+            if count == 0:
+                raise ValueError(
+                    f"that text is not in '{slug}' -- it may have changed since you last read it."
+                )
+            if count > 1:
+                raise ValueError(
+                    f"'{old_text[:60]}...' appears {count} times in '{slug}' -- include more "
+                    "surrounding text so it matches exactly once."
+                )
+            text = raw.replace(old_text, new_text, 1)
+            return await self._commit_or_stage_skill_write(
+                agent_id, kind="patch", name=slug, text=text, verb="Patched"
+            )
+
+        return patch
+
+    async def approve_skill_write(self, number: int) -> SkillDefinition:
+        """Commit a pending learn_skill/patch_skill exactly as staged --
+        console.py's `/learn approve <n>`. Re-runs the authorship check at
+        commit time, not just at staging time: the skill landscape may have
+        moved since (a human could have written a same-named skill in the
+        meantime), so approving is not a bypass of the same rule a live
+        write already enforces.
+        """
+        pending = self.pending_skill_writes.get(number)
+        if pending is None:
+            raise MissingSkillError(f"no pending skill write numbered {number}")
+        self._skill_authorship_check(pending.name, pending.agent_id)
+        definition = await self.skills.install(pending.text, created_by=f"agent:{pending.agent_id}")
+        del self.pending_skill_writes[number]
+        return definition
+
+    def reject_skill_write(self, number: int) -> PendingSkillWrite:
+        """Discard a pending write without ever touching disk --
+        console.py's `/learn reject <n>`."""
+        pending = self.pending_skill_writes.pop(number, None)
+        if pending is None:
+            raise MissingSkillError(f"no pending skill write numbered {number}")
+        return pending
 
     async def _run_harness_job(self, job: HarnessJob) -> HarnessResult:
         settings = self.settings.harness
@@ -734,6 +826,11 @@ class Environment:
             ask_agent=self._make_ask_agent(job.agent_id) if job.agent_id else None,
             learn_skill=(
                 self._make_learn_skill(job.agent_id)
+                if job.agent_id and can_learn_skills
+                else None
+            ),
+            patch_skill=(
+                self._make_patch_skill(job.agent_id)
                 if job.agent_id and can_learn_skills
                 else None
             ),

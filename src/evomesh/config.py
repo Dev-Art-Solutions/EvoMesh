@@ -231,6 +231,15 @@ class HarnessSettings(BaseModel):
     # already are.
     self_check_command: str = ""
     self_check_max_attempts: int = 2
+    # When true, learn_skill/patch_skill (harness_tools.py) never write
+    # straight to skills/ -- they stage the proposed content in
+    # Environment.pending_skill_writes and a human commits it with
+    # `/learn approve <n>` (or discards with `/learn reject <n>`). Off by
+    # default: AgentDefinition.can_learn_skills is already the deliberate
+    # per-agent grant; this is a second, mesh-wide dial for a human who
+    # wants every write reviewed regardless of which agent made it, not a
+    # requirement for the capability to work at all.
+    skill_write_approval: bool = False
 
     def shell_programs(self) -> frozenset[str]:
         return frozenset(name.strip().lower() for name in self.shell_allow if name.strip())

@@ -93,6 +93,9 @@ HELP = """Commands:
                                 works things out (needs /harness grant too)
   /learn revoke <agent>          Take that away
   /learn status <agent>          Whether it currently has this
+  /learn review                  List learn_skill/patch_skill calls awaiting
+                                approval (only when harness.skill_write_approval)
+  /learn approve|reject <n>      Commit or discard one
   /telegram status [agent]       Whether the bot is connected, and who may use it
   /telegram test [agent]         Ask Telegram whether the configured token works
   /telegram allow|revoke <id> [agent]  Manage which chats may talk to it
@@ -397,10 +400,39 @@ class ConsoleChannel:
         return usage
 
     async def _command_learn(self, parts: list[str]) -> str:
-        usage = "Usage: /learn grant <agent>  |  /learn revoke <agent>  |  /learn status <agent>"
+        usage = (
+            "Usage: /learn grant <agent>  |  /learn revoke <agent>  |  "
+            "/learn status <agent>  |  /learn review  |  /learn approve <n>  |  "
+            "/learn reject <n>"
+        )
+        action = parts[1].lower() if len(parts) > 1 else ""
+        if action == "review":
+            pending = self.environment.pending_skill_writes
+            if not pending:
+                return "Nothing is staged for review."
+            rows = [
+                f"#{write.number} [{write.kind}] {write.summary} "
+                f"(by {self.environment.registry.get(write.agent_id).name})"
+                for write in sorted(pending.values(), key=lambda w: w.number)
+            ]
+            return "\n".join(rows) + "\n\n/learn approve <n>  |  /learn reject <n>"
+        if action in ("approve", "reject") and len(parts) > 2 and parts[2].isdigit():
+            number = int(parts[2])
+            if action == "approve":
+                try:
+                    definition = await self.environment.approve_skill_write(number)
+                except MissingSkillError as exc:
+                    return str(exc)
+                except (InvalidSkillError, ValueError) as exc:
+                    return f"Could not approve #{number}: {describe(exc)}"
+                return f"Approved #{number}: '{definition.name}' ({definition.path})"
+            try:
+                discarded = self.environment.reject_skill_write(number)
+            except MissingSkillError as exc:
+                return str(exc)
+            return f"Rejected #{number}: {discarded.summary}."
         if len(parts) < 3:
             return usage
-        action = parts[1].lower()
         agent = self.environment.registry.get(parts[2])
         if action == "grant":
             agent.can_learn_skills = True

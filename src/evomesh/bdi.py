@@ -452,7 +452,9 @@ class BDIBehavior:
                 " If this took combining more than one tool in a way none of "
                 "your own skills already cover, and the same kind of step is "
                 "likely to recur, call learn_skill once you actually have the "
-                "result -- the sequence you just used, not one you only planned."
+                "result -- the sequence you just used, not one you only "
+                "planned. patch_skill fixes one exact piece of a skill you "
+                "already wrote, cheaper than resending the whole thing."
                 if context.definition.can_learn_skills
                 else ""
             )
@@ -571,7 +573,9 @@ class BDIBehavior:
                 "way none of your own skills above already cover, and the same "
                 "question is likely to come up again, call learn_skill once "
                 "you have the answer -- write down the actual sequence you "
-                "just used, not a plan for one you did not run."
+                "just used, not a plan for one you did not run. For a small "
+                "fix to a skill you already wrote, patch_skill (one exact "
+                "text replacement) is cheaper than resending the whole thing."
             )
         job = harness.submit(
             f"Answer this question directly: {message.content.strip()}\n\n"

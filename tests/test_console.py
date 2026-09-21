@@ -13,6 +13,7 @@ from evomesh.contracts import AgentDefinition
 from evomesh.control import ControlServer
 from evomesh.environment import Environment
 from evomesh.models import MockProvider
+from evomesh.skills import MissingSkillError
 
 
 async def test_console_routes_commands(tmp_path: Path) -> None:
@@ -495,6 +496,52 @@ async def test_learn_grant_omits_the_harness_reminder_once_granted(tmp_path: Pat
     grant_result = await console.route('/learn grant "NewsWatcher"')
 
     assert "needs /harness grant" not in grant_result
+    await environment.stop()
+
+
+async def test_learn_review_approve_reject_round_trip(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True, skill_write_approval=True),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news", can_learn_skills=True)
+    await environment.register_agent(agent)
+    learn = environment._make_learn_skill(agent.id)  # noqa: SLF001
+    await learn("news-report-export", "Export headlines.", "Do the thing.")
+    await learn("another-one", "Something else.", "Do another thing.")
+
+    empty = await console.route("/learn review")
+    assert "Nothing is staged" not in empty
+    assert "#1" in empty and "#2" in empty
+    assert "NewsWatcher" in empty
+
+    approve_result = await console.route("/learn approve 1")
+    assert "Approved #1" in approve_result
+    assert environment.skills.get("news-report-export").description == "Export headlines."
+
+    reject_result = await console.route("/learn reject 2")
+    assert "Rejected #2" in reject_result
+    with pytest.raises(MissingSkillError):
+        environment.skills.get("another-one")
+
+    after = await console.route("/learn review")
+    assert after == "Nothing is staged for review."
+    await environment.stop()
+
+
+async def test_learn_approve_reports_an_unknown_number_plainly(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+
+    result = await console.route("/learn approve 42")
+
+    assert "no pending skill write numbered 42" in result
     await environment.stop()
 
 
