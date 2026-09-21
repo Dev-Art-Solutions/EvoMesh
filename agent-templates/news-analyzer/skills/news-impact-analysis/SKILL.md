@@ -34,6 +34,23 @@ only `low` confidence. Format a reported item as one line:
 <SYMBOL> <direction> (<confidence>): <headline> -- <why>
 ```
 
+Every line you actually report (not the silent misses, not the reasoning) also gets
+appended, verbatim and timestamped, to `scripts/.news_reports.log` beside this SKILL.md
+(`write`/`edit` it directly -- create it the first time it does not exist). Unlike the
+reasoning scratch file below, this log **is** meant to be read back: it is the only
+durable record of what you have ever actually told a human, since an announced report
+line itself is not saved anywhere else once it has scrolled past in chat.
+
+**A direct question ("what was your last analysis", "any recent findings", "what have
+you found") is answered from that log, not from a fresh fetch.** Read the tail of
+`scripts/.news_reports.log` and return the most recent entries as-is. Do not re-run
+today's fetch-and-filter check for this -- "nothing in the last 24 hours" is true and
+useless in the same breath when the human is asking about anything you have ever
+reported, not only what is fresh since your last cycle. If the log does not exist yet
+or is empty, say plainly that nothing has been analyzed yet, rather than silently
+running the recurring-cycle logic and reporting an empty result as if it answered the
+question.
+
 **Keep the working-through-it part out of the reply.** Do the per-headline reasoning
 (matching keywords, weighing direction, judging confidence) silently, and if you want a
 record of it, `write`/append it to a scratch file such as `scripts/.news_reasoning.log`
