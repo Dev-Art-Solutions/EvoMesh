@@ -268,7 +268,8 @@ class CycleContext:
             return ""
         current = intention.current
         marker = f"\nYou are on: {current.description}" if current else ""
-        return clip(f"{intention.render()}{marker}", 600)
+        plan = f"{intention.render()}{marker}"
+        return clip(plan, 600)
 
     def render_inbox(self, limit: int = 3) -> str:
         recent: Sequence[Message] = self.inbox[-limit:]
