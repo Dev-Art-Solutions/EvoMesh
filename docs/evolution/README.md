@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1162](001162.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1149](001149.md) — The prior `parts[:3]` truncation discarded the final significant time unit whenever a duration expressed all of days, hours, minutes and seconds, so the stringified duration was silently wrong; dropping the slice returns the complete duration and keeps the current sub-minute fallback intact.
 - [Generation 1124](001124.md) — The model changed `src/evomesh/harness_tools.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1120](001120.md) — I wired the missing `news-watcher` and `news-analyzer` role labels into the shared `agent_label` registry in `src/evomesh/agent_label.py` so those two template-defined agent roles render their intended display labels (instead of `{unknown}`) in status output and contract construction — the smallest, correct edit to a module that already runs, and the exact gap the pending mutation blockage pointed me at.

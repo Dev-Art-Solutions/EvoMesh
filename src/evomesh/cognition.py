@@ -18,6 +18,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from evomesh.contracts import AgentDefinition, AgentPhase, Goal, Message
@@ -84,7 +85,22 @@ def extract_file_references(text: str) -> list[str]:
     ``default_harness_root`` -- callers resolve that themselves, since this
     module has no notion of which agent it belongs to.
     """
-    return [match.group(1) for match in FILE_LINE.finditer(strip_reasoning(text))]
+    stripped = strip_reasoning(text)
+    return [
+        match.group(1)
+        for match in FILE_LINE.finditer(stripped)
+        if _path_has_text_extension(match.group(1))
+    ]
+
+
+# Text files only -- a ``FILE:`` path ending in a binary format (image, audio,
+# video, archive) is never something a model should be asked to write back into
+# a repository, and filtering here keeps those out before they reach disk.
+def _path_has_text_extension(path: str) -> bool:
+    return Path(path).suffix.lower() in (
+        ".txt", ".md", ".json", ".yaml", ".yml",
+        ".py", ".csv", ".html", ".htm", ".xml",
+    )
 
 
 @dataclass
