@@ -1179,6 +1179,65 @@ async def test_a_pdf_export_request_points_the_news_watcher_at_its_own_skill(
     assert "FILE: <path>" in harness.objectives[0]
 
 
+async def test_a_plan_step_nudges_a_granted_agent_to_learn_from_it(tmp_path: Path) -> None:
+    """learn_skill reaches a plan step's own harness job the same way it
+    reaches a reactive chat reply (both go through environment.py's single
+    _run_harness_job) -- but through_harness()'s own task text needed the
+    same nudge _respond_through_harness got, or a cyclic goal (where a
+    reusable procedure is actually most likely to emerge) would never
+    mention the tool at all."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsWatcher",
+        purpose="Watch news",
+        harness_root=str(tmp_path),
+        can_learn_skills=True,
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="done")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+    step = PlanStep(description="investigate the export options and report back")
+
+    await BDIBehavior().through_harness(context, step)
+
+    assert harness.objectives
+    assert "learn_skill" in harness.objectives[0]
+
+
+async def test_a_plan_step_says_nothing_about_learn_skill_without_the_grant(
+    tmp_path: Path,
+) -> None:
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsWatcher", purpose="Watch news", harness_root=str(tmp_path)
+    )  # can_learn_skills: False
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="done")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+    step = PlanStep(description="investigate the export options and report back")
+
+    await BDIBehavior().through_harness(context, step)
+
+    assert harness.objectives
+    assert "learn_skill" not in harness.objectives[0]
+
+
 async def test_a_reactive_question_tells_the_harness_job_to_hand_a_document_back(
     tmp_path: Path,
 ) -> None:

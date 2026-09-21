@@ -31,6 +31,7 @@ from evomesh.harness_session import HarnessSession
 from evomesh.harness_tools import (
     ALL_TOOLS,
     ASK_TOOLS,
+    LEARN_TOOLS,
     READ_ONLY_TOOLS,
     SHELL_TOOLS,
     WEB_TOOLS,
@@ -662,6 +663,7 @@ def build_runner(
     scraping_executable: str = "",
     scraping_timeout: float = 30.0,
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None,
+    learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
     custom_tools: tuple[Tool, ...] = (),
     self_check_command: str = "",
     self_check_max_attempts: int = 2,
@@ -685,6 +687,7 @@ def build_runner(
         scraping_executable=scraping_executable,
         scraping_timeout=scraping_timeout,
         ask_agent=ask_agent,
+        learn_skill=learn_skill,
         session=session,
     )
     # Each optional tool joins the registry only when a human has actually
@@ -696,6 +699,8 @@ def build_runner(
         tools = tools + WEB_TOOLS
     if ask_agent is not None:
         tools = tools + ASK_TOOLS
+    if learn_skill is not None:
+        tools = tools + LEARN_TOOLS
     # Already filtered by the caller to ones whose command is allow-listed --
     # the same "an unusable tool in the schema is a tool a model will try"
     # reasoning above, applied to a custom tool's own program instead of

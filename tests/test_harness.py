@@ -37,6 +37,7 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import (
     ALL_TOOLS,
     ASK_TOOLS,
+    LEARN_TOOLS,
     SHELL_TOOLS,
     WEB_TOOLS,
     ToolContext,
@@ -48,6 +49,7 @@ from evomesh.harness_tools import (
 )
 from evomesh.models import ChatMessage, ChatTurn, MockProvider, ToolCall
 from evomesh.processes import CommandResult
+from evomesh.skills import MissingSkillError
 from evomesh.tools import ToolDefinition, parse_tool
 
 
@@ -1232,6 +1234,85 @@ def test_ask_agent_is_absent_from_the_schema_until_it_is_configured(project: Pat
     assert "ask_agent" in on.registry.tools
 
 
+async def test_learn_skill_forwards_to_the_bound_callback(project: Path) -> None:
+    async def fake_learn(name: str, description: str, body: str) -> str:
+        assert name == "news-report-export"
+        assert description == "Export headlines as a file."
+        assert "news_fetch" in body
+        return "Learned 'news-report-export': Export headlines as a file. (skills/.../SKILL.md)"
+
+    context = ToolContext(root=project, learn_skill=fake_learn)
+
+    result = await ToolRegistry(LEARN_TOOLS).invoke(
+        context,
+        "learn_skill",
+        {
+            "name": "news-report-export",
+            "description": "Export headlines as a file.",
+            "body": "Call news_fetch, then document_write, then FILE: <path>.",
+        },
+    )
+
+    assert result.startswith("Learned 'news-report-export'")
+
+
+async def test_learn_skill_is_denied_without_access(project: Path) -> None:
+    context = ToolContext(root=project)  # learn_skill left at its default: None
+
+    result = await ToolRegistry(LEARN_TOOLS).invoke(
+        context, "learn_skill", {"name": "x", "description": "y", "body": "z"}
+    )
+
+    assert "DENIED" in result
+    assert "not been granted" in result
+
+
+async def test_learn_skill_is_denied_without_each_required_field(project: Path) -> None:
+    async def unreachable(name: str, description: str, body: str) -> str:
+        raise AssertionError("must not be called with a missing field")
+
+    context = ToolContext(root=project, learn_skill=unreachable)
+
+    missing_name = await ToolRegistry(LEARN_TOOLS).invoke(
+        context, "learn_skill", {"description": "d", "body": "b"}
+    )
+    missing_description = await ToolRegistry(LEARN_TOOLS).invoke(
+        context, "learn_skill", {"name": "n", "body": "b"}
+    )
+    missing_body = await ToolRegistry(LEARN_TOOLS).invoke(
+        context, "learn_skill", {"name": "n", "description": "d"}
+    )
+
+    assert "DENIED" in missing_name
+    assert "DENIED" in missing_description
+    assert "DENIED" in missing_body
+
+
+async def test_learn_skill_surfaces_the_callbacks_own_refusal(project: Path) -> None:
+    async def rejecting(name: str, description: str, body: str) -> str:
+        raise ValueError(f"'{name}' already exists and this agent did not author it")
+
+    context = ToolContext(root=project, learn_skill=rejecting)
+
+    result = await ToolRegistry(LEARN_TOOLS).invoke(
+        context, "learn_skill", {"name": "news-triage", "description": "d", "body": "b"}
+    )
+
+    assert "DENIED" in result
+    assert "news-triage" in result
+
+
+def test_learn_skill_is_absent_from_the_schema_until_it_is_configured(project: Path) -> None:
+    async def fake_learn(name: str, description: str, body: str) -> str:
+        return "unused"
+
+    off = build_runner(MockProvider(responses=["x"]), project)
+    on = build_runner(MockProvider(responses=["x"]), project, learn_skill=fake_learn)
+
+    assert "learn_skill" not in off.registry.tools
+    assert "learn_skill" in on.registry.tools
+
+
 def test_fetch_is_absent_from_the_schema_until_it_is_configured(project: Path) -> None:
     off = build_runner(MockProvider(responses=["x"]), project)
     on = build_runner(
@@ -1357,6 +1438,139 @@ async def test_an_agent_without_its_own_override_uses_the_mesh_wide_self_check(
 
     assert f"job {job.number}" in message.content
     assert "self-check still reports problems" in message.content
+
+
+async def test_a_granted_agent_can_learn_a_skill_through_a_real_harness_job(
+    tmp_path: Path,
+) -> None:
+    """The whole wire, not just tool_learn_skill in isolation:
+    AgentDefinition.can_learn_skills -> _run_harness_job reads it off the
+    registered agent -> build_runner registers learn_skill -> the model
+    actually calls it -> Environment._make_learn_skill writes a real
+    skills/<name>/SKILL.md the registry can discover afterward."""
+    settings = mesh_settings(tmp_path)
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="learn_skill",
+                        arguments={
+                            "name": "news-report-export",
+                            "description": "Export headlines as a file.",
+                            "body": "Call news_fetch, then document_write, then FILE: <path>.",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="done"),
+        ]
+    )
+    environment = Environment(settings, providers={"ollama": provider})
+    await environment.start()
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news", can_learn_skills=True)
+    await environment.register_agent(agent)
+    try:
+        job = environment.submit_harness_job(
+            "figure out the export", agent_id=agent.id, root=tmp_path
+        )
+        message = await environment.bus.receive(agent.id, wait_seconds=5)
+    finally:
+        await environment.stop()
+
+    assert f"job {job.number}" in message.content
+    assert "done" in message.content
+    learned = environment.skills.get("news-report-export")
+    assert learned.description == "Export headlines as a file."
+    assert learned.created_by == f"agent:{agent.id}"
+
+
+async def test_an_ungranted_agent_cannot_learn_a_skill(tmp_path: Path) -> None:
+    """can_learn_skills defaults to False -- learn_skill is never even
+    registered for this job (see test_learn_skill_is_absent_from_the_schema_
+    until_it_is_configured), so the model calling it anyway gets an unknown-
+    tool result, same as any other tool name it might hallucinate."""
+    settings = mesh_settings(tmp_path)
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="learn_skill",
+                        arguments={"name": "x", "description": "y", "body": "z"},
+                    )
+                ]
+            ),
+            ChatTurn(text="never mind"),
+        ]
+    )
+    environment = Environment(settings, providers={"ollama": provider})
+    await environment.start()
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news")  # can_learn_skills: False
+    await environment.register_agent(agent)
+    try:
+        job = environment.submit_harness_job(
+            "try to learn something", agent_id=agent.id, root=tmp_path
+        )
+        message = await environment.bus.receive(agent.id, wait_seconds=5)
+    finally:
+        await environment.stop()
+
+    assert f"job {job.number}" in message.content
+    with pytest.raises(MissingSkillError):
+        environment.skills.get("x")
+
+
+async def test_learn_skill_refuses_to_overwrite_a_human_authored_skill(tmp_path: Path) -> None:
+    settings = mesh_settings(tmp_path)
+    environment = Environment(settings, providers={"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news", can_learn_skills=True)
+    await environment.register_agent(agent)
+    await environment.skills.install(
+        "---\nname: news-triage\ndescription: Human-curated.\n---\n\nDo the human's way.\n",
+        created_by="human",
+    )
+    learn = environment._make_learn_skill(agent.id)  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="did not author it"):
+        await learn("news-triage", "A model's own version.", "Do it a different way.")
+
+    assert environment.skills.get("news-triage").description == "Human-curated."
+    await environment.stop()
+
+
+async def test_learn_skill_can_update_its_own_earlier_skill(tmp_path: Path) -> None:
+    settings = mesh_settings(tmp_path)
+    environment = Environment(settings, providers={"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news", can_learn_skills=True)
+    await environment.register_agent(agent)
+    learn = environment._make_learn_skill(agent.id)  # noqa: SLF001
+
+    first = await learn("news-report-export", "v1", "Do it the first way.")
+    second = await learn("news-report-export", "v2", "Do it the better way.")
+
+    assert first.startswith("Learned")
+    assert second.startswith("Updated")
+    assert environment.skills.get("news-report-export").description == "v2"
+    await environment.stop()
+
+
+async def test_learn_skill_rejects_a_name_that_is_not_a_safe_path_segment(
+    tmp_path: Path,
+) -> None:
+    settings = mesh_settings(tmp_path)
+    environment = Environment(settings, providers={"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news", can_learn_skills=True)
+    await environment.register_agent(agent)
+    learn = environment._make_learn_skill(agent.id)  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="not a valid skill name"):
+        await learn("../../etc/passwd", "d", "b")
+
+    await environment.stop()
 
 
 async def test_a_notify_false_job_never_reaches_the_mailbox(tmp_path: Path) -> None:

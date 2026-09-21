@@ -210,6 +210,40 @@ async def test_harness_true_grants_access_with_no_bundled_tools(tmp_path: Path) 
     await environment.stop()
 
 
+async def test_learn_skills_true_grants_both_capabilities_with_no_bundled_tools(
+    tmp_path: Path,
+) -> None:
+    """learn_skill is useless without somewhere to run it -- learn_skills:
+    true has to grant harness access too, the same as harness: true does on
+    its own, not just flip AgentDefinition.can_learn_skills and leave
+    harness_root empty."""
+    text = VALID.replace("name: trader\n", "name: researcher\n").replace(
+        "tools: [mt5_bridge]\n", "tools: []\nlearn_skills: true\n"
+    )
+    write_template(tmp_path, "researcher", text)
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "researcher")
+
+    assert definition.can_learn_skills is True
+    assert definition.harness_root != ""
+    await environment.stop()
+
+
+async def test_learn_skills_defaults_false(tmp_path: Path) -> None:
+    write_template(tmp_path, "trader", VALID)  # no learn_skills: line at all
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+
+    definition = await environment.agent_templates.instantiate(environment, "trader")
+
+    assert definition.can_learn_skills is False
+    await environment.stop()
+
+
 async def test_instantiate_accepts_an_explicit_project_override(tmp_path: Path) -> None:
     write_template(tmp_path, "trader", VALID)
     override_dir = tmp_path / "override-project"
@@ -264,4 +298,26 @@ async def test_the_mt5_coder_template_spawns_with_both_bundled_skills(tmp_path: 
     assert definition.harness_root != ""
     installed = {skill.name for skill in environment.skills.discover()}
     assert {"coding-discipline", "mql5-conventions"} <= installed
+    await environment.stop()
+
+
+async def test_the_news_watcher_template_spawns_with_learn_skills_granted(
+    tmp_path: Path,
+) -> None:
+    """Spawned from the actual AGENT.md this repo ships: learn_skills: true
+    there must reach both AgentDefinition.can_learn_skills and a real
+    harness_root, and news-report-export must be installed alongside
+    news-triage."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.agent_templates.install_directory(REPO_TEMPLATES / "news-watcher")
+
+    definition = await environment.agent_templates.instantiate(environment, "news-watcher")
+
+    assert definition.identity == "NewsWatcher"
+    assert definition.can_learn_skills is True
+    assert definition.harness_root != ""
+    installed = {skill.name for skill in environment.skills.discover()}
+    assert {"news-triage", "news-report-export"} <= installed
     await environment.stop()

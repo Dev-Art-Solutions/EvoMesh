@@ -114,6 +114,14 @@ class ToolContext:
     # for the human at the console, or with no live mesh behind it at all
     # (a test), has no other agent to ask.
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None
+    # Bound to this job's own agent_id, the same way ask_agent is -- writes a
+    # new skills/<name>/SKILL.md (or overwrites one this same agent already
+    # authored) and returns what the registry says about it. None is why
+    # learn_skill is not even registered (see build_runner): a human's own
+    # harness job, one with no live mesh behind it (a test), or an agent
+    # never granted this capability (AgentDefinition.can_learn_skills) has
+    # no business writing into the mesh-wide skills/ directory.
+    learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -775,6 +783,40 @@ async def tool_ask_agent(context: ToolContext, args: dict[str, Any]) -> str:
     return _clip(answer, context.limits, unit="lines")
 
 
+async def tool_learn_skill(context: ToolContext, args: dict[str, Any]) -> str:
+    """Write a new skill for this agent's own future use, or update one it
+    already wrote.
+
+    Only for a procedure actually worked out and used in this job (or a
+    recent one) -- never one only planned, and never a restatement of what a
+    tool's own description already says. Use it after combining more than
+    one tool call in a way that is not already covered by an existing skill
+    (check the skill catalog at the top of this job's prompt first) and that
+    is likely to come up again -- the same judgment a human would use before
+    writing one by hand. A skill this agent overwrites has to be one it
+    authored itself; one already curated by a human is refused, the same as
+    a human's own `/skill install` never letting a stray file clobber a
+    deliberately written one by accident.
+    """
+    if context.learn_skill is None:
+        raise ToolDenied("DENIED: this agent has not been granted skill-authoring access.")
+    name = str(args.get("name") or "").strip()
+    description = str(args.get("description") or "").strip()
+    body = str(args.get("body") or "").strip()
+    if not name:
+        raise ToolDenied("DENIED: learn_skill needs a name.")
+    if not description:
+        raise ToolDenied("DENIED: learn_skill needs a one-line description.")
+    if not body:
+        raise ToolDenied("DENIED: learn_skill needs a body -- the procedure itself.")
+    try:
+        result = await context.learn_skill(name, description, body)
+    except ValueError as exc:
+        raise ToolDenied(f"DENIED: {exc}") from None
+    context.tally.writes += 1
+    return result
+
+
 READ_ONLY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="read",
@@ -959,6 +1001,48 @@ ASK_TOOLS: tuple[Tool, ...] = (
             "required": ["agent", "question"],
         },
         run=tool_ask_agent,
+    ),
+)
+
+LEARN_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="learn_skill",
+        description=(
+            "Save a procedure you just worked out (which tools, in what order, "
+            "producing what) as a skill for your own future use -- only when it "
+            "is not already covered by a skill in your catalog, and only after "
+            "actually using it, not merely planning to. A skill is prose, read "
+            "later by your own future self the same way you read any other "
+            "file; it runs nothing on its own."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "kebab-case, e.g. 'news-report-export'.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "One line: when this applies. This is the only part "
+                        "your future self sees before deciding whether to "
+                        "read the rest -- be specific, not generic."
+                    ),
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "The procedure itself, in Markdown: which tools, in "
+                        "what order, what to check first, what never to do. "
+                        "Not a restatement of what a tool's own description "
+                        "already says."
+                    ),
+                },
+            },
+            "required": ["name", "description", "body"],
+        },
+        run=tool_learn_skill,
     ),
 )
 

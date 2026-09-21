@@ -89,6 +89,10 @@ HELP = """Commands:
   /harness grant <agent> [path] Let it use the harness; no path defaults to
                                 its own playground (the project root for system agents)
   /harness revoke <agent>       Take it away
+  /learn grant <agent>           Let it write its own skills/*/SKILL.md as it
+                                works things out (needs /harness grant too)
+  /learn revoke <agent>          Take that away
+  /learn status <agent>          Whether it currently has this
   /telegram status [agent]       Whether the bot is connected, and who may use it
   /telegram test [agent]         Ask Telegram whether the configured token works
   /telegram allow|revoke <id> [agent]  Manage which chats may talk to it
@@ -390,6 +394,26 @@ class ConsoleChannel:
             except (httpx.HTTPError, InvalidSkillError, OSError, UnicodeDecodeError) as exc:
                 return f"Could not install the skill: {describe(exc)}"
             return f"Installed '{definition.name}': {definition.description} ({definition.path})"
+        return usage
+
+    async def _command_learn(self, parts: list[str]) -> str:
+        usage = "Usage: /learn grant <agent>  |  /learn revoke <agent>  |  /learn status <agent>"
+        if len(parts) < 3:
+            return usage
+        action = parts[1].lower()
+        agent = self.environment.registry.get(parts[2])
+        if action == "grant":
+            agent.can_learn_skills = True
+            await self.environment.repository.save_agent(agent)
+            note = "" if agent.harness_root else " (it also needs /harness grant to use it)"
+            return f"{agent.name} may now write its own skills with learn_skill{note}."
+        if action == "revoke":
+            agent.can_learn_skills = False
+            await self.environment.repository.save_agent(agent)
+            return f"{agent.name} may no longer write its own skills."
+        if action == "status":
+            state = "granted" if agent.can_learn_skills else "not granted"
+            return f"{agent.name}: skill-authoring access is {state}."
         return usage
 
     def _command_tools(self, parts: list[str]) -> str:

@@ -10,6 +10,7 @@ autonomy: cyclic
 cycle_seconds: 120
 skills: [news-triage, news-report-export]
 tools: [news_fetch]
+learn_skills: true
 watch:
   command: python "{template_dir}/scripts/watch_news.py"
   interval_seconds: 300
@@ -49,6 +50,14 @@ back the same way any agent hands back a file it created (a `FILE: <path>`
 line in its reply, which Telegram uploads as a real document). Needs
 `document_write`'s own venv provisioned once, mesh-wide -- see
 `scripts/install-docs-env.ps1`/`.sh` in the repo root.
+
+`learn_skills: true` above grants this agent `learn_skill` (see README's
+Skills section) -- a request that combines its tools in some way none of
+its own skills already cover (a format `document_write` supports that
+`news-report-export` does not name, say) can end up saved as a new skill
+under `skills/`, written by the agent itself once it has actually worked
+the procedure out and used it. `/learn revoke "NewsWatcher"` turns this
+back off; `/learn status "NewsWatcher"` shows whether it is currently on.
 
 The watchlist itself is a deterministic watcher (`scripts/watch_news.py`,
 polled every `interval_seconds`, 300s by default), not a BDI goal -- it never

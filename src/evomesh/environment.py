@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -41,7 +42,7 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
-from evomesh.skills import SkillRegistry
+from evomesh.skills import MissingSkillError, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
 from evomesh.watchers import AgentWatcher
@@ -651,6 +652,44 @@ class Environment:
 
         return ask
 
+    _SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+    def _make_learn_skill(self, agent_id: str) -> Callable[[str, str, str], Awaitable[str]]:
+        """A harness job's ``learn_skill`` tool, bound to the agent it runs
+        for -- see AgentDefinition.can_learn_skills and harness_tools.
+        tool_learn_skill for what gates this being wired in at all.
+
+        ``SkillRegistry.install()`` already overwrites a same-named skill
+        outright (the same one step a human's own ``/skill install`` uses);
+        the only thing this adds on top is refusing to let an agent
+        overwrite a skill it did not itself write -- a name collision with
+        news-triage must never silently replace a human-curated skill just
+        because a model picked the same name.
+        """
+
+        async def learn(name: str, description: str, body: str) -> str:
+            slug = name.strip().lower()
+            if not self._SKILL_NAME.match(slug):
+                raise ValueError(
+                    f"'{name}' is not a valid skill name -- lowercase letters, "
+                    "digits and hyphens only, e.g. 'news-report-export'."
+                )
+            try:
+                existing = self.skills.get(slug)
+            except MissingSkillError:
+                existing = None
+            if existing is not None and existing.created_by != f"agent:{agent_id}":
+                raise ValueError(
+                    f"'{slug}' already exists and this agent did not author it "
+                    f"(created_by={existing.created_by!r}) -- pick a different name."
+                )
+            text = f"---\nname: {slug}\ndescription: {description}\n---\n\n{body}\n"
+            definition = await self.skills.install(text, created_by=f"agent:{agent_id}")
+            verb = "Updated" if existing is not None else "Learned"
+            return f"{verb} '{definition.name}': {definition.description} ({definition.path})"
+
+        return learn
+
     async def _run_harness_job(self, job: HarnessJob) -> HarnessResult:
         settings = self.settings.harness
         provider_name = self.settings.models.default_provider
@@ -658,10 +697,12 @@ class Environment:
         num_ctx_override: int | None = None
         self_check_command = settings.self_check_command
         self_check_max_attempts = settings.self_check_max_attempts
+        can_learn_skills = False
         if job.agent_id and self._has(job.agent_id):
             definition = self.registry.get(job.agent_id)
             provider_name, model = definition.provider, definition.model_name
             num_ctx_override = definition.num_ctx
+            can_learn_skills = definition.can_learn_skills
             if definition.self_check_command is not None:
                 self_check_command = definition.self_check_command
             if definition.self_check_max_attempts is not None:
@@ -691,6 +732,11 @@ class Environment:
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
             ask_agent=self._make_ask_agent(job.agent_id) if job.agent_id else None,
+            learn_skill=(
+                self._make_learn_skill(job.agent_id)
+                if job.agent_id and can_learn_skills
+                else None
+            ),
             custom_tools=self.active_custom_tools(),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,

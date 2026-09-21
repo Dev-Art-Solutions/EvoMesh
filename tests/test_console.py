@@ -451,6 +451,53 @@ async def test_agent_project_points_harness_grant_at_a_real_directory(tmp_path: 
     await environment.stop()
 
 
+async def test_learn_grant_and_revoke_toggle_the_agent_flag(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news")
+    await environment.register_agent(agent)
+
+    assert agent.can_learn_skills is False
+    status_before = await console.route('/learn status "NewsWatcher"')
+    assert "not granted" in status_before
+
+    grant_result = await console.route('/learn grant "NewsWatcher"')
+    assert agent.can_learn_skills is True
+    assert "may now write its own skills" in grant_result
+    # No harness grant yet -- the message says so rather than pretending
+    # the capability is already usable.
+    assert "needs /harness grant" in grant_result
+
+    status_after = await console.route('/learn status "NewsWatcher"')
+    assert "is granted" in status_after
+
+    revoke_result = await console.route('/learn revoke "NewsWatcher"')
+    assert agent.can_learn_skills is False
+    assert "may no longer write its own skills" in revoke_result
+    await environment.stop()
+
+
+async def test_learn_grant_omits_the_harness_reminder_once_granted(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    console = ConsoleChannel(environment)
+    agent = AgentDefinition(name="NewsWatcher", purpose="Watch news")
+    await environment.register_agent(agent)
+    await console.route('/harness grant "NewsWatcher"')
+
+    grant_result = await console.route('/learn grant "NewsWatcher"')
+
+    assert "needs /harness grant" not in grant_result
+    await environment.stop()
+
+
 async def test_agent_project_refuses_a_path_that_is_not_a_directory(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

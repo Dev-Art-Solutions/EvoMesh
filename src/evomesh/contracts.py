@@ -456,6 +456,15 @@ class AgentDefinition(BaseModel):
     # is a capability an agent is given, like a filesystem grant, rather than
     # something every agent has because the mesh has it.
     harness_root: str = ""
+    # A second, separate grant on top of harness_root: whether this agent's
+    # own harness jobs (reactive chat reply or a cyclic plan step alike) get
+    # the learn_skill tool -- see harness_tools.tool_learn_skill. False by
+    # default on purpose: the harness's write tool is confined to the job
+    # root, but a skill this agent authors lands in the mesh-wide skills/
+    # directory every agent reads from, so it is its own deliberate grant
+    # rather than something harness_root implies. See console.py's
+    # `/learn grant <agent>` / `/learn revoke <agent>`.
+    can_learn_skills: bool = False
     # Optional. An absolute path to a real project this agent should work in --
     # a standalone repo the human already has, not somewhere under this
     # mesh's own workspace/agents/<slug>/ tree (that tree is what

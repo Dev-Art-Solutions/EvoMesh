@@ -448,8 +448,17 @@ class BDIBehavior:
         # answer, and a finished job must not be mistaken for "no job yet".
         job = harness.job(step.job) if step.job else None
         if job is None:
+            learn_hint = (
+                " If this took combining more than one tool in a way none of "
+                "your own skills already cover, and the same kind of step is "
+                "likely to recur, call learn_skill once you actually have the "
+                "result -- the sequence you just used, not one you only planned."
+                if context.definition.can_learn_skills
+                else ""
+            )
             job = harness.submit(
-                f"{step.description}\n\nWork inside this directory and report what you found.",
+                f"{step.description}\n\n"
+                f"Work inside this directory and report what you found.{learn_hint}",
                 agent_id=context.definition.id,
                 root=Path(root),
                 label=step.description,
@@ -555,6 +564,15 @@ class BDIBehavior:
                 "follow its formatting rules exactly -- do not answer "
                 "generically when a skill already specifies the answer's shape."
             )
+        learn_hint = ""
+        if context.definition.can_learn_skills:
+            learn_hint = (
+                "\n\nIf answering this took combining more than one tool in a "
+                "way none of your own skills above already cover, and the same "
+                "question is likely to come up again, call learn_skill once "
+                "you have the answer -- write down the actual sequence you "
+                "just used, not a plan for one you did not run."
+            )
         job = harness.submit(
             f"Answer this question directly: {message.content.strip()}\n\n"
             "Use a tool only if you actually need to -- if you already know "
@@ -566,7 +584,8 @@ class BDIBehavior:
             "Say the answer, plainly, the way you would say it out loud. If "
             "you were asked for a document (a PDF, spreadsheet, etc.) and "
             "created one with document_write, name it on its own line as "
-            f"exactly: FILE: <path> -- that is what hands it back.{skills_hint}",
+            f"exactly: FILE: <path> -- that is what hands it back."
+            f"{skills_hint}{learn_hint}",
             agent_id=context.definition.id,
             root=Path(root),
             label=message.content.strip()[:80],

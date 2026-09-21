@@ -82,6 +82,14 @@ class AgentTemplateDefinition(BaseModel):
     # custom tool of its own (a general coding agent, say), bundles none and
     # so got no grant either. This says so explicitly instead.
     harness: bool = False
+    # Passed straight through to AgentDefinition.can_learn_skills on
+    # instantiate() -- a second, separate grant on top of harness access
+    # (see that field's own docstring for why). False by default, same
+    # deliberate-grant reasoning as `harness` above: naming a tool implies
+    # needing the harness to call it, but writing into the mesh-wide
+    # skills/ directory is not implied by anything a template already asks
+    # for, so a template has to opt in explicitly.
+    learn_skills: bool = False
     # See watchers.py -- a command polled on its own interval, never on this
     # agent's cognition cycle. May use the placeholder {template_dir} for the
     # template's own installed directory, the same way a tool's command may
@@ -157,6 +165,7 @@ def parse_agent_template(
             skills=skills,
             tools=tools,
             harness=bool(meta.get("harness", False)),
+            learn_skills=bool(meta.get("learn_skills", False)),
             watch_command=str(watch.get("command") or "").strip(),
             watch_interval_seconds=(
                 float(watch["interval_seconds"])
@@ -287,6 +296,7 @@ class AgentTemplateRegistry:
             autonomy=template.autonomy,
             cycle_seconds=template.cycle_seconds,
             skills=list(template.skills),
+            can_learn_skills=template.learn_skills,
             status=AgentStatus.ACTIVE,
             watch_command=template.watch_command.replace(
                 "{template_dir}", str(bundle_root.resolve(strict=False))
@@ -312,12 +322,14 @@ class AgentTemplateRegistry:
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())
 
         await environment.register_agent(definition)
-        if template.tools or template.harness:
+        if template.tools or template.harness or template.learn_skills:
             # A custom tool only reaches a model through the harness, so a
             # template naming tools is asking for harness access to use them
             # -- the same grant `/harness grant <agent>` makes by hand. A
             # template with no custom tools but `harness: true` is asking
             # for that same access on the harness's own built-in tools alone.
+            # `learn_skills: true` is the same: the tool is useless without
+            # somewhere to run it.
             root = environment.default_harness_root(definition)
             definition.harness_root = str(root)
             await environment.repository.save_agent(definition)
