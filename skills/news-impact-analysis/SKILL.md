@@ -63,9 +63,14 @@ above, one per qualifying headline, and nothing else.
 
 That means your last message never starts with, or contains anywhere in it, any of:
 "Done", "Here's what I found", "I verified...", "I read the file directly...", "I
-checked...", "Let me...", "Based on my analysis...", or any other sentence describing
-what you just did or how sure you are that you did it right -- all of that is process
-narration, not analysis, and belongs in the scratch file if anywhere. Concretely:
+checked...", "Let me...", "Based on my analysis...", "Changes made", "no change
+needed", or any other sentence describing what you just did, which files you
+touched (`config.json`, the scratch log, the cache), or how sure you are that you
+did it right -- all of that is process narration, not analysis, and belongs in the
+scratch file if anywhere. In particular, never write a changelog-style summary of
+this cycle's own bookkeeping (e.g. "appended this cycle's assessment to
+.news_reasoning.log as the Nth entry") -- that the scratch log was written to is
+never itself news. Concretely:
 
 ```
 BAD (do not send this):
