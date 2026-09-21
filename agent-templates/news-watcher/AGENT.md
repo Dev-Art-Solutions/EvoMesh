@@ -8,7 +8,7 @@ purpose: >
   keyword (e.g. "gold"/XAUUSD) appears in a new one.
 autonomy: cyclic
 cycle_seconds: 120
-skills: [news-triage]
+skills: [news-triage, news-report-export]
 tools: [news_fetch]
 watch:
   command: python "{template_dir}/scripts/watch_news.py"
@@ -40,6 +40,15 @@ from the watchlist below, feeds a durable cache
 (`scripts/.news_cache.jsonl`, beside this AGENT.md) so headlines already pushed
 out of a feed's own "latest" list are not simply gone; entries older than
 `cache_days` are pruned automatically.
+
+Ask for the headlines as a file instead -- "the last 10 news as a PDF",
+"export today's gold news to Excel" -- and the `news-report-export` skill
+takes over: `news_fetch` for the headlines, then the mesh-wide
+`document_write` tool to build a real `.pdf`/`.xlsx`/`.csv`/`.docx`, handed
+back the same way any agent hands back a file it created (a `FILE: <path>`
+line in its reply, which Telegram uploads as a real document). Needs
+`document_write`'s own venv provisioned once, mesh-wide -- see
+`scripts/install-docs-env.ps1`/`.sh` in the repo root.
 
 The watchlist itself is a deterministic watcher (`scripts/watch_news.py`,
 polled every `interval_seconds`, 300s by default), not a BDI goal -- it never

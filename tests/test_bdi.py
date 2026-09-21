@@ -1137,6 +1137,48 @@ async def test_a_reactive_question_names_the_agents_own_skills_to_the_harness(
     assert "read it first" in harness.objectives[0]
 
 
+async def test_a_pdf_export_request_points_the_news_watcher_at_its_own_skill(
+    tmp_path: Path,
+) -> None:
+    """A news-watcher-shaped agent (its real skills: from AGENT.md) asking
+    for "the last 10 news as a PDF" gets news-report-export named to it the
+    same way news-impact-analysis gets named above -- the skill is what
+    actually spells out news_fetch then document_write then FILE: <path>;
+    without being pointed at it, a small model has no reason to know that
+    order, or that document_write exists at all for this."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsWatcher",
+        purpose="Watch news",
+        harness_root=str(tmp_path),
+        skills=["news-triage", "news-report-export"],
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="FILE: news.pdf")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    await BDIBehavior().respond(
+        context,
+        Message(
+            sender_id="human",
+            recipient_id=definition.id,
+            content="give me the last 10 news as a PDF",
+        ),
+    )
+
+    assert harness.objectives
+    assert "news-report-export" in harness.objectives[0]
+    assert "FILE: <path>" in harness.objectives[0]
+
+
 async def test_a_reactive_question_tells_the_harness_job_to_hand_a_document_back(
     tmp_path: Path,
 ) -> None:
