@@ -8,6 +8,8 @@ _AGENT_LABELS: dict[str, str] = {
     "evaluator": "Evaluator",
     "evolver": "Environment Evolver",
     "trader": "Trader",
+    "news-watcher": "NewsWatcher",
+    "news-analyzer": "NewsAnalyzer",
 }
 
 

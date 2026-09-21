@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1120](001120.md) — I wired the missing `news-watcher` and `news-analyzer` role labels into the shared `agent_label` registry in `src/evomesh/agent_label.py` so those two template-defined agent roles render their intended display labels (instead of `{unknown}`) in status output and contract construction — the smallest, correct edit to a module that already runs, and the exact gap the pending mutation blockage pointed me at.
 - [Generation 1119](001119.md) — `mesh_utils.py` is the only truly dead module (phase_label/agent_label were already live); I wired it in by routing `Mesh.iter_edges` through `edge_snapshot`, the minimal change that makes the dead module execute without adding a new file.
 - [Generation 1069](001069.md) — The model changed `src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1058](001058.md) — The model changed `src/evomesh/contracts.py` but gave no rationale for it -- see the diff below for what actually moved.
