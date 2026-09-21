@@ -127,6 +127,16 @@ class ToolContext:
     # harness's own edit tool works on an ordinary file. Wired alongside
     # learn_skill (see build_runner) -- one capability, two tools.
     patch_skill: Callable[[str, str, str], Awaitable[str]] | None = None
+    # The mesh's own project root, so a job whose own root is not that
+    # tree (a non-system agent's own playground, most of the time) can
+    # still *read* the mesh-wide skills/ directory every job's own catalog
+    # line points at (see environment.py's _run_harness_job). Read-only,
+    # by design: only tool_read/tool_grep/tool_ls fall back to it (via
+    # _resolve_readable) when a path is not inside the job's own root --
+    # tool_edit/tool_write/tool_delete never do, so learn_skill/patch_skill
+    # stay the only way anything actually changes a skill. None (a human's
+    # own harness job, or a test with no live mesh) means no fallback.
+    skills_root: Path | None = None
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
 
@@ -169,6 +179,51 @@ def _resolve(context: ToolContext, raw: str) -> Path:
     return target
 
 
+def _resolve_readable(context: ToolContext, raw: str) -> Path:
+    """Like ``_resolve``, but a path that does not exist inside the job's
+    own root gets one more chance: the mesh-wide ``skills/`` directory,
+    since every job's own task text (environment.py's catalog line) names a
+    path there -- ``skills/<name>/SKILL.md`` -- regardless of what this
+    particular job's own root is. A non-system agent's root is its own
+    playground, not the mesh's project tree, so that path was syntactically
+    inside the job root (``_resolve`` never raises for it) and simply never
+    existed there: found live, a NewsAnalyzer whose actual per-headline
+    judgment never left the job because ``read`` on its own
+    news-impact-analysis skill came back "does not exist", so it improvised
+    a narrated report instead of the one-line format ``report_pattern``
+    actually requires -- and the improvised report matched nothing, so
+    nothing was ever announced despite real headlines to report on.
+
+    A genuinely outside-root path (``../etc/passwd``) still gets the
+    fallback offered too -- it is the *destination*, not the shape of the
+    original refusal, that decides whether this is a legitimate skill read.
+
+    Read-only tools call this; ``tool_edit``/``tool_write``/``tool_delete``
+    call ``_resolve`` directly and never get the fallback, so this is not a
+    second way to change a skill -- only ``learn_skill``/``patch_skill``
+    still are.
+    """
+    try:
+        in_root = _resolve(context, raw)
+    except ToolDenied:
+        in_root = None
+    if in_root is not None and in_root.exists():
+        return in_root
+    if context.skills_root is not None:
+        candidate = Path(raw.strip().strip('"').strip("'") or ".")
+        if not candidate.is_absolute():
+            base = context.skills_root.resolve(strict=False)
+            fallback = (base / candidate).resolve(strict=False)
+            skills_dir = (base / "skills").resolve(strict=False)
+            in_skills = fallback == skills_dir or skills_dir in fallback.parents
+            if in_skills and fallback.exists():
+                return fallback
+    if in_root is None:
+        root = context.root.resolve(strict=False)
+        raise ToolDenied(f"DENIED: {raw} is outside the job root {root}")
+    return in_root
+
+
 def valid_id(agent_id: str) -> bool:
     """Whether ``agent_id`` is one the harness will answer about.
 
@@ -193,6 +248,16 @@ def _inside(root: Path, path: Path) -> tuple[str, ...]:
 async def _permit(context: ToolContext, target: Path, operation: str) -> None:
     if context.policy is None or not context.agent_id:
         return
+    # The mesh-wide skills/ directory is readable by every agent's own job
+    # by design -- render_catalog() is spliced into every job's task
+    # unconditionally, not offered only to agents someone remembered to
+    # grant it to -- so a per-agent FilesystemGrant is not the right gate
+    # for it, the same reasoning _resolve_readable already applies to reach
+    # the path at all.
+    if operation == "read" and context.skills_root is not None:
+        skills_dir = (context.skills_root / "skills").resolve(strict=False)
+        if target == skills_dir or skills_dir in target.parents:
+            return
     try:
         await context.policy.require(context.agent_id, target, operation)
     except PermissionDeniedError as exc:
@@ -222,7 +287,7 @@ def _clip(text: str, limits: ToolLimits, *, unit: str) -> str:
 
 
 async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
-    target = _resolve(context, str(args.get("path", "")))
+    target = _resolve_readable(context, str(args.get("path", "")))
     await _permit(context, target, "read")
     if target.is_dir():
         raise ToolDenied(f"DENIED: {target} is a directory, use ls")
@@ -252,7 +317,7 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
         expression = re.compile(pattern)
     except re.error as exc:
         raise ToolDenied(f"DENIED: {pattern} is not a valid regular expression: {exc}") from exc
-    target = _resolve(context, str(args.get("path", ".")))
+    target = _resolve_readable(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
     context.tally.reads += 1
     glob = str(args.get("glob", "*.py") or "*.py")
@@ -284,7 +349,7 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
 
 
 async def tool_ls(context: ToolContext, args: dict[str, Any]) -> str:
-    target = _resolve(context, str(args.get("path", ".")))
+    target = _resolve_readable(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
     if not target.exists():
         raise ToolDenied(f"DENIED: {target} does not exist")

@@ -1025,6 +1025,7 @@ class ConsoleChannel:
             ),
             scraping_timeout=self.environment.settings.scraping.timeout_seconds,
             custom_tools=self.environment.active_custom_tools(),
+            skills_root=self.environment.skills.root,
         )
         catalog = self.environment.skills.render_catalog()
         result = await runner.run(f"{catalog}\n\n{task}" if catalog else task)

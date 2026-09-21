@@ -665,6 +665,7 @@ def build_runner(
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None,
     learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
     patch_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
+    skills_root: Path | None = None,
     custom_tools: tuple[Tool, ...] = (),
     self_check_command: str = "",
     self_check_max_attempts: int = 2,
@@ -690,6 +691,7 @@ def build_runner(
         ask_agent=ask_agent,
         learn_skill=learn_skill,
         patch_skill=patch_skill,
+        skills_root=skills_root,
         session=session,
     )
     # Each optional tool joins the registry only when a human has actually

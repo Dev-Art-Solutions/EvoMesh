@@ -46,11 +46,15 @@ from evomesh.harness_tools import (
     ToolRegistry,
     build_custom_tool,
     custom_tool_program,
+    tool_grep,
+    tool_ls,
     tool_read,
 )
 from evomesh.models import ChatMessage, ChatTurn, MockProvider, ToolCall
+from evomesh.permissions import FilesystemPolicy
 from evomesh.processes import CommandResult
 from evomesh.skills import MissingSkillError
+from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolDefinition, parse_tool
 
 
@@ -75,6 +79,141 @@ async def test_a_path_outside_the_root_is_refused_as_a_result(project: Path) -> 
 
     assert result.startswith("DENIED:")
     assert "outside the job root" in result
+
+
+# -- skills_root: the mesh-wide skills/ directory is readable from any job's
+# own root, not only one whose root happens to be the mesh's project tree --
+# see harness_tools._resolve_readable's own docstring for the live bug this
+# closes (a NewsAnalyzer job could never actually read its own skill).
+
+
+@pytest.fixture
+def mesh_with_a_skill(tmp_path: Path) -> Path:
+    """A mesh project root with one real skill under skills/, and a
+    non-system agent's own playground elsewhere -- the shape every
+    NewsWatcher/NewsAnalyzer/Trader-style job actually runs with."""
+    mesh_root = tmp_path / "mesh"
+    (mesh_root / "skills" / "news-impact-analysis").mkdir(parents=True)
+    (mesh_root / "skills" / "news-impact-analysis" / "SKILL.md").write_text(
+        "---\nname: news-impact-analysis\ndescription: d\n---\n\nReport one line per instrument.\n",
+        encoding="utf-8",
+    )
+    (mesh_root / "secret.txt").write_text("not a skill", encoding="utf-8")
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    playground.mkdir(parents=True)
+    return mesh_root
+
+
+async def test_read_falls_back_to_the_mesh_wide_skills_directory(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(root=playground, skills_root=mesh_with_a_skill)
+
+    result = await tool_read(context, {"path": "skills/news-impact-analysis/SKILL.md"})
+
+    assert "Report one line per instrument" in result
+
+
+async def test_grep_and_ls_also_fall_back_to_skills(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(root=playground, skills_root=mesh_with_a_skill)
+
+    grepped = await tool_grep(
+        context, {"pattern": "one line", "path": "skills", "glob": "*.md"}
+    )
+    listed = await tool_ls(context, {"path": "skills/news-impact-analysis"})
+
+    assert "one line per instrument" in grepped
+    assert "SKILL.md" in listed
+
+
+async def test_read_without_skills_root_still_refuses_the_fallback(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    """None (a human's own harness job, or a test with no live mesh) means
+    no fallback -- unchanged behaviour from before skills_root existed: the
+    path is syntactically inside the job root, just missing there, so the
+    refusal is the ordinary "does not exist", not "outside the job root"."""
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(root=playground)  # skills_root defaults to None
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        context, "read", {"path": "skills/news-impact-analysis/SKILL.md"}
+    )
+
+    assert result.startswith("DENIED:")
+    assert "does not exist" in result
+
+
+async def test_the_skills_fallback_never_reaches_outside_skills_itself(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    """The fallback is scoped to skills/ specifically -- it must not become
+    a second, wider escape hatch into the rest of the mesh's project root."""
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(root=playground, skills_root=mesh_with_a_skill)
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(context, "read", {"path": "secret.txt"})
+
+    assert result.startswith("DENIED:")
+    assert "does not exist" in result
+
+
+async def test_edit_write_delete_never_get_the_skills_fallback(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    """Only learn_skill/patch_skill may change a skill -- the generic
+    write/edit/delete tools stay confined to the job's own root even when
+    skills_root is set. edit and delete see the same "does not exist" a
+    genuinely missing file would; write would happily create a same-named
+    file *inside the job's own playground* (ordinary, harmless behaviour
+    for a path that is simply new there) -- the one thing to prove is that
+    doing so never touches the real skill in skills_root."""
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(root=playground, skills_root=mesh_with_a_skill, allow_write=True)
+    target = "skills/news-impact-analysis/SKILL.md"
+    real_skill = mesh_with_a_skill / "skills" / "news-impact-analysis" / "SKILL.md"
+    original = real_skill.read_text(encoding="utf-8")
+    registry = ToolRegistry(ALL_TOOLS)
+
+    edited = await registry.invoke(context, "edit", {"path": target, "old": "d", "new": "e"})
+    assert edited.startswith("DENIED:") and "does not exist" in edited
+
+    written = await registry.invoke(
+        context, "write", {"path": target, "content": "not the real skill"}
+    )
+    assert written.startswith("created")
+    assert (playground / target).read_text(encoding="utf-8") == "not the real skill"
+    assert real_skill.read_text(encoding="utf-8") == original
+
+    deleted = await registry.invoke(context, "delete", {"path": target})
+    assert deleted.startswith("deleted")
+    assert real_skill.read_text(encoding="utf-8") == original
+
+
+async def test_permit_skips_the_grant_check_for_a_skills_read(
+    mesh_with_a_skill: Path, tmp_path: Path
+) -> None:
+    """render_catalog() is spliced into every job's task unconditionally --
+    reading a skill is not gated behind a per-agent FilesystemGrant, the
+    same way the job's own root never needed one either."""
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    policy = FilesystemPolicy(repository)  # no grants given at all
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    context = ToolContext(
+        root=playground,
+        skills_root=mesh_with_a_skill,
+        policy=policy,
+        agent_id="agent:newsanalyzer",
+    )
+
+    result = await tool_read(context, {"path": "skills/news-impact-analysis/SKILL.md"})
+
+    assert "Report one line per instrument" in result
 
 
 async def test_an_unknown_tool_is_answered_with_the_list_of_real_ones(project: Path) -> None:

@@ -840,6 +840,7 @@ class Environment:
                 if job.agent_id and can_learn_skills
                 else None
             ),
+            skills_root=self.skills.root,
             custom_tools=self.active_custom_tools(),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,
