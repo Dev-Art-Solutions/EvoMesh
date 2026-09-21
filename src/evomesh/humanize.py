@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 _UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
@@ -11,11 +12,30 @@ _DAYS = 24
 _WEEKS = 7
 
 
+def _safe_float(value) -> float:
+    """Coerce ``value`` to a finite float that round-trips safely.
+
+    Raises :class:`ValueError` for ``None`` / non-numeric input, NaN,
+    infinities, and out-of-range values (e.g. an ``int`` larger than the
+    largest representable ``float``) so they never render as ``"inf"`` /
+    ``"nan"`` and never raise an uncaught ``OverflowError`` mid-format.
+    """
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"expected a number, got {type(value).__name__}")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{value!r} is too large to render") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{value!r} is not a finite number")
+    return number
+
+
 def humanize_size(num_bytes: int) -> str:
     """Format a byte count using binary (IEC) units."""
     if num_bytes < 0:
         raise ValueError("num_bytes must be non-negative")
-    value = float(num_bytes)
+    value = _safe_float(num_bytes)
     unit = _UNITS[0]
     while value >= 1024 and unit != _UNITS[-1]:
         value /= 1024
@@ -29,7 +49,7 @@ def humanize_duration(seconds: float) -> str:
     """Render a duration in seconds as a compact human string."""
     if seconds is None:
         raise TypeError("seconds must be a number, not None")
-    seconds = max(0, float(seconds))
+    seconds = max(0, _safe_float(seconds))
     if seconds < 1:
         return f"{seconds * 1000:.0f} ms"
     parts = []

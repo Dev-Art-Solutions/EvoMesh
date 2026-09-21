@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1210](001210.md) — The model changed `src/evomesh/humanize.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1174](001174.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1164](001164.md) — I hardened `humanize_duration` in the already-running, load-bearing `src/evomesh/humanize.py` by adding a `None` guard that raises `TypeError`, fixing a latent contract violation (the `float`-typed function silently returned the wrong "1000 ms" for a `None` input) — the smallest valid change to a file that already runs, since the pending file's pointer at `_agent_ids.py` was misdirection and wiring nothing is never an improvement.
 - [Generation 1162](001162.md) — The model changed `src/evomesh/cognition.py` but gave no rationale for it -- see the diff below for what actually moved.
