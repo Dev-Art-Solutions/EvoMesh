@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace EvoMesh.Desktop;
 
 internal static class Program
@@ -26,10 +29,39 @@ internal static class Program
         }
         var root = args.Length > 0 ? Path.GetFullPath(args[0]) : FindRepositoryRoot();
         var uv = args.Length > 1 ? args[1] : "uv";
+        if (!TryAcquireSingleInstance(root))
+        {
+            MessageBox.Show(
+                "EvoMesh Control Center is already running for this checkout. Switch to "
+                    + "the existing window instead of opening a second one.",
+                "EvoMesh",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return 0;
+        }
         InstallCrashLogging(root);
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm(root, uv));
         return 0;
+    }
+
+    // Kept alive for the life of the process -- an OS-level lock, same
+    // reasoning as src/evomesh/singleton.py's SingletonLock for the mesh
+    // process itself (found live: a second Control Center launched a second
+    // mesh against the same data with nothing stopping the first). A crash
+    // or kill releases a Mutex automatically when Windows closes its
+    // handles, so there is no stale-lock file to clean up by hand. Scoped
+    // to `root`, not the whole machine, so two Control Centers pointed at
+    // two different checkouts remain a legitimate, separate setup -- only
+    // a second one against the *same* checkout is refused.
+    private static Mutex? _singleInstanceMutex;
+
+    private static bool TryAcquireSingleInstance(string root)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(root.ToLowerInvariant()));
+        var name = "Global\\EvoMesh.Desktop." + Convert.ToHexString(digest);
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, name, out var createdNew);
+        return createdNew;
     }
 
     /// <summary>

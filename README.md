@@ -121,6 +121,8 @@ Settings also exposes provider and model assignments for the four built-in agent
 
 The local control channel listens only on `127.0.0.1:8765`. Closing the Control Center detaches without stopping the mesh; use **Stop Mesh** for a graceful shutdown. Startup diagnostics are persisted in `.runtime/logs/control-center.log`, and mesh logs in `.runtime/logs/mesh.log`.
 
+**Only one Control Center per checkout.** A second launch against the same `root` (a double-click while one is already open, say) is refused with a short message instead of opening a second window — a named OS-level `Mutex`, keyed off `root` and held for the process's whole life, the same reasoning `src/evomesh/singleton.py` already applies to the mesh process itself. Two Control Centers pointed at two *different* checkouts remain a legitimate, separate setup; only a second one against the same data is refused.
+
 ## Local model configuration
 
 `evomesh.yaml` configures Ollama (default), InferHub, or another local OpenAI-compatible endpoint. No cloud AI account is required. For Ollama, install the configured model, for example `ollama pull qwen3`. InferHub is optional and uses its OpenAI-compatible local endpoint.
