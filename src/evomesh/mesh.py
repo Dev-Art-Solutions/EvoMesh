@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from evomesh.node import Node
 
-from .mesh_utils import directed_pair_count
+from .mesh_utils import directed_pair_count, edge_snapshot
 
 
 @dataclass
@@ -41,7 +41,7 @@ class Mesh:
         return self.nodes.values()
 
     def iter_edges(self) -> Iterable[tuple[str, str, str]]:
-        for source, targets in self.edges.items():
+        for source, targets in edge_snapshot(self.edges).items():
             for target, label in targets.items():
                 yield source, target, label
 

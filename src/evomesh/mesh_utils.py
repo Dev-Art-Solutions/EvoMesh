@@ -65,6 +65,21 @@ def undirected_edges(edges: Iterable[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
     return result
 
 
+def edge_snapshot(
+    edges: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Return ``edges`` with its inner target dicts preserved as live views.
+
+    Iterators over a mesh (``Mesh.iter_edges``) walk the graph while its caller
+    populates it one node and edge at a time (``Mesh.add_node`` /
+    ``Mesh.add_edge``), so the inner ``{target: label}`` mappings cannot be
+    shallow-copied: a fresh dict would miss the edges added after the copy.
+    Returning the inner dicts as-is lets iteration and construction proceed
+    together without dropping edges added mid-pass.
+    """
+    return {source: targets for source, targets in edges.items()}
+
+
 def _coerce_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _coerce_value(v) for k, v in value.items()}
