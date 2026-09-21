@@ -1099,6 +1099,97 @@ async def test_a_reactive_question_calls_a_tool_through_the_harness_when_granted
     assert harness.objectives and "What is my balance?" in harness.objectives[0]
 
 
+async def test_a_reactive_question_submits_as_priority(tmp_path: Path) -> None:
+    """A human waiting on a chat reply must cut ahead of whatever background
+    work (the Evolver's pipeline, another agent's own plan step) is already
+    queued -- see HarnessQueue's own priority ordering."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(name="Trader", purpose="Trade", harness_root=str(tmp_path))
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="Balance is 10247.53, equity 10251.88.")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    await BDIBehavior().respond(
+        context,
+        Message(sender_id="human", recipient_id=definition.id, content="What is my balance?"),
+    )
+
+    assert harness.priorities == [True]
+
+
+async def test_a_reactive_question_carries_the_recent_conversation(tmp_path: Path) -> None:
+    """A harness job otherwise sees only the one bare message -- "send it as
+    a PDF" names no content of its own, and without the preceding "give me
+    the last 10 news" two messages back a job has nothing to build one from.
+    Found live: NewsWatcher asked what a bare "send it as PDF" should
+    contain, then -- still with no memory of "as a PDF" -- just repeated the
+    headlines as chat text again instead of ever reaching document_write."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsWatcher", purpose="Watch news", harness_root=str(tmp_path)
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="done")
+    earlier = Message(sender_id="human", recipient_id=definition.id, content="give me last 10 news")
+    current = Message(sender_id="human", recipient_id=definition.id, content="send it as a PDF")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+        inbox=[earlier, current],
+    )
+
+    await BDIBehavior().respond(context, current)
+
+    assert harness.objectives
+    objective = harness.objectives[0]
+    assert "give me last 10 news" in objective
+    assert "send it as a PDF" in objective
+    # Not duplicated: the current message is already named by "Answer this
+    # question directly: ...", the recent-messages section only repeats
+    # what came *before* it.
+    assert objective.count("send it as a PDF") == 1
+
+
+async def test_a_reactive_question_with_no_prior_history_carries_no_hint(
+    tmp_path: Path,
+) -> None:
+    """A first message in a conversation has nothing before it -- the recent-
+    messages section must not appear at all, not an empty one."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(name="Trader", purpose="Trade", harness_root=str(tmp_path))
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="done")
+    message = Message(sender_id="human", recipient_id=definition.id, content="hello")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+        inbox=[message],
+    )
+
+    await BDIBehavior().respond(context, message)
+
+    assert harness.objectives
+    assert "Recent messages" not in harness.objectives[0]
+
+
 async def test_a_reactive_question_names_the_agents_own_skills_to_the_harness(
     tmp_path: Path,
 ) -> None:

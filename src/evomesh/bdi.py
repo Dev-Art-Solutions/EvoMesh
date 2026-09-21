@@ -557,6 +557,23 @@ class BDIBehavior:
         # reactive question, only during its recurring goal. Naming this
         # agent's own bundled skills here, imperatively, is what a generic
         # "you have tools" catalog entry cannot do.
+        # A harness job otherwise sees only this one message -- context.inbox
+        # (up to MAX_INBOX_HISTORY, agents.py) is what the plain non-harness
+        # respond() fallback already gets via render_inbox(), and the harness
+        # path needs the same thing for the same reason: "send it as a PDF"
+        # names no content of its own at all, and a job that cannot see "give
+        # me the last 10 news" two messages back has nothing to build one
+        # from. Found live: NewsWatcher asked what a bare "send it as PDF"
+        # should contain, then -- given "the 10 news" with still no memory of
+        # "as a PDF" -- just answered in chat text again instead of ever
+        # reaching document_write. Excludes the current message itself
+        # (already named above) so it is not repeated.
+        history_hint = ""
+        if prior := context.inbox[:-1][-3:]:
+            lines = "\n".join(
+                f"- {item.sender_id}: {' '.join(item.content.split())}" for item in prior
+            )
+            history_hint = f"\n\nRecent messages before this one, oldest first:\n{lines}"
         skills_hint = ""
         if context.definition.skills:
             names = ", ".join(context.definition.skills)
@@ -578,7 +595,8 @@ class BDIBehavior:
                 "text replacement) is cheaper than resending the whole thing."
             )
         job = harness.submit(
-            f"Answer this question directly: {message.content.strip()}\n\n"
+            f"Answer this question directly: {message.content.strip()}"
+            f"{history_hint}\n\n"
             "Use a tool only if you actually need to -- if you already know "
             "the answer, or the question needs no live data, just answer.\n\n"
             "This is a chat reply to a human, not a report or a work log. Do "
@@ -600,6 +618,11 @@ class BDIBehavior:
             # Flipped back on below only if the wait times out and delivery
             # becomes the sole way the asker ever sees this job finish.
             notify=False,
+            # A human is waiting on this one, synchronously -- it cuts ahead
+            # of whatever background work (the Evolver's pipeline, another
+            # agent's own plan step) is still queued, though never ahead of
+            # a job already running. See HarnessQueue's own priority order.
+            priority=True,
         )
         elapsed = 0.0
         while job.open and elapsed < HARNESS_RESPOND_TIMEOUT_SECONDS:

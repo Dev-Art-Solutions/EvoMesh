@@ -587,7 +587,12 @@ class Environment:
         self.harness_workers.clear()
 
     def submit_harness_job(
-        self, objective: str, *, agent_id: str = "", root: Path | None = None
+        self,
+        objective: str,
+        *,
+        agent_id: str = "",
+        root: Path | None = None,
+        priority: bool = False,
     ) -> HarnessJob:
         """Queue a job and return its handle, which may be one already running."""
         if not self.settings.harness.enabled:
@@ -597,6 +602,7 @@ class Environment:
             root or self.project_root,
             agent_id=agent_id,
             allow_write=self.settings.harness.allow_write,
+            priority=priority,
         )
 
     def active_custom_tools(self) -> tuple[Tool, ...]:

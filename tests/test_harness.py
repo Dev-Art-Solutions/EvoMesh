@@ -27,6 +27,7 @@ from evomesh.harness import (
     parse_text_call,
 )
 from evomesh.harness_queue import (
+    HarnessGateway,
     HarnessJob,
     HarnessQueue,
     HarnessWorker,
@@ -1948,6 +1949,68 @@ def test_a_status_line_shows_the_objective_not_the_whole_briefing(tmp_path: Path
     assert job.describe() == (
         "job 1 [evolver] queued: wire humanize.py into a module that runs"
     )
+
+
+async def test_a_priority_job_is_taken_before_an_earlier_normal_one(tmp_path: Path) -> None:
+    """A human waiting on a reactive chat reply (bdi.py's
+    _respond_through_harness) must not sit behind background work (the
+    Evolver's pipeline, another agent's own plan step) that happened to be
+    queued first -- it cannot preempt a job already running, but it can cut
+    ahead of whatever is still waiting."""
+    queue = HarnessQueue()
+    background = queue.submit("background work", tmp_path, agent_id="evolver")
+    urgent = queue.submit("a human is waiting", tmp_path, agent_id="news-watcher", priority=True)
+
+    taken = await queue.take()
+
+    assert taken.number == urgent.number
+    assert taken is not background
+
+
+async def test_priority_jobs_stay_fifo_among_themselves(tmp_path: Path) -> None:
+    queue = HarnessQueue()
+    first = queue.submit("first", tmp_path, agent_id="a", priority=True)
+    second = queue.submit("second", tmp_path, agent_id="b", priority=True)
+
+    assert (await queue.take()).number == first.number
+    assert (await queue.take()).number == second.number
+
+
+async def test_a_normal_job_already_running_is_not_interrupted(tmp_path: Path) -> None:
+    """Priority only decides what is picked up *next* -- a job the single
+    worker this project's target hardware usually has is already mid-run
+    keeps running regardless of what arrives after it."""
+    queue = HarnessQueue()
+    running = queue.submit("already running", tmp_path, agent_id="evolver")
+    taken = await queue.take()
+    assert taken.number == running.number  # the only worker has it now
+
+    queue.submit("a human is waiting", tmp_path, agent_id="news-watcher", priority=True)
+
+    assert running.status is JobStatus.RUNNING
+
+
+def test_a_priority_job_is_flagged_in_its_status_line(tmp_path: Path) -> None:
+    queue = HarnessQueue()
+    job = queue.submit("give me last 10 news", tmp_path, agent_id="news-watcher", priority=True)
+
+    assert job.describe() == (
+        "job 1 [news-watcher] queued (priority): give me last 10 news"
+    )
+
+
+async def test_harness_gateway_forwards_priority_to_the_queue(tmp_path: Path) -> None:
+    queue = HarnessQueue()
+    gateway = HarnessGateway(queue, {})
+    background = gateway.submit("background work", agent_id="evolver", root=tmp_path)
+    urgent = gateway.submit(
+        "a human is waiting", agent_id="news-watcher", root=tmp_path, priority=True
+    )
+
+    taken = await queue.take()
+
+    assert taken.number == urgent.number
+    assert taken is not background
 
 
 async def test_the_queue_refuses_past_its_limit(tmp_path: Path) -> None:

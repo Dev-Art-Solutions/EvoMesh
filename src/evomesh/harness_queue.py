@@ -55,6 +55,14 @@ class HarnessJob:
     # What to call this job in a status line. Optional: an objective that is one
     # sentence needs no label, and one that is a page needs one.
     label: str = ""
+    # A human waiting on an actual reply -- a reactive chat message, not an
+    # agent's own background plan step or the Evolver's pipeline -- goes to
+    # the front of whatever is still *queued* the moment it arrives (see
+    # HarnessQueue's own priority ordering below). It cannot preempt a job
+    # already running: the single worker this project's target hardware
+    # usually has finishes what it started, this only decides what it picks
+    # up next.
+    priority: bool = False
     status: JobStatus = JobStatus.QUEUED
     steps: int = 0
     # Whether a finished job should land in its agent's inbox as a message.
@@ -111,7 +119,8 @@ class HarnessJob:
             )
         if self.status is JobStatus.CANCELLED:
             return f"job {self.number} [{who}] cancelled: {self.detail}"
-        return f"job {self.number} [{who}] queued: {self.title}"
+        flag = " (priority)" if self.priority else ""
+        return f"job {self.number} [{who}] queued{flag}: {self.title}"
 
 
 class QueueFull(RuntimeError):
@@ -147,7 +156,12 @@ class HarnessQueue:
         # *open* job is never pruned regardless of age or count.
         self.retain_finished = retain_finished
         self.jobs: dict[int, HarnessJob] = {}
-        self._waiting: asyncio.Queue[int] = asyncio.Queue()
+        # (rank, job number): rank 0 (priority) always sorts before rank 1
+        # (everything else), and job number keeps FIFO order within each
+        # rank -- a priority job cuts in front of whatever is still queued,
+        # never ahead of one already running, and two priority jobs still
+        # come out in the order they were submitted.
+        self._waiting: asyncio.PriorityQueue[tuple[int, int]] = asyncio.PriorityQueue()
         self._next = 1
 
     def _prune_finished(self) -> None:
@@ -179,6 +193,7 @@ class HarnessQueue:
         max_steps: int | None = None,
         max_seconds: float | None = None,
         notify: bool = True,
+        priority: bool = False,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -199,16 +214,17 @@ class HarnessQueue:
             max_steps=max_steps,
             max_seconds=max_seconds,
             notify=notify,
+            priority=priority,
         )
         self._next += 1
         self.jobs[job.number] = job
-        self._waiting.put_nowait(job.number)
+        self._waiting.put_nowait((0 if priority else 1, job.number))
         self._prune_finished()
         return job
 
     async def take(self) -> HarnessJob:
         while True:
-            number = await self._waiting.get()
+            _, number = await self._waiting.get()
             job = self.jobs.get(number)
             if job is not None and job.status is JobStatus.QUEUED:
                 job.status = JobStatus.RUNNING
@@ -255,6 +271,7 @@ class HarnessGateway:
         max_steps: int | None = None,
         max_seconds: float | None = None,
         notify: bool = True,
+        priority: bool = False,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -262,6 +279,7 @@ class HarnessGateway:
             agent_id=agent_id,
             allow_write=True,
             write_prefix=write_prefix,
+            priority=priority,
             label=label,
             max_steps=max_steps,
             max_seconds=max_seconds,
