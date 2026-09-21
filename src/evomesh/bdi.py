@@ -503,7 +503,10 @@ class BDIBehavior:
             "Use BELIEFS, MEMORY and YOUR WORKING NOTES as established fact. "
             "If you are asked what you are working on, answer from CURRENT WORK: "
             "name the goal, the step you are on and the stage you have reached, "
-            "and never invent progress that CURRENT WORK does not show."
+            "and never invent progress that CURRENT WORK does not show. "
+            "If you want to hand back a file you already created, name it on "
+            "its own line as exactly: FILE: <path>, a path inside your own "
+            "workspace -- never a file you have not actually written."
         )
         if detail := await self.status(context):
             context.work = f"{context.work}\n{detail}".strip()

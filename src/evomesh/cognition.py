@@ -33,6 +33,12 @@ FIELD_PATTERN = re.compile(
     r"^[*_#>\s-]*(STEP|RESULT|FACT|DONE|STATUS)[*_\s]*[:\-]\s*(.*)$", re.IGNORECASE
 )
 MARKDOWN_EDGE = " *_`"
+# Matches a true line start, or right after "Name> " -- console.py's _talk()
+# and attach() both prefix an agent's raw reply with "<agent name>> " before
+# anything downstream (Telegram, the desktop chat panel) ever sees it, so a
+# FILE: line the model wrote at the very start of its own reply is no longer
+# at the start of *this* string by the time either of them looks for it.
+FILE_LINE = re.compile(r"(?:^|>\s)FILE:\s*(.+?)\s*$", re.MULTILINE)
 
 CYCLE_FORMAT = (
     "Reply with exactly these four lines and nothing else:\n"
@@ -65,6 +71,20 @@ def strip_reasoning(text: str) -> str:
     if (opened := REASONING_START.search(text)) is not None:
         text = text[: opened.start()]
     return text.strip()
+
+
+def extract_file_references(text: str) -> list[str]:
+    """Paths an agent named as files it wants to hand back.
+
+    A free-form "just writes a path somewhere in prose" is exactly the
+    format small models are unreliable at producing consistently -- the same
+    reason STEP:/RESULT:/FACT: exist instead of asking for a paragraph. One
+    more explicit field, in the same shape: a line starting with ``FILE:``
+    and nothing else on it. Relative to the replying agent's own
+    ``default_harness_root`` -- callers resolve that themselves, since this
+    module has no notion of which agent it belongs to.
+    """
+    return [match.group(1) for match in FILE_LINE.finditer(strip_reasoning(text))]
 
 
 @dataclass

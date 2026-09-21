@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace EvoMesh.Desktop;
 
@@ -43,6 +45,11 @@ internal sealed class MainForm : Form
     // and back must not lose what was already said to it, and nothing here
     // should ever bleed into another agent's panel or the shared Console tab.
     private readonly Dictionary<string, List<string>> _agentChatHistory = [];
+    // Character ranges in _agentChatOutput that a FILE: line rendered as a
+    // clickable link, and the absolute path each one opens -- rebuilt
+    // whenever the output is cleared (SelectAgent), since the ranges are
+    // only meaningful for whatever is currently on screen.
+    private readonly List<(int Start, int Length, string Path)> _agentChatLinks = [];
     private List<AgentRow> _agentRows = [];
     private AgentRow? _selectedAgent;
     private Panel _agentPlaceholder = null!;
@@ -550,11 +557,43 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(225, 235, 245),
             Font = new Font("Cascadia Mono", 10F),
             BorderStyle = BorderStyle.FixedSingle,
+            AllowDrop = true,
         };
-        var chatInput = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(0, 8, 0, 0) };
+        // A dropped file goes straight to the selected agent, same as the
+        // Attach button -- the whole output pane is the drop target since
+        // that is the larger, easier-to-hit surface.
+        _agentChatOutput.DragEnter += (_, args) =>
+        {
+            args.Effect = args.Data?.GetDataPresent(DataFormats.FileDrop) == true
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+        };
+        _agentChatOutput.DragDrop += async (_, args) =>
+        {
+            if (args.Data?.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } paths)
+            {
+                await SendSelectedAgentFileAsync(paths[0]);
+            }
+        };
+        // A FILE: line an agent's reply carries is rendered as a link (see
+        // AppendChatLine); clicking anywhere inside that range opens it with
+        // whatever the OS has associated with it -- the mesh and this app
+        // run on the same machine, so the path is always locally readable.
+        _agentChatOutput.MouseClick += (_, args) =>
+        {
+            var index = _agentChatOutput.GetCharIndexFromPosition(args.Location);
+            var hit = _agentChatLinks.FirstOrDefault(
+                link => index >= link.Start && index < link.Start + link.Length);
+            if (hit.Path is not (null or ""))
+            {
+                OpenLocalFile(hit.Path);
+            }
+        };
+        var chatInput = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(0, 8, 0, 0) };
         chatInput.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        chatInput.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
         chatInput.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-        _agentChatInput = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Message this agent..." };
+        _agentChatInput = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Message this agent... (or drop a file above)" };
         _agentChatInput.KeyDown += async (_, args) =>
         {
             if (args.KeyCode == Keys.Enter && !args.Shift)
@@ -563,6 +602,16 @@ internal sealed class MainForm : Form
                 var text = _agentChatInput.Text.Trim();
                 _agentChatInput.Clear();
                 await SendSelectedAgentChatAsync(text);
+            }
+        };
+        var attachButton = MakeButton("Attach", 80);
+        attachButton.Dock = DockStyle.Fill;
+        attachButton.Click += async (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Title = "Attach a file to send" };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                await SendSelectedAgentFileAsync(dialog.FileName);
             }
         };
         var sendButton = MakeButton("Send", 100);
@@ -574,7 +623,8 @@ internal sealed class MainForm : Form
             await SendSelectedAgentChatAsync(text);
         };
         chatInput.Controls.Add(_agentChatInput, 0, 0);
-        chatInput.Controls.Add(sendButton, 1, 0);
+        chatInput.Controls.Add(attachButton, 1, 0);
+        chatInput.Controls.Add(sendButton, 2, 0);
         chat.Controls.Add(_agentChatOutput, 0, 0);
         chat.Controls.Add(chatInput, 0, 1);
 
@@ -703,14 +753,58 @@ internal sealed class MainForm : Form
         _agentNumCtxField.Text = row.NumCtx?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
         _agentTelegramToken.Clear();
         _agentChatOutput.Clear();
+        _agentChatLinks.Clear();
         if (_agentChatHistory.TryGetValue(row.Id, out var history))
         {
             foreach (var line in history)
             {
-                _agentChatOutput.AppendText(line + Environment.NewLine);
+                AppendChatLine(line);
             }
             _agentChatOutput.SelectionStart = _agentChatOutput.TextLength;
             _agentChatOutput.ScrollToCaret();
+        }
+    }
+
+    private static readonly Regex FileReference = new(@"FILE: (.+)$", RegexOptions.Multiline);
+
+    /// <summary>Appends one chat block, rendering any FILE: &lt;path&gt; line
+    /// it carries as a clickable link instead of plain text.
+    ///
+    /// The backend already resolved the path to an absolute one (see
+    /// ConsoleChannel._resolve_file_references) before this text ever
+    /// arrived, so there is no path-resolution rule to duplicate here --
+    /// just find the marker and color the part after it.</summary>
+    private void AppendChatLine(string line)
+    {
+        var blockStart = _agentChatOutput.TextLength;
+        _agentChatOutput.AppendText(line + Environment.NewLine);
+        foreach (Match match in FileReference.Matches(line))
+        {
+            var group = match.Groups[1];
+            var start = blockStart + group.Index;
+            _agentChatLinks.Add((start, group.Length, group.Value.Trim()));
+            _agentChatOutput.Select(start, group.Length);
+            _agentChatOutput.SelectionColor = Color.FromArgb(120, 190, 255);
+            _agentChatOutput.SelectionFont = new Font(_agentChatOutput.Font, FontStyle.Underline);
+        }
+        // Selection left at the file range above would bleed its color into
+        // whatever AppendText adds next -- put it back at the end, in the
+        // control's own default colors, before returning.
+        _agentChatOutput.Select(_agentChatOutput.TextLength, 0);
+        _agentChatOutput.SelectionColor = _agentChatOutput.ForeColor;
+        _agentChatOutput.SelectionFont = _agentChatOutput.Font;
+    }
+
+    private void OpenLocalFile(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception exc) when (exc is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            MessageBox.Show(this, $"Could not open {path}: {exc.Message}", "Open file",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -768,6 +862,35 @@ internal sealed class MainForm : Form
         await RefreshAgentListAsync();
     }
 
+    private async Task SendSelectedAgentFileAsync(string localPath)
+    {
+        if (_selectedAgent is not { } row)
+        {
+            return;
+        }
+        AppendAgentChat(row.Id, $"you> [attaching {Path.GetFileName(localPath)}]");
+        if (!_runtime.IsRunning)
+        {
+            AppendAgentChat(row.Id, "[start the mesh first]");
+            return;
+        }
+        try
+        {
+            // Same pin-then-request shape as SendSelectedAgentChatAsync --
+            // Desktop and the mesh process are on the same machine, so the
+            // absolute local path from the dialog or drop is directly
+            // readable by the Python side with no byte transfer needed.
+            await _runtime.RequestSilentAsync($"/chat {Quote(row.Name)}");
+            var response = await _runtime.RequestSilentAsync($"/attach {Quote(localPath)}");
+            AppendAgentChat(row.Id, response);
+        }
+        catch (Exception exc)
+        {
+            AppendAgentChat(row.Id, $"[error] {exc.Message}");
+        }
+        await RefreshAgentListAsync();
+    }
+
     private void AppendAgentChat(string agentId, string line)
     {
         if (!_agentChatHistory.TryGetValue(agentId, out var history))
@@ -780,7 +903,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        _agentChatOutput.AppendText(line + Environment.NewLine);
+        AppendChatLine(line);
         _agentChatOutput.SelectionStart = _agentChatOutput.TextLength;
         _agentChatOutput.ScrollToCaret();
     }

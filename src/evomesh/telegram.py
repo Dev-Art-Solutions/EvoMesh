@@ -12,17 +12,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from evomesh.console import ConsoleChannel
+from evomesh.cognition import extract_file_references
+from evomesh.console import MAX_ATTACHMENT_BYTES, ConsoleChannel
 from evomesh.contracts import TelegramSettings
 from evomesh.environment import Environment
 
 logger = logging.getLogger(__name__)
 
 API_ROOT = "https://api.telegram.org"
+FILE_ROOT = "https://api.telegram.org/file"
 # The mesh-wide bot keeps the original, unsuffixed keys so an upgrade never
 # loses its offset or allow-list. A per-agent bot's keys are namespaced by
 # agent id so two bots polling the same repository never share state.
@@ -242,15 +246,24 @@ class TelegramChannel:
         await self.environment.repository.save_state(self._offset_key, self._offset)
         message = update.get("message") or {}
         chat_id = int((message.get("chat") or {}).get("id", 0))
-        text = str(message.get("text", "")).strip()
-        if not chat_id or not text:
+        if not chat_id:
             return
+        attachment = _incoming_attachment(message)
         try:
-            reply = await self._answer(chat_id, text)
+            if attachment is not None:
+                reply = await self._answer_file(chat_id, *attachment)
+            else:
+                text = str(message.get("text", "")).strip()
+                if not text:
+                    return
+                reply = await self._answer(chat_id, text)
         except (KeyError, ValueError, RuntimeError) as exc:
             reply = f"Error: {exc}"
         if reply:
             await self.send(chat_id, reply)
+            console = self._consoles.get(chat_id)
+            if console is not None:
+                await self._send_file_references(chat_id, console.selected_agent, reply)
 
     # -- routing --------------------------------------------------------
 
@@ -268,11 +281,55 @@ class TelegramChannel:
             return self._welcome()
         if self.locked_agent_id and command in {"/chat"}:
             return f"This bot only talks to {self.locked_agent_name}."
+        return await self._console_for(chat_id).route(text)
+
+    async def _answer_file(self, chat_id: int, file_id: str, suggested_name: str) -> str:
+        """A document or photo arrived -- download it and hand it to the
+        selected agent through the exact same reactive round trip a human
+        typing /attach in the Control Center goes through.
+
+        ``ConsoleChannel.attach`` takes a real ``Path`` rather than command
+        text on purpose (see its own docstring): the file already exists on
+        this machine's disk once downloaded, no need to round-trip a path
+        through the text command parser a second time.
+        """
+        if not await self._admit(chat_id):
+            logger.info("Telegram chat %s is not on the allow-list", chat_id)
+            return (
+                f"This chat ({chat_id}) is not allowed to talk to EvoMesh. "
+                "Add the id in the Control Center under Telegram."
+            )
+        with tempfile.TemporaryDirectory(prefix="evomesh-telegram-") as scratch:
+            local_path = await self._download(file_id, suggested_name, Path(scratch))
+            return await self._console_for(chat_id).attach(local_path)
+
+    def _console_for(self, chat_id: int) -> ConsoleChannel:
         console = self._consoles.get(chat_id)
         if console is None:
             console = ConsoleChannel(self.environment, locked_agent_id=self.locked_agent_id)
             self._consoles[chat_id] = console
-        return await console.route(text)
+        return console
+
+    async def _download(self, file_id: str, suggested_name: str, scratch: Path) -> Path:
+        info = await self._call("getFile", {"file_id": file_id})
+        file_path = str(info.get("file_path") or "")
+        if not file_path:
+            raise TelegramError("Telegram did not return a file_path for this file")
+        size = int(info.get("file_size") or 0)
+        if size > MAX_ATTACHMENT_BYTES:
+            limit_mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+            raise ValueError(
+                f"that file is too large ({size // (1024 * 1024)} MB, limit {limit_mb} MB)"
+            )
+        if self._client is None:
+            raise TelegramError("the Telegram client is not open")
+        url = f"{FILE_ROOT}/bot{self.settings.token.strip()}/{file_path}"
+        response = await self._client.get(url)
+        if response.status_code >= 400:
+            raise TelegramError(f"downloading the file failed with HTTP {response.status_code}")
+        destination = scratch / (suggested_name or Path(file_path).name or "attachment")
+        destination.write_bytes(response.content)
+        return destination
 
     async def _admit(self, chat_id: int) -> bool:
         """Let a known chat in, and let the very first one claim the bot.
@@ -308,6 +365,49 @@ class TelegramChannel:
                 logger.warning("Could not send to Telegram chat %s: %s", chat_id, exc)
                 return
 
+    async def _send_file_references(self, chat_id: int, agent_id: str, text: str) -> None:
+        """Upload whatever ``FILE:`` lines an agent's own reply named --
+        the same convention the Control Center's chat panel renders as a
+        clickable link, sent here as a real Telegram document instead.
+
+        Resolved against *that* agent's own ``default_harness_root``, the
+        same rule ``ConsoleChannel.attach`` uses for the human-to-agent
+        direction, so the two directions agree on what "the agent's
+        workspace" means without a second definition of it.
+        """
+        references = extract_file_references(text)
+        if not references or not agent_id:
+            return
+        try:
+            agent = self.environment.registry.get(agent_id)
+        except KeyError:
+            return
+        base = self.environment.default_harness_root(agent)
+        for relative in references:
+            path = Path(relative)
+            if not path.is_absolute():
+                path = base / path
+            if path.is_file():
+                await self._send_document(chat_id, path)
+
+    async def _send_document(self, chat_id: int, path: Path) -> None:
+        if self._client is None:
+            return
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+            response = await self._client.post(
+                f"{API_ROOT}/bot{self.settings.token.strip()}/sendDocument",
+                data={"chat_id": chat_id},
+                files={"document": (path.name, data)},
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Could not send file %s to Telegram chat %s: HTTP %s",
+                    path, chat_id, response.status_code,
+                )
+        except (httpx.HTTPError, OSError) as exc:
+            logger.warning("Could not send file %s to Telegram chat %s: %s", path, chat_id, exc)
+
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         if self._client is None:
             raise TelegramError("the Telegram client is not open")
@@ -320,6 +420,26 @@ class TelegramChannel:
         if not body.get("ok"):
             raise TelegramError(f"{method} was refused: {body.get('description', 'no reason')}")
         return body.get("result")
+
+
+def _incoming_attachment(message: dict[str, Any]) -> tuple[str, str] | None:
+    """``(file_id, suggested filename)`` for a document or photo on this
+    message, or ``None`` when it carries neither.
+
+    A photo arrives as a list of ``PhotoSize`` entries, smallest first and
+    with no filename of its own (Telegram generates the thumbnails, not the
+    sender) -- the last entry is the largest actually-uploaded size.
+    """
+    document = message.get("document")
+    if isinstance(document, dict) and document.get("file_id"):
+        name = str(document.get("file_name") or "") or f"{document['file_id']}.bin"
+        return str(document["file_id"]), name
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        largest = photos[-1]
+        if isinstance(largest, dict) and largest.get("file_id"):
+            return str(largest["file_id"]), f"{largest['file_id']}.jpg"
+    return None
 
 
 def _chunks(text: str) -> list[str]:

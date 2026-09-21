@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import shutil
 import threading
 from pathlib import Path
 
@@ -14,7 +15,15 @@ from evomesh.agent_label import agent_label
 from evomesh.agent_templates import InvalidAgentTemplateError, MissingAgentTemplateError
 from evomesh.architect import ArchitectInterview
 from evomesh.channels import Output
-from evomesh.contracts import AgentStatus, FilesystemGrant, GoalStatus, Message, TelegramSettings
+from evomesh.cognition import FILE_LINE
+from evomesh.contracts import (
+    AgentDefinition,
+    AgentStatus,
+    FilesystemGrant,
+    GoalStatus,
+    Message,
+    TelegramSettings,
+)
 from evomesh.environment import Environment
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
@@ -40,6 +49,9 @@ HELP = """Commands:
                                     Instantiate a template into a live, running agent
   /models [provider]            List models exposed by a provider
   /chat <agent-name>            Select an agent
+  /attach <path>                Send the selected agent a file (lands in its
+                                own workspace, or the mesh directory for a
+                                system agent); its reply follows, same as chat
   /model <agent> <model> [prov] Change one agent's provider/model
   /num-ctx <agent> <n>|clear    Override (or clear) one agent's context window
   /agent start|stop <agent>     Control an individual agent loop
@@ -87,6 +99,13 @@ HELP = """Commands:
 """
 
 
+def _expanded(raw: str) -> Path:
+    """``~`` expansion, kept as its own sync helper for the same reason as
+    ``_directory`` below: a ``Path`` call made directly inside an ``async
+    def`` is what ASYNC240 objects to."""
+    return Path(raw).expanduser()
+
+
 def _directory(raw: str) -> Path | None:
     """The job root a human typed, or None if it is not a directory.
 
@@ -95,6 +114,42 @@ def _directory(raw: str) -> Path | None:
     """
     path = Path(raw).expanduser()
     return path if path.is_dir() else None
+
+
+# Telegram's own bot-download ceiling for getFile -- matched here so the same
+# limit is honest on both channels, not a surprise a human only hits from one.
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+
+def _file_size_or_none(path: Path) -> int | None:
+    """Sync, called under ``asyncio.to_thread`` -- same reasoning as
+    ``_directory`` above. ``None`` for anything that is not a real file,
+    covering both "does not exist" and "exists but is a directory" with one
+    check the caller does not have to make twice."""
+    return path.stat().st_size if path.is_file() else None
+
+
+def _copy_attachment(source: Path, dest_dir: Path) -> Path:
+    """Copy a file into an agent's directory, never overwriting what is
+    already there.
+
+    Sync and file-system only, called under ``asyncio.to_thread`` -- same
+    reasoning as ``_directory`` above. ``source.name`` (not the raw path
+    text) is what gets used as the destination filename: a filename is never
+    trusted to *be* a bare filename, whether it came from a Telegram
+    document's own name or a path a human typed, so any directory component
+    it carries is dropped rather than joined onto ``dest_dir``.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    name = Path(source.name).name or "attachment"
+    stem, suffix = Path(name).stem, Path(name).suffix
+    destination = dest_dir / name
+    counter = 2
+    while destination.exists():
+        destination = dest_dir / f"{stem}-{counter}{suffix}"
+        counter += 1
+    shutil.copy2(source, destination)
+    return destination
 
 
 class ConsoleChannel:
@@ -176,12 +231,76 @@ class ConsoleChannel:
             response = await self.environment.bus.receive("human", wait_seconds=300)
         except TimeoutError:
             return f"Timed out waiting for {agent.name}."
-        return f"{agent.name}> {response.content}"
+        return f"{agent.name}> {self._resolve_file_references(agent, response.content)}"
+
+    def _resolve_file_references(self, agent: AgentDefinition, text: str) -> str:
+        """Rewrite each ``FILE: <relative>`` line an agent's reply carries
+        into ``FILE: <absolute>``, resolved against that agent's own
+        ``default_harness_root`` -- the one place this mapping is made, so
+        neither the desktop chat panel nor anything else reading this text
+        has to know the resolution rule (system agent -> project root,
+        project_path -> there, otherwise the agent's own playground) to
+        find the file the agent meant.
+        """
+        base = self.environment.default_harness_root(agent)
+
+        def resolve(match: re.Match[str]) -> str:
+            raw = match.group(1)
+            path = Path(raw)
+            resolved = path if path.is_absolute() else base / path
+            return match.group(0)[: -len(raw)] + str(resolved)
+
+        return FILE_LINE.sub(resolve, text)
 
     async def _infer(self, prompt: str, system: str) -> str:
         if not self.environment.provider_health[0]:
             raise RuntimeError("provider not ready")
         return await self.environment.request_model_inference(prompt, system=system)
+
+    async def attach(self, source: Path) -> str:
+        """Land a file in the selected agent's own directory and let it
+        react to having received it, the same reactive round trip ``_talk``
+        already uses for plain text.
+
+        The destination is whatever ``Environment.default_harness_root``
+        already resolves for this agent: a system agent's own project root,
+        a human-set ``project_path``, or the agent's own playground --
+        exactly "the agent's workspace, or the mesh directory if it has
+        none" with no separate resolution rule to keep in sync with that
+        one.
+
+        Public (unlike ``_talk``) and takes a real ``Path`` rather than a
+        command string on purpose: Telegram already has the file on disk
+        once it downloads it, and shelling that back out through
+        ``/attach <path>`` would mean round-tripping a Windows path through
+        ``shlex.split`` a second time for no reason -- ``_command_attach``
+        below is the only caller that still needs the text form, for a
+        human typing the path directly.
+        """
+        if self.selected_agent == "architect" and not self.locked_agent_id:
+            return "Select an agent first with /chat <agent>."
+        size = await asyncio.to_thread(_file_size_or_none, source)
+        if size is None:
+            return f"No such file: {source}"
+        if size > MAX_ATTACHMENT_BYTES:
+            limit_mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+            return f"{source.name} is too large ({size // (1024 * 1024)} MB, limit {limit_mb} MB)."
+        agent = self.environment.registry.get(self.selected_agent)
+        dest_dir = self.environment.default_harness_root(agent)
+        destination = await asyncio.to_thread(_copy_attachment, source, dest_dir)
+        await self.environment.send_message(
+            Message(
+                sender_id="human",
+                recipient_id=agent.id,
+                content=f"Human attached a file: {destination.name}",
+                metadata={"attachment_path": str(destination)},
+            )
+        )
+        try:
+            response = await self.environment.bus.receive("human", wait_seconds=300)
+        except TimeoutError:
+            return f"Sent {destination.name} to {agent.name}, but it did not respond in time."
+        return f"{agent.name}> {self._resolve_file_references(agent, response.content)}"
 
     # -- commands -------------------------------------------------------
 
@@ -401,6 +520,11 @@ class ConsoleChannel:
         agent = self.environment.registry.get(parts[1])
         self.selected_agent = agent.id
         return f"Talking to {agent.name}."
+
+    async def _command_attach(self, parts: list[str]) -> str:
+        if len(parts) != 2:
+            return "Usage: /attach <path>"
+        return await self.attach(_expanded(parts[1]))
 
     async def _command_confirm(self, parts: list[str]) -> str:
         definition = self.architect.confirm()
