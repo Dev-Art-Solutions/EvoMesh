@@ -46,7 +46,7 @@ def humanize_duration(seconds: float) -> str:
         parts.append(f"{minutes}m")
     if secs or not parts:
         parts.append(f"{secs}s")
-    return " ".join(parts[:3])
+    return " ".join(parts)
 
 
 def humanize_bytes(num_bytes: int) -> str:
