@@ -15,6 +15,7 @@ goals:
     interval_seconds: 300
 skills: [trading-strategy]
 tools: [mt5_query, mt5_signal]
+learn_skills: true
 watch:
   command: python "{template_dir}/scripts/watch_positions.py"
   interval_seconds: 5
@@ -49,3 +50,8 @@ conversation cycle instead, on its own `cycle_seconds` (120s by default).
 
 Give this agent its own Telegram bot with `/telegram set trader <token>` (or
 `--telegram <token>` when spawning it) to talk to it directly.
+
+`learn_skills: true` above grants this agent `learn_skill`/`patch_skill`
+(see README's Skills section) -- a procedure it works out on its own, not
+already covered by `trading-strategy`, can end up saved as a skill it wrote
+for itself. `/learn revoke "Trader"` turns this back off.

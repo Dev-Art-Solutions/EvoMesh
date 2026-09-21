@@ -35,6 +35,7 @@ goals:
     report_pattern: "^[A-Za-z0-9_.]+ (bullish|bearish|neutral) \\((low|medium|high)\\): .+ -- .+$"
 skills: [news-impact-analysis]
 tools: [news_fetch]
+learn_skills: true
 ---
 
 A human reading this: edit `config.json` beside this AGENT.md to set `feeds` (RSS
@@ -88,3 +89,8 @@ for "the latest headlines" any time for a plain fetch, separate from the recurri
 analysis goal; that answers immediately through the agent's own conversation. Widen or
 tighten the cron schedule with `/goal ...` once this agent is running, if 30 minutes is
 too often or too rare for how fast the configured feeds actually update.
+
+`learn_skills: true` above grants this agent `learn_skill`/`patch_skill` (see
+README's Skills section) -- a procedure it works out on its own, not already
+covered by `news-impact-analysis`, can end up saved as a skill it wrote for
+itself. `/learn revoke "NewsAnalyzer"` turns this back off.
