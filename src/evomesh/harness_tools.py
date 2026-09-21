@@ -25,6 +25,7 @@ from typing import Any
 
 from evomesh._agent_ids import AgentIdValidator
 from evomesh.harness_session import HarnessSession
+from evomesh.humanize import humanize_size
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.processes import run_command
 from evomesh.tools import ToolDefinition
@@ -491,7 +492,7 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
     target.write_text(content, encoding="utf-8")
     context.tally.writes += 1
     verb = "replaced" if before else "created"
-    return f"{verb} {where} ({len(content)} bytes)\n{diff}" if diff else f"{verb} {where}"
+    return f"{verb} {where} ({humanize_size(len(content))})\n{diff}" if diff else f"{verb} {where}"
 
 
 async def tool_delete(context: ToolContext, args: dict[str, Any]) -> str:
