@@ -16,7 +16,9 @@ _AGENT_LABELS: dict[str, str] = {
 def agent_label(role: str) -> str:
     """Return a short human label for the given agent role.
 
-    Unknown roles fall back to the role string unchanged so callers can
-    rely on a non-empty, always-valid label.
+    Roles present in :data:`_AGENT_LABELS` are mapped to their label; any other
+    role is treated as a plain ``agent`` rather than being returned verbatim, so
+    every caller gets the canonical non-role label the shared contract in
+    ``contracts.py`` documents.
     """
-    return _AGENT_LABELS.get(role, role)
+    return _AGENT_LABELS.get(role, "agent")
