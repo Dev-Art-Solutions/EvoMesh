@@ -89,17 +89,20 @@ def extract_file_references(text: str) -> list[str]:
     return [
         match.group(1)
         for match in FILE_LINE.finditer(stripped)
-        if _path_has_text_extension(match.group(1))
+        if _path_is_a_known_deliverable(match.group(1))
     ]
 
 
-# Text files only -- a ``FILE:`` path ending in a binary format (image, audio,
-# video, archive) is never something a model should be asked to write back into
-# a repository, and filtering here keeps those out before they reach disk.
-def _path_has_text_extension(path: str) -> bool:
+# Text files the harness `write`/`edit` tools could plausibly have produced,
+# plus the binary formats document_write actually generates (.docx/.pdf/
+# .xlsx/.xlsm) -- a real, requested deliverable, not the harness improvising
+# a binary write. Anything else (image, audio, video, archive) stays out:
+# never something a model should be asked to write back on its own.
+def _path_is_a_known_deliverable(path: str) -> bool:
     return Path(path).suffix.lower() in (
         ".txt", ".md", ".json", ".yaml", ".yml",
         ".py", ".csv", ".html", ".htm", ".xml",
+        ".docx", ".pdf", ".xlsx", ".xlsm",
     )
 
 

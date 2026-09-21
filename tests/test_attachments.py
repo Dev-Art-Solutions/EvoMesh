@@ -55,6 +55,20 @@ def test_extract_file_references_strips_reasoning_first() -> None:
     assert extract_file_references(reply) == ["real.txt"]
 
 
+def test_extract_file_references_accepts_document_write_output_formats() -> None:
+    # document_write produces real binary deliverables on request (a PDF
+    # report, an xlsx workbook) -- these must reach a human the same way a
+    # FILE: report.csv already does, not be silently dropped as "the harness
+    # improvising a binary write" the way an image/video/archive still is.
+    reply = "Here you go.\nFILE: news.pdf"
+    assert extract_file_references(reply) == ["news.pdf"]
+
+
+def test_extract_file_references_still_rejects_unrelated_binary_formats() -> None:
+    reply = "FILE: photo.png"
+    assert extract_file_references(reply) == []
+
+
 # -- ConsoleChannel.attach --------------------------------------------------
 
 

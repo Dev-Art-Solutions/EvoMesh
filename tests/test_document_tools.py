@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from evomesh.harness_tools import ToolContext, ToolRegistry, build_custom_tool
 from evomesh.tools import parse_tool
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -94,6 +95,44 @@ def test_read_reports_a_clean_error_for_a_missing_file(tmp_path: Path) -> None:
 def test_write_reports_a_clean_error_for_an_unsupported_extension(tmp_path: Path) -> None:
     result = _run("document_write", {"path": str(tmp_path / "nope.txt")}, expect_ok=False)
     assert "error" in result
+
+
+@requires_docs_env
+async def test_document_write_reached_through_the_real_harness_tool_dispatch(
+    tmp_path: Path,
+) -> None:
+    """The exact path an agent's own tool call takes -- ToolRegistry.invoke
+    over a Tool built by build_custom_tool() from the real TOOL.md, with
+    "python" allow-listed the same way evomesh.yaml already has it -- not a
+    subprocess shortcut. This is the "news-watcher answers a PDF request"
+    scenario end to end for the one genuinely new piece: an agent's own
+    document_write call, run the same way the harness runs it in production,
+    landing a real .pdf in the agent's own job root.
+    """
+    path = REPO_ROOT / "tools" / "document_write" / "TOOL.md"
+    definition = parse_tool(path, path.read_text(encoding="utf-8"))
+    tool = build_custom_tool(definition, tool_dir=path.parent)
+    context = ToolContext(root=tmp_path, shell_allow=frozenset({"python"}), shell_seconds=30.0)
+
+    result = await ToolRegistry((tool,)).invoke(
+        context,
+        "document_write",
+        {
+            "request": json.dumps(
+                {
+                    "path": "news.pdf",
+                    "title": "Latest headlines",
+                    "headers": ["Headline", "Published"],
+                    "rows": [[f"Headline {i}", "2026-09-21"] for i in range(1, 11)],
+                }
+            )
+        },
+    )
+
+    assert "exit 0" in result
+    landed = tmp_path / "news.pdf"
+    assert landed.is_file()
+    assert landed.read_bytes().startswith(b"%PDF")
 
 
 @requires_docs_env

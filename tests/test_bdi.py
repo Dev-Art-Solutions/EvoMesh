@@ -1137,6 +1137,45 @@ async def test_a_reactive_question_names_the_agents_own_skills_to_the_harness(
     assert "read it first" in harness.objectives[0]
 
 
+async def test_a_reactive_question_tells_the_harness_job_to_hand_a_document_back(
+    tmp_path: Path,
+) -> None:
+    """document_write creates a real .pdf/.docx/.xlsx -- but nothing hands it
+    back to the human unless the model's own reply says FILE: <path>
+    (cognition.extract_file_references, uploaded by telegram.py). The plain
+    non-harness respond() instruction has always said this; the harness task
+    _respond_through_harness submits did not, so a chat answer that actually
+    called document_write during a harness job could create the file and
+    still never mention it."""
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(
+        name="NewsWatcher", purpose="Watch news", harness_root=str(tmp_path)
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="FILE: news.pdf")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+
+    answer = await BDIBehavior().respond(
+        context,
+        Message(
+            sender_id="human",
+            recipient_id=definition.id,
+            content="give me the last 10 news as a PDF",
+        ),
+    )
+
+    assert answer == "FILE: news.pdf"
+    assert harness.objectives and "FILE: <path>" in harness.objectives[0]
+
+
 async def test_a_reactive_question_answers_from_memory_without_harness_access(
     tmp_path: Path,
 ) -> None:

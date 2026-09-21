@@ -563,7 +563,10 @@ class BDIBehavior:
             "not narrate your own process (no 'Here's what I found', no "
             "'## Analysis' headers, no listing what you checked and ruled "
             "out) and do not pad a short fact into a structured writeup. "
-            f"Say the answer, plainly, the way you would say it out loud.{skills_hint}",
+            "Say the answer, plainly, the way you would say it out loud. If "
+            "you were asked for a document (a PDF, spreadsheet, etc.) and "
+            "created one with document_write, name it on its own line as "
+            f"exactly: FILE: <path> -- that is what hands it back.{skills_hint}",
             agent_id=context.definition.id,
             root=Path(root),
             label=message.content.strip()[:80],
