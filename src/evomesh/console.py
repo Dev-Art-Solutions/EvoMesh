@@ -120,6 +120,11 @@ def _directory(raw: str) -> Path | None:
 # limit is honest on both channels, not a surprise a human only hits from one.
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
+# Kept in sync with document_read's own dispatch (tools/document_read/scripts/
+# document_read.py) by hand -- the tool is a subprocess this module never
+# imports, so there is no shared source to import this from instead.
+DOCUMENT_READ_EXTENSIONS = frozenset({".docx", ".pdf", ".xlsx", ".xlsm", ".csv"})
+
 
 def _file_size_or_none(path: Path) -> int | None:
     """Sync, called under ``asyncio.to_thread`` -- same reasoning as
@@ -288,11 +293,25 @@ class ConsoleChannel:
         agent = self.environment.registry.get(self.selected_agent)
         dest_dir = self.environment.default_harness_root(agent)
         destination = await asyncio.to_thread(_copy_attachment, source, dest_dir)
+        content = f"Human attached a file: {destination.name}"
+        if destination.suffix.lower() in DOCUMENT_READ_EXTENSIONS:
+            # A nudge, not a command: document_read only reaches the model
+            # at all through _respond_through_harness (bdi.py), and even
+            # then nothing else here ties "a file arrived" to "read it" --
+            # left to inference alone, a small local model is exactly the
+            # kind of thing that answers "thanks, got your file" instead of
+            # actually opening it. The filename alone is enough for the
+            # call: the harness job answering this message is rooted at
+            # dest_dir, the same directory the file was just copied into.
+            content += (
+                f". Use document_read with {{\"path\": \"{destination.name}\"}} "
+                "to see its contents before replying."
+            )
         await self.environment.send_message(
             Message(
                 sender_id="human",
                 recipient_id=agent.id,
-                content=f"Human attached a file: {destination.name}",
+                content=content,
                 metadata={"attachment_path": str(destination)},
             )
         )

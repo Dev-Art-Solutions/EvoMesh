@@ -77,6 +77,52 @@ async def test_attach_lands_in_the_agents_own_playground(tmp_path: Path) -> None
     await environment.stop()
 
 
+async def test_attach_nudges_toward_document_read_for_a_supported_extension(
+    tmp_path: Path,
+) -> None:
+    """document_read only ever reaches the model through
+    bdi._respond_through_harness, and even then nothing else ties "a file
+    arrived" to "read it" -- left to inference alone, a small local model
+    is exactly the kind that answers "thanks, got your file" without
+    opening it. The inbox message itself has to say so."""
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Writer", purpose="Write", status=AgentStatus.ACTIVE)
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=3600)
+    console = ConsoleChannel(environment)
+    await console.route('/chat "Writer"')
+    source = tmp_path / "report.csv"
+    source.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    await console.attach(source)
+
+    runtime = environment.runtimes[agent.id]
+    last_inbox = runtime._inbox[-1]
+    assert "document_read" in last_inbox.content
+    assert '"path": "report.csv"' in last_inbox.content
+    await environment.stop()
+
+
+async def test_attach_does_not_nudge_for_an_unsupported_extension(tmp_path: Path) -> None:
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Writer", purpose="Write", status=AgentStatus.ACTIVE)
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=3600)
+    console = ConsoleChannel(environment)
+    await console.route('/chat "Writer"')
+    source = tmp_path / "notes.txt"
+    source.write_text("hello", encoding="utf-8")
+
+    await console.attach(source)
+
+    runtime = environment.runtimes[agent.id]
+    last_inbox = runtime._inbox[-1]
+    assert "document_read" not in last_inbox.content
+    await environment.stop()
+
+
 async def test_a_relative_file_reference_in_a_reply_becomes_absolute(tmp_path: Path) -> None:
     """The desktop chat panel and Telegram both read this reply text with no
     way of their own to know what "the agent's workspace" resolves to --
