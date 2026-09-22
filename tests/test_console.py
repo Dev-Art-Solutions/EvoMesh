@@ -736,3 +736,50 @@ async def test_control_server_reports_a_failed_command_and_keeps_the_connection(
     await writer.wait_closed()
     await server.stop()
     await environment.stop()
+
+
+class _ResetOnWriteWriter:
+    """A StreamWriter stand-in for a client that vanished: writing (or, on a
+    real socket, closing) after it is gone raises exactly this."""
+
+    def write(self, data: bytes) -> None:
+        raise ConnectionResetError("An existing connection was forcibly closed")
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+async def test_control_server_survives_a_client_that_vanishes_mid_write(
+    tmp_path: Path,
+) -> None:
+    """A client killed rather than sent /exit (the Desktop Control Center's
+    process ending abruptly, most often) leaves the server writing into a
+    dead socket. Before this fix that ConnectionResetError escaped
+    client_connected_cb entirely -- asyncio's default handler then logged it
+    as an ERROR with a full traceback, indistinguishable from an actual
+    crash in mesh.log, and one more client could still hit the exact same
+    thing on its own disconnect right after."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    shutdown = asyncio.Event()
+    server = ControlServer(environment, shutdown, port=0)
+
+    class FakeReader:
+        def __init__(self) -> None:
+            self._lines = [json.dumps({"command": "/ping"}).encode() + b"\n"]
+
+        async def readline(self) -> bytes:
+            return self._lines.pop(0) if self._lines else b""
+
+    # Raises nothing -- the whole point is that _handle_client itself must
+    # not propagate what the writer raises.
+    await server._handle_client(FakeReader(), _ResetOnWriteWriter())  # type: ignore[arg-type]
+
+    await environment.stop()

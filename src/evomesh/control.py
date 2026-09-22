@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 from typing import Any
 
 from evomesh.console import ConsoleChannel
@@ -10,6 +12,8 @@ from evomesh.models import describe
 
 CONTROL_HOST = "127.0.0.1"
 CONTROL_PORT = 8765
+
+logger = logging.getLogger(__name__)
 
 
 class ControlServer:
@@ -47,9 +51,19 @@ class ControlServer:
                 if response.get("shutdown"):
                     self.shutdown.set()
                     break
+        except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+            # A client that closes its own process instead of sending /exit
+            # (the Desktop Control Center killed rather than quit, most
+            # often) drops the socket mid-read or mid-write. Expected, not a
+            # bug -- but left uncaught, asyncio's own default handler logs
+            # whatever escapes client_connected_cb as an ERROR with a full
+            # traceback, which is what "the mesh crashed" looks like at a
+            # glance in mesh.log even though nothing here needed fixing.
+            logger.info("control client disconnected: %s", exc)
         finally:
-            writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(ConnectionResetError, ConnectionAbortedError, OSError):
+                writer.close()
+                await writer.wait_closed()
 
     async def _dispatch(self, channel: ConsoleChannel, raw: bytes) -> dict[str, Any]:
         try:
