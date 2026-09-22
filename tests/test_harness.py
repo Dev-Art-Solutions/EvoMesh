@@ -2115,6 +2115,60 @@ async def test_priority_jobs_stay_fifo_among_themselves(tmp_path: Path) -> None:
     assert (await queue.take()).number == second.number
 
 
+async def test_a_priority_lane_worker_never_sees_a_background_job(tmp_path: Path) -> None:
+    """harness.priority_workers exists precisely so a human's reactive
+    question is never stuck behind the background lane -- which only holds
+    if a worker reading lane="priority" truly never drains a background job,
+    not merely prefers priority when both are ready (that was already the
+    old shared-PriorityQueue's behavior, and did not fix the underlying
+    problem: a background job already running still was not preempted)."""
+    queue = HarnessQueue()
+    queue.submit("background work", tmp_path, agent_id="evolver")
+
+    take_task = asyncio.ensure_future(queue.take(lane="priority"))
+    await asyncio.sleep(0.05)
+    assert not take_task.done()  # nothing priority-lane to hand it
+
+    urgent = queue.submit("a human is waiting", tmp_path, agent_id="news-watcher", priority=True)
+    taken = await asyncio.wait_for(take_task, timeout=1)
+
+    assert taken.number == urgent.number
+
+
+async def test_a_background_lane_worker_never_sees_a_priority_job(tmp_path: Path) -> None:
+    queue = HarnessQueue()
+    urgent = queue.submit("a human is waiting", tmp_path, agent_id="news-watcher", priority=True)
+
+    take_task = asyncio.ensure_future(queue.take(lane="background"))
+    await asyncio.sleep(0.05)
+    assert not take_task.done()  # the priority job is not this lane's to take
+
+    background = queue.submit("background work", tmp_path, agent_id="evolver")
+    taken = await asyncio.wait_for(take_task, timeout=1)
+
+    assert taken.number == background.number
+    # Untouched -- a real priority worker (lane="priority") still owns it.
+    assert urgent.status is JobStatus.QUEUED
+
+
+async def test_lane_any_drains_both_when_they_arrive_at_once(tmp_path: Path) -> None:
+    """The race branch inside take(lane="any"): both queues can have an
+    item ready in the same instant (two submit() calls before any worker
+    has run), and the background number drawn alongside the winning
+    priority one must go back to its own queue rather than being dropped
+    -- a job silently vanishing from every listing is worse than one
+    briefly out of FIFO order."""
+    queue = HarnessQueue()
+    background = queue.submit("background work", tmp_path, agent_id="evolver")
+    urgent = queue.submit("a human is waiting", tmp_path, agent_id="news-watcher", priority=True)
+
+    first = await queue.take(lane="any")
+    second = await queue.take(lane="any")
+
+    assert {first.number, second.number} == {background.number, urgent.number}
+    assert first.number == urgent.number  # priority still wins the tie
+
+
 async def test_a_normal_job_already_running_is_not_interrupted(tmp_path: Path) -> None:
     """Priority only decides what is picked up *next* -- a job the single
     worker this project's target hardware usually has is already mid-run
