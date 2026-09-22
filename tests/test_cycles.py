@@ -1387,6 +1387,43 @@ async def test_prune_stale_never_removes_a_protected_generation(tmp_path: Path) 
     assert protected.path.exists()
 
 
+async def test_supervisor_write_retries_a_transient_windows_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live: generation 1218's own validation run failed a real test
+    over Path.replace() raising PermissionError: [WinError 5] -- Windows
+    Defender's real-time scan (or an indexer) briefly holding the
+    just-written temp file open, gone a moment later. discard() (like every
+    other _write() caller) must ride that out rather than let one lucky
+    scanner hold a whole generation for a human to unblock by hand."""
+    from evomesh.storage import SQLiteRepository
+
+    project = await git_project(tmp_path / "project")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+    generation = await evolver.create_candidate("flaky replace")
+
+    real_replace = Path.replace
+    calls = {"count": 0}
+
+    def flaky_replace(self: Path, target: object) -> Path:
+        calls["count"] += 1
+        if calls["count"] <= 2:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr("evomesh.evolution.time.sleep", lambda seconds: None)
+
+    evolver.workspace.supervisor.discard(generation.number)
+
+    assert calls["count"] == 3
+    assert str(generation.number) not in evolver.workspace.supervisor.metadata()["candidates"]
+
+
 async def test_prune_stale_caps_how_much_it_does_in_one_call(tmp_path: Path) -> None:
     """create() calls this on the critical path of opening the next
     generation -- a repository that has been running unpruned for a long

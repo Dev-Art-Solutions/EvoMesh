@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+import time
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -627,7 +628,23 @@ class GenerationSupervisor:
     def _write(self, data: dict[str, Any]) -> None:
         temporary = self.metadata_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temporary.replace(self.metadata_path)
+        # Seen live: generation 1218's own validation run failed a real test
+        # over exactly this line, with the process at fault never named --
+        # Path.replace() on Windows (os.replace/MoveFileEx) can raise
+        # PermissionError: [WinError 5] when Defender's real-time scan or an
+        # indexer has the just-written temp file open for a few
+        # milliseconds. Nothing about the data being written caused it, and
+        # the same write always succeeds a moment later, so a handful of
+        # short retries costs one JSON write's worth of latency here against
+        # a whole generation held for a human to unblock by hand.
+        for attempt in range(5):
+            try:
+                temporary.replace(self.metadata_path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (2**attempt))
 
 
 PYTEST_TEMP_DIR = ".pytest-tmp"
