@@ -1409,7 +1409,7 @@ async def test_supervisor_write_retries_a_transient_windows_permission_error(
     real_replace = Path.replace
     calls = {"count": 0}
 
-    def flaky_replace(self: Path, target: object) -> Path:
+    def flaky_replace(self: Path, target: str | Path) -> Path:
         calls["count"] += 1
         if calls["count"] <= 2:
             raise PermissionError("[WinError 5] Access is denied")
