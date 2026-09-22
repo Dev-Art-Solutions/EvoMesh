@@ -332,6 +332,24 @@ class AgentTemplateRegistry:
             # somewhere to run it.
             root = environment.default_harness_root(definition)
             definition.harness_root = str(root)
+            # A bundled tool only ever sees config.json two ways: the cwd a
+            # subprocess tool is launched with (the harness sets that to this
+            # same root), or a sandboxed `read`/`ls` call, which is confined
+            # to this root too. The template's own config.json lives beside
+            # AGENT.md, neither place -- so without this copy a template that
+            # ships one (news-analyzer's instruments/min_confidence, for
+            # instance) is invisible to the agent it configures, and the
+            # agent silently falls back to whatever default the tool script
+            # picks instead. Only when nothing is there yet: a re-instantiate
+            # or a human's own edit inside the playground must not be clobbered.
+            bundled_config = bundle_root / "config.json"
+            target_config = root / "config.json"
+            if (
+                await asyncio.to_thread(bundled_config.is_file)
+                and not await asyncio.to_thread(target_config.is_file)
+            ):
+                await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.copyfile, bundled_config, target_config)
             await environment.repository.save_agent(definition)
             await environment.grant_access(
                 FilesystemGrant(
