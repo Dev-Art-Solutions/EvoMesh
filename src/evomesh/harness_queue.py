@@ -143,6 +143,19 @@ class HarnessQueue:
 
     def __init__(self, max_queue: int = 8, retain_finished: int = 200) -> None:
         self.max_queue = max_queue
+        self.retain_finished = retain_finished
+        self.jobs: dict[int, HarnessJob] = {}
+        # Two separate lines, not one queue read in priority order: the old
+        # single PriorityQueue only changed *order*, so a human's reactive
+        # question (priority=True, see bdi.py's respond()) still had to wait
+        # out whatever background job (an Evolver stage, another agent's own
+        # plan step) a single worker had already started -- up to
+        # harness.max_seconds, minutes on a slow model. A worker reading only
+        # `_priority_waiting` never touches that backlog, so a dedicated one
+        # (harness.priority_workers) is free the instant a human asks
+        # something, no matter how long the background lane is running.
+        self._priority_waiting: asyncio.Queue[int] = asyncio.Queue()
+        self._background_waiting: asyncio.Queue[int] = asyncio.Queue()
         # `jobs` is process memory, not a database -- nothing here ever stops
         # running on its own, so an unpruned dict has no ceiling (the same
         # class of bug this project has already fixed for generation
@@ -154,14 +167,6 @@ class HarnessQueue:
         # bounded status listing -- nothing holds a *finished* job's number
         # across an arbitrarily long stretch of the mesh's own uptime. An
         # *open* job is never pruned regardless of age or count.
-        self.retain_finished = retain_finished
-        self.jobs: dict[int, HarnessJob] = {}
-        # (rank, job number): rank 0 (priority) always sorts before rank 1
-        # (everything else), and job number keeps FIFO order within each
-        # rank -- a priority job cuts in front of whatever is still queued,
-        # never ahead of one already running, and two priority jobs still
-        # come out in the order they were submitted.
-        self._waiting: asyncio.PriorityQueue[tuple[int, int]] = asyncio.PriorityQueue()
         self._next = 1
 
     def _prune_finished(self) -> None:
@@ -218,13 +223,57 @@ class HarnessQueue:
         )
         self._next += 1
         self.jobs[job.number] = job
-        self._waiting.put_nowait((0 if priority else 1, job.number))
+        (self._priority_waiting if priority else self._background_waiting).put_nowait(job.number)
         self._prune_finished()
         return job
 
-    async def take(self) -> HarnessJob:
+    async def take(self, *, lane: str = "any") -> HarnessJob:
+        """Pull the next queued job.
+
+        ``lane="priority"`` and ``lane="background"`` read only their own
+        line -- a dedicated priority worker never sees, and is never
+        delayed by, whatever the background lane is doing. ``"any"`` (the
+        default, and the only choice with a single worker) drains priority
+        first but falls through to background rather than sit idle.
+        """
+        if lane == "priority":
+            return await self._take_from(self._priority_waiting)
+        if lane == "background":
+            return await self._take_from(self._background_waiting)
+        if not self._priority_waiting.empty():
+            job = await self._take_from(self._priority_waiting)
+            if job is not None:
+                return job
+        priority_get = asyncio.ensure_future(self._priority_waiting.get())
+        background_get = asyncio.ensure_future(self._background_waiting.get())
+        try:
+            done, pending = await asyncio.wait(
+                {priority_get, background_get}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if priority_get in done:
+                number = priority_get.result()
+                if background_get in done:
+                    # Both ready at once -- priority wins, but the
+                    # background number drawn in the same instant must go
+                    # back, or that job is silently dropped from the queue.
+                    self._background_waiting.put_nowait(background_get.result())
+            else:
+                number = background_get.result()
+        finally:
+            for task in (priority_get, background_get):
+                if not task.done():
+                    task.cancel()
+        job = self.jobs.get(number)
+        if job is None or job.status is not JobStatus.QUEUED:
+            return await self.take(lane=lane)
+        job.status = JobStatus.RUNNING
+        return job
+
+    async def _take_from(self, waiting: asyncio.Queue[int]) -> HarnessJob:
         while True:
-            _, number = await self._waiting.get()
+            number = await waiting.get()
             job = self.jobs.get(number)
             if job is not None and job.status is JobStatus.QUEUED:
                 job.status = JobStatus.RUNNING
@@ -307,12 +356,23 @@ class HarnessGateway:
 
 
 class HarnessWorker:
-    """One tool loop at a time, taking whatever the queue hands it."""
+    """One tool loop at a time, taking whatever its lane hands it.
 
-    def __init__(self, queue: HarnessQueue, run: Runner, deliver: Delivery) -> None:
+    ``lane="background"`` is what the original single worker always was:
+    the Evolver's pipeline, an agent's own plan step, anything with no
+    human waiting on it. ``lane="priority"`` only ever sees a reactive
+    question (bdi.py's respond(), priority=True) -- it is a separate
+    worker precisely so that lane is never behind a background job that
+    is already minutes into harness.max_seconds.
+    """
+
+    def __init__(
+        self, queue: HarnessQueue, run: Runner, deliver: Delivery, *, lane: str = "any"
+    ) -> None:
         self.queue = queue
         self.run = run
         self.deliver = deliver
+        self.lane = lane
         self.task: asyncio.Task[None] | None = None
 
     def start(self, name: str) -> None:
@@ -320,7 +380,7 @@ class HarnessWorker:
 
     async def _loop(self) -> None:
         while True:
-            job = await self.queue.take()
+            job = await self.queue.take(lane=self.lane)
             try:
                 result = await self.run(job)
                 self.queue.finish(job, result)

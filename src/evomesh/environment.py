@@ -577,8 +577,19 @@ class Environment:
         if not self.settings.harness.enabled or self.harness_workers:
             return
         for index in range(max(1, self.settings.harness.workers)):
-            worker = HarnessWorker(self.harness_queue, self._run_harness_job, self._deliver_harness)
+            worker = HarnessWorker(
+                self.harness_queue, self._run_harness_job, self._deliver_harness, lane="background"
+            )
             worker.start(f"evomesh-harness-{index + 1}")
+            self.harness_workers.append(worker)
+        # A separate lane, not more of the same pool -- see
+        # HarnessSettings.priority_workers for why a human's reactive
+        # question needs a worker the background lane can never occupy.
+        for index in range(max(0, self.settings.harness.priority_workers)):
+            worker = HarnessWorker(
+                self.harness_queue, self._run_harness_job, self._deliver_harness, lane="priority"
+            )
+            worker.start(f"evomesh-harness-priority-{index + 1}")
             self.harness_workers.append(worker)
 
     async def _stop_harness_workers(self) -> None:

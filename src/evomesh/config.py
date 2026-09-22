@@ -279,6 +279,16 @@ class HarnessSettings(BaseModel):
     # card or a remote provider is a different bet, and a hard-coded 1 is an
     # argument nobody can test.
     workers: int = 1
+    # A separate, dedicated worker that reads only priority jobs -- a human's
+    # reactive question (bdi.py's respond(), submitted with priority=True),
+    # never the Evolver's pipeline or an agent's own plan step. Without one,
+    # a question asked while the background lane is deep into a
+    # harness.max_seconds job waits out the rest of it even though it always
+    # sorted first in the old shared queue: priority there only changed
+    # order, never preempted a job already running. Raising this past 1 buys
+    # nothing extra on the single-GPU setup `workers` above already warns
+    # about; it exists as a lane, not a throughput knob.
+    priority_workers: int = 1
     max_queue: int = 8
 
     def limits(self) -> ToolLimits:

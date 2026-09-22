@@ -111,6 +111,10 @@ evolution:
 #   # One tool loop at a time. Two on one card do not go twice as fast -- they
 #   # queue inside the GPU instead of in a queue you can look at.
 #   workers: 1
+#   # A separate worker that only ever picks up a human's reactive question
+#   # (priority=True), so it is never stuck behind a background job already
+#   # minutes into max_seconds. Not a throughput knob -- see `workers` above.
+#   priority_workers: 1
 #   max_queue: 8
 #   # Run against a writing job's root, right before it is allowed to end,
 #   # whenever it actually changed a file -- a non-zero exit is fed back as

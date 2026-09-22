@@ -931,10 +931,14 @@ class ConsoleChannel:
         action = parts[1].lower() if len(parts) > 1 else ""
         if action == "status":
             queue = self.environment.harness_queue
-            workers = len(self.environment.harness_workers)
+            workers = sum(1 for w in self.environment.harness_workers if w.lane == "background")
+            priority_workers = sum(
+                1 for w in self.environment.harness_workers if w.lane == "priority"
+            )
             rows = [job.describe() for job in queue.recent()]
             return (
-                f"workers: {workers}, open jobs: {len(queue.open_jobs())}\n"
+                f"workers: {workers} (+{priority_workers} priority), "
+                f"open jobs: {len(queue.open_jobs())}\n"
                 + ("\n".join(f"  {row}" for row in rows) if rows else "  no jobs yet")
                 + "\nThe queue is not durable: stopping the mesh cancels what is in it."
             )
