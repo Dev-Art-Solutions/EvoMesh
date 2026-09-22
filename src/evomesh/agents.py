@@ -71,7 +71,15 @@ def _apply_report_pattern(summary: str, pattern: str) -> str:
     silently rather than announced.
     """
     try:
-        compiled = re.compile(pattern)
+        # Case carries no meaning in any report_pattern this project ships
+        # (bullish/bearish/neutral, low/medium/high) -- found live: 106 of
+        # 106 "matched nothing" cycles for NewsAnalyzer, several of them a
+        # well-formed report line dropped for nothing but "Bullish" where
+        # the pattern wanted "bullish". A model capitalizing the first word
+        # of a sentence is a formatting tic, not a sign it ignored the
+        # format contract, and treating it as one meant every genuinely
+        # good report from that model was silently thrown away forever.
+        compiled = re.compile(pattern, re.IGNORECASE)
     except re.error:
         logger.warning("goal has an invalid report_pattern, skipping filter: %r", pattern)
         return summary

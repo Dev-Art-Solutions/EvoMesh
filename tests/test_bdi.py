@@ -409,6 +409,40 @@ async def test_report_pattern_keeps_only_matching_lines(tmp_path: Path) -> None:
     assert "Checked the feed" not in announced[0]
 
 
+async def test_report_pattern_ignores_case(tmp_path: Path) -> None:
+    """Found live: 106 of 106 NewsAnalyzer cycles that had something to say
+    were filtered to nothing, because the model wrote "Bullish"/"Medium"
+    where the pattern's own literal was lowercase. Case is not part of the
+    format contract the pattern is meant to enforce -- only the shape is."""
+    environment, agent = await worker(tmp_path, ScriptedProvider())
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=r"^[A-Z]+ (bullish|bearish): .+$",
+    )
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary="XAU Bullish: Fed pause.",
+            goal_done=True,
+            phase=AgentPhase.IDLE,
+            worked=True,
+        ),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "XAU Bullish: Fed pause." in announced[0]
+
+
 async def test_report_pattern_is_never_applied_to_an_unfinished_cycle(
     tmp_path: Path,
 ) -> None:
