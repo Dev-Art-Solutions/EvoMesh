@@ -11,8 +11,14 @@ import sys
 
 import yaml
 
+# Mirrors SkillRegistry's MAX_SKILL_BYTES (src/evomesh/skills.py) -- keep
+# both in sync, or a pass here can still be refused at actual install time.
+MAX_SKILL_BYTES = 15_000
+
 
 def check(text: str) -> tuple[bool, str]:
+    if (size := len(text.encode("utf-8"))) > MAX_SKILL_BYTES:
+        return False, f"{size} bytes exceeds the {MAX_SKILL_BYTES}-byte limit for a skill file"
     if not text.startswith("---"):
         return False, "missing YAML frontmatter (a leading '---' block)"
     end = text.find("\n---", 3)

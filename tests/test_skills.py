@@ -190,6 +190,18 @@ async def test_install_refuses_a_skill_carrying_a_secret(tmp_path: Path) -> None
     assert not (tmp_path / "skills" / "leaky").exists()
 
 
+async def test_install_refuses_a_skill_over_the_size_limit(tmp_path: Path) -> None:
+    text = (
+        "---\nname: bloated\ndescription: Way too much prose.\n---\n\n"
+        + ("padding " * 3000)
+    )
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(InvalidSkillError, match="byte limit"):
+        await registry.install(text)
+    assert not (tmp_path / "skills" / "bloated").exists()
+
+
 async def test_install_directory_refuses_a_skill_carrying_an_injection_phrase(
     tmp_path: Path,
 ) -> None:

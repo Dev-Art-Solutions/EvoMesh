@@ -38,6 +38,16 @@ from evomesh.contracts import SkillDefinition, now_utc
 logger = logging.getLogger(__name__)
 
 SKILL_FILENAME = "SKILL.md"
+# The largest hand-written skill in this repo (news-impact-analysis) is
+# ~6.3KB; nothing legitimate here is anywhere close to this. A skill is read
+# with the same `read` tool as any other file, so a runaway one (a small
+# model's learn_skill/patch_skill dumping a whole transcript instead of a
+# procedure) does not fail loudly -- it just quietly eats a large slice of
+# harness.tool_result_chars the next agent that reads it never gets back.
+# 15KB mirrors the same ceiling Nous's hermes-agent-self-evolution puts on
+# an evolved skill file, for the same reason: a hard, generous cap that
+# only a genuinely broken write ever reaches.
+MAX_SKILL_BYTES = 15_000
 
 
 @dataclass
@@ -248,6 +258,11 @@ class SkillRegistry:
         definition = parse_skill(Path("<new skill>"), source_text, created_by=created_by)
         if findings := scan_skill_content(source_text):
             raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
+        if (size := len(source_text.encode("utf-8"))) > MAX_SKILL_BYTES:
+            raise InvalidSkillError(
+                f"{definition.name}: refused -- {size} bytes exceeds the "
+                f"{MAX_SKILL_BYTES}-byte limit for a skill file"
+            )
         target = self.skills_dir / definition.name / SKILL_FILENAME
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, source_text, encoding="utf-8")
@@ -272,6 +287,11 @@ class SkillRegistry:
         definition = parse_skill(Path("<new skill>"), text, created_by=created_by)
         if findings := scan_skill_content(text):
             raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
+        if (size := len(text.encode("utf-8"))) > MAX_SKILL_BYTES:
+            raise InvalidSkillError(
+                f"{definition.name}: refused -- {size} bytes exceeds the "
+                f"{MAX_SKILL_BYTES}-byte limit for a skill file"
+            )
         target = self.skills_dir / definition.name
         await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
         await asyncio.to_thread(shutil.copytree, source, target)
