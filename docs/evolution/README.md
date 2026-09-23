@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1342](001342.md) — I added a single mechanical test for `next_id()` to the existing `tests/test__agent_ids.py` — reading the real definition, calling it twice with the simplest realistic arguments (no args), and asserting the zero-padded, incrementing result matches the documented `%04d` format (`"0001"`, `"0002"`, ascending).
 - [Generation 1341](001341.md) — I read the real `make_id` definition, then added a single test to the existing `tests/test__agent_ids.py` asserting `make_id("root", "child") == "root.child"` — the one obvious behavior from the actual implementation, covering the dot-join and validation logic.
 - [Generation 1340](001340.md) — I added `tests/test__agent_ids.py` with a single test that asserts `is_valid("root.child.grandchild")` returns `True`, exercising the real, load-bearing behavior of the function I read from `src/evomesh/_agent_ids.py`.
 - [Generation 1339](001339.md) — Created `tests/test_verdict_label.py` (no such file existed) with a single mechanical test asserting `verdict_label("passed") == "PASS"`, verified against the real module definition so it exercises genuine behavior rather than an imagined signature.
