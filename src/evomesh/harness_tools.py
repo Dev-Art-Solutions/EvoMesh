@@ -604,6 +604,45 @@ async def tool_delete(context: ToolContext, args: dict[str, Any]) -> str:
     return f"deleted {where}\n{diff}" if diff else f"deleted {where}"
 
 
+
+# `python` is the one program most `shell_allow` lists grant, on the
+# assumption it only runs a trivial, side-effect-free snippet -- but the
+# interpreter itself has no sandbox, and `subprocess`/`os.system` let it run
+# any other program on PATH regardless of what harness.shell_allow says.
+# Found live (generation 1219, harness job that produced session 010969): a
+# job wrote a real file with `write`, got nervous, then ran `python -c
+# "import subprocess; subprocess.run(['git', 'checkout', path])"` through
+# this same tool and reverted its own edit -- the harness's own change
+# tracking (edit/write/delete) never saw the revert, so `_through_harness`
+# read back a clean git tree, decided the job had changed nothing, and
+# discarded the whole generation as a no-op. Denylisted here rather than
+# trying to sandbox the interpreter itself: this only has to stop a model
+# reaching for the obvious escape, not a determined attacker.
+PYTHON_ESCAPE_HINT = (
+    "DENIED: this python command can run another program (subprocess/os."
+    "system/shutil/...), which defeats harness.shell_allow the same way a "
+    "pipe would -- and it is how a past job reverted its own edit by "
+    "shelling out to `git checkout`. Use edit/write/delete to change files; "
+    "there is no git status/diff/checkout available here at all, and no "
+    "need for one -- trust what edit/write already told you instead of "
+    "trying to verify or undo it through a subprocess."
+)
+_PYTHON_ESCAPE_NEEDLES = (
+    "subprocess",
+    "os.system",
+    "os.popen",
+    "os.spawn",
+    "os.exec",
+    "os.fork",
+    'importlib.import_module("os")',
+    "importlib.import_module('os')",
+    '__import__("os")',
+    "__import__('os')",
+    "shutil.",
+    "pty.spawn",
+)
+
+
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     """Run one allowed program in the job root. The only tool that can do harm.
 
@@ -641,6 +680,8 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied(
             f"DENIED: {program} is not in harness.shell_allow (allowed: {allowed})"
         )
+    if program == "python" and any(needle in raw for needle in _PYTHON_ESCAPE_NEEDLES):
+        raise ToolDenied(PYTHON_ESCAPE_HINT)
     try:
         result = await asyncio.wait_for(
             run_command(parts[0], *parts[1:], cwd=context.root),

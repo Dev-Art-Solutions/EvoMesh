@@ -1091,6 +1091,40 @@ async def test_a_program_outside_the_list_is_named_in_the_refusal(project: Path)
     assert "curl is not in harness.shell_allow" in result
 
 
+async def test_python_cannot_shell_out_to_undo_its_own_edit(project: Path) -> None:
+    """A job wrote a real file, then reverted it with `git checkout` run
+    through `python -c "import subprocess; ..."` -- the harness's own
+    edit/write/delete tracking never saw the revert, so the generation
+    looked like a no-op and was discarded. `subprocess` (and the other
+    process-spawning entry points) must be denied the same as a program
+    outside shell_allow, or `shell_allow: [python]` is not an allow-list at
+    all -- it is unrestricted shell access with extra steps.
+    """
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {
+            "command": (
+                'python -c "import subprocess; '
+                "subprocess.run(['git', 'checkout', 'a.py'])\""
+            )
+        },
+    )
+
+    assert "DENIED" in result
+    assert "subprocess" in result.lower()
+
+
+async def test_a_python_snippet_with_no_process_spawning_still_runs(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": 'python -c "print(1 + 1)"'},
+    )
+
+    assert result.startswith("exit 0")
+
+
 async def test_a_pipe_is_an_argument_and_not_an_operator(project: Path) -> None:
     """No shell interpreter, so the allow-list cannot be walked around.
 
