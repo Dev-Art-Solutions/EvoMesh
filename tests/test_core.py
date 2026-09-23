@@ -428,6 +428,62 @@ async def test_candidate_workspace_is_isolated(tmp_path: Path) -> None:
     assert GenerationSupervisor(tmp_path / "runtime").metadata()["active"] == 1
 
 
+async def test_candidate_numbers_keep_climbing_across_discards(tmp_path: Path) -> None:
+    """The bug this guards against: numbering used to be `max(active, *open
+    candidates) + 1`, recomputed fresh on every create() -- once `active`
+    stopped moving (nothing had landed in a while), discarding a candidate
+    (which drops its metadata entry) made the very next create() land back
+    on the same number. Found live: ~200 of one real mesh's ~405 all-time
+    discards were logged under only two numbers, reused for over three
+    hours. next_candidate_number() must hand back a strictly increasing
+    sequence regardless of what happens to any candidate in between.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("ACTIVE = True", encoding="utf-8")
+    workspace = CandidateWorkspace(source, tmp_path / "runtime")
+
+    first = await workspace.create("first attempt")
+    supervisor = GenerationSupervisor(tmp_path / "runtime")
+    metadata = supervisor.metadata()
+    del metadata["candidates"][str(first.number)]  # simulate discard()
+    supervisor._write(metadata)  # noqa: SLF001 - test reaches in deliberately
+
+    second = await workspace.create("second attempt")
+
+    assert second.number == first.number + 1
+
+
+async def test_next_candidate_number_bootstraps_from_an_older_supervisor_json(
+    tmp_path: Path,
+) -> None:
+    """A supervisor.json written before this field existed has no
+    "next_number" key -- the first call must not restart numbering at 1
+    (which would collide with real history a human may still be looking
+    at) but pick up from the highest number already in play."""
+    runtime = tmp_path / "runtime"
+    supervisor = GenerationSupervisor(runtime)
+    supervisor.initialize()
+    metadata = supervisor.metadata()
+    metadata["active"] = 1217
+    supervisor._write(metadata)  # noqa: SLF001 - simulating pre-migration state
+
+    number = supervisor.next_candidate_number()
+
+    assert number == 1218
+    assert supervisor.metadata()["next_number"] == 1219
+
+
+async def test_next_candidate_number_is_persisted_and_monotonic(tmp_path: Path) -> None:
+    supervisor = GenerationSupervisor(tmp_path / "runtime")
+
+    first = supervisor.next_candidate_number()
+    second = supervisor.next_candidate_number()
+
+    assert second == first + 1
+    assert GenerationSupervisor(tmp_path / "runtime").next_candidate_number() == second + 1
+
+
 async def test_a_generation_cannot_be_written_outside_its_candidate(tmp_path: Path) -> None:
     """Containment moved to the tool that writes, and is still enforced.
 

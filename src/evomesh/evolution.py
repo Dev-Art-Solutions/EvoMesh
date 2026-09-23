@@ -503,6 +503,48 @@ class GenerationSupervisor:
         self.initialize()
         return sum(1 for _ in self.root.glob("*-candidate"))
 
+    def next_candidate_number(self) -> int:
+        """The next generation number to use -- persisted, and strictly
+        increasing regardless of what happens to any candidate after it is
+        opened.
+
+        create() used to compute ``max(active, *open_candidates) + 1``
+        fresh every time. That recomputes the same answer every time a
+        candidate is discarded and its metadata entry removed -- exactly
+        the "sits still for many creates in a row" failure shape
+        total_created()'s own docstring already names for a different
+        rotation seed, just never fixed here too. Found live: once
+        ``active`` stopped advancing (nothing had landed in hours), ~200 of
+        this mesh's ~405 all-time discards logged as only two numbers,
+        1218 and 1219, ping-ponging back and forth for over three hours --
+        the number only ever moved on when prune_stale() happened to
+        delete whichever directory was occupying it. Not just cosmetic
+        confusion: recent_target_failure() sorts candidate directories by
+        this same number to find "the most recent attempt at this exact
+        target", so reused numbers actively mis-order the reflective-
+        feedback mechanism that depends on it.
+        """
+        metadata = self.metadata()
+        stored = metadata.get("next_number")
+        if isinstance(stored, int) and stored > 0:
+            number = stored
+        else:
+            # One-time migration for a supervisor.json predating this field:
+            # bootstrap from the highest number already in play (active, any
+            # open candidate, anything still on disk) so numbering only ever
+            # climbs from here, never restarts at 1 and never collides with
+            # history a human might still be looking at.
+            existing = [int(item) for item in dict(metadata.get("candidates", {}))]
+            on_disk = [
+                int(entry.name.split("-", 1)[0])
+                for entry in self.root.glob("*-candidate")
+                if entry.name.split("-", 1)[0].isdigit()
+            ]
+            number = max([int(metadata["active"]), *existing, *on_disk], default=0) + 1
+        metadata["next_number"] = number + 1
+        self._write(metadata)
+        return number
+
     def candidates(self) -> list[Generation]:
         raw = dict(self.metadata().get("candidates", {}))
         items = [Generation.model_validate(value) for value in raw.values()]
@@ -729,14 +771,15 @@ class CandidateWorkspace:
 
     async def create(self, objective: str) -> Generation:
         metadata = self.supervisor.metadata()
-        existing = [int(item) for item in dict(metadata.get("candidates", {}))]
-        number = max([int(metadata["active"]), *existing], default=1) + 1
+        number = self.supervisor.next_candidate_number()
         # A discarded candidate keeps its directory so a human can still look at
-        # it, and its metadata entry is gone. Skip past anything already on disk
-        # rather than colliding with the leftovers of a previous pass.
+        # it, and its metadata entry is gone. next_candidate_number() already
+        # climbs monotonically, but skip past anything already on disk too --
+        # cheap insurance against a manually-copied or pre-migration directory
+        # occupying the number it just handed back.
         destination = self.supervisor.root / f"{number:06d}-candidate"
         while destination.exists():
-            number += 1
+            number = self.supervisor.next_candidate_number()
             destination = self.supervisor.root / f"{number:06d}-candidate"
         if await self._repository_root_is_a_real_repository():
             result = await run_command(
