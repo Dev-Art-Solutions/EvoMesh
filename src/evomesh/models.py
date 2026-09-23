@@ -56,6 +56,17 @@ class ToolCall:
     # OpenAI-compatible servers correlate a tool result with the call by id.
     # Ollama does not send one, so we mint it and both dialects stay one shape.
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # Gemini-specific, carried opaquely: its OpenAI-compatible layer 400s a
+    # later turn in the same conversation ("Function call is missing a
+    # thought_signature... required for tools to work correctly") unless this
+    # exact value, minted on the turn that made the call, is echoed back on
+    # that same tool_calls entry when it is replayed as history. Found live,
+    # 2026-09-23: a real repair job on gemini-3.5-flash-lite hit this on its
+    # second turn, fell back to the text protocol mid-job, and the weaker
+    # fallback then failed to actually repair anything -- the generation was
+    # discarded that would otherwise have landed. None on every other
+    # provider dialect, which never populates or reads it.
+    thought_signature: str | None = None
 
 
 @dataclass
@@ -93,6 +104,20 @@ def _parse_arguments(raw: object) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _extract_thought_signature(item: dict[str, Any]) -> str | None:
+    """Gemini's OpenAI-compatible layer nests this under a tool_call entry's
+    own ``extra_content.google.thought_signature`` -- see ToolCall's own
+    docstring for why it must be captured here and echoed back later."""
+    extra = item.get("extra_content")
+    if not isinstance(extra, dict):
+        return None
+    google = extra.get("google")
+    if not isinstance(google, dict):
+        return None
+    signature = google.get("thought_signature")
+    return signature if isinstance(signature, str) else None
 
 
 def _tools_are_unsupported(exc: httpx.HTTPStatusError) -> bool:
@@ -347,8 +372,9 @@ class OpenAICompatibleProvider:
     def _wire(message: ChatMessage) -> dict[str, Any]:
         payload: dict[str, Any] = {"role": message.role, "content": message.content}
         if message.tool_calls:
-            payload["tool_calls"] = [
-                {
+            wired_calls = []
+            for call in message.tool_calls:
+                entry: dict[str, Any] = {
                     "id": call.id,
                     "type": "function",
                     "function": {
@@ -356,8 +382,15 @@ class OpenAICompatibleProvider:
                         "arguments": json.dumps(call.arguments),
                     },
                 }
-                for call in message.tool_calls
-            ]
+                if call.thought_signature is not None:
+                    # Gemini-only: see ToolCall.thought_signature's own
+                    # docstring. Echoed back in the exact shape Gemini's own
+                    # response used it in, not invented here.
+                    entry["extra_content"] = {
+                        "google": {"thought_signature": call.thought_signature}
+                    }
+                wired_calls.append(entry)
+            payload["tool_calls"] = wired_calls
         if message.role == "tool":
             payload["tool_call_id"] = message.tool_call_id
         return payload
@@ -397,6 +430,7 @@ class OpenAICompatibleProvider:
                 name=str(item["function"]["name"]),
                 arguments=_parse_arguments(item["function"].get("arguments")),
                 id=str(item.get("id") or uuid.uuid4().hex[:12]),
+                thought_signature=_extract_thought_signature(item),
             )
             for item in answer.get("tool_calls") or []
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
