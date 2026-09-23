@@ -659,12 +659,16 @@ async def tool_delete(context: ToolContext, args: dict[str, Any]) -> str:
 # reaching for the obvious escape, not a determined attacker.
 PYTHON_ESCAPE_HINT = (
     "DENIED: this python command can run another program (subprocess/os."
-    "system/shutil/...), which defeats harness.shell_allow the same way a "
-    "pipe would -- and it is how a past job reverted its own edit by "
-    "shelling out to `git checkout`. Use edit/write/delete to change files; "
+    "system/shutil/...) or write/delete a file directly (open(..., 'w'), "
+    ".write(, write_text(, os.remove(, .unlink(, ...), either of which "
+    "defeats harness.shell_allow and this tool's own edit/write/delete "
+    "tracking the same way a pipe would. Found live, both ways: a job "
+    "reverted its own edit by shelling out to `git checkout`, and a "
+    "separate job rewrote a file with a raw `open(path, 'w').write(...)` "
+    "heredoc -- the change (or non-change) never showed up in this job's "
+    "recorded diff either time. Use edit/write/delete for every file change; "
     "there is no git status/diff/checkout available here at all, and no "
-    "need for one -- trust what edit/write already told you instead of "
-    "trying to verify or undo it through a subprocess."
+    "need for one -- trust what edit/write already told you."
 )
 _PYTHON_ESCAPE_NEEDLES = (
     "subprocess",
@@ -679,6 +683,21 @@ _PYTHON_ESCAPE_NEEDLES = (
     "__import__('os')",
     "shutil.",
     "pty.spawn",
+    # Direct file mutation: the same escape as subprocess, just without a
+    # second process. `open(...).read()` is fine (and common, for a quick
+    # check); it is a *write*-mode open or the write call itself that lets a
+    # job change a file with none of edit/write/delete's tracking or
+    # fabrication guardrails.
+    ".write(",
+    ".write_text(",
+    ".write_bytes(",
+    "os.remove(",
+    "os.rename(",
+    "os.replace(",
+    "os.rmdir(",
+    "os.truncate(",
+    "os.unlink(",
+    ".unlink(",
 )
 
 # There is no shell interpreter here (see the docstring below), so these
@@ -688,8 +707,14 @@ _PYTHON_ESCAPE_NEEDLES = (
 # py_compile a nonexistent file named literally `&&` to compile next, and
 # came back as `[Errno 2] No such file or directory: '&&'` -- a step spent on
 # a self-check the model had no way to interpret, right after it had finally
-# started landing closer edits post-fabrication-nudge.
+# started landing closer edits post-fabrication-nudge. `<<'EOF'` (piping a
+# heredoc script into `python -`) is the same class of mistake but worse: it
+# doesn't fail fast, it hangs for the full shell_seconds timeout, because
+# nothing here reads stdin for it -- found live burning 60 of a job's ~240
+# spent seconds on exactly that. Checked as a prefix, not exact membership:
+# shlex glues `<<'EOF'` into one token, `<<EOF`, not two.
 _SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
+_SHELL_REDIRECT_PREFIXES = ("<<", ">>", "<", ">")
 
 
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
@@ -731,12 +756,15 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         )
     if program == "python" and any(needle in raw for needle in _PYTHON_ESCAPE_NEEDLES):
         raise ToolDenied(PYTHON_ESCAPE_HINT)
-    if _SHELL_OPERATOR_TOKENS & set(parts[1:]):
+    if _SHELL_OPERATOR_TOKENS & set(parts[1:]) or any(
+        token.startswith(_SHELL_REDIRECT_PREFIXES) for token in parts[1:]
+    ):
         raise ToolDenied(
             "DENIED: there is no shell interpreter here, so `&&`, `||`, `;`, "
-            "`|` and `&` are not operators -- they would reach the program as "
-            "literal arguments, which fails in a way that has nothing to do "
-            "with your command. Run one plain command per `shell` call."
+            "`|`, `&`, `<`, `<<`, `>` and `>>` are not operators -- they "
+            "would reach the program as literal arguments (or, for `<`/`<<`, "
+            "just hang until the timeout, since nothing reads that input). "
+            "Run one plain command per `shell` call, with no redirection."
         )
     try:
         result = await asyncio.wait_for(

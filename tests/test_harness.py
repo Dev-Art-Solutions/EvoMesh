@@ -1288,6 +1288,59 @@ async def test_a_python_snippet_with_no_process_spawning_still_runs(project: Pat
     assert result.startswith("exit 0")
 
 
+async def test_python_cannot_write_a_file_directly(project: Path) -> None:
+    """Found live: a job that never once got an `edit` to land instead ran
+    `python - <<'EOF'` piping a script that did `open(path, 'w').write(...)`
+    -- a raw file write with none of edit/write/delete's tracking, and none
+    of the fabrication guardrails those tools carry (this same job's `old`
+    text didn't even exist in the real file, same as every fabricated
+    `edit`). A subprocess is not the only way to mutate a file out from
+    under the harness's own bookkeeping -- plain file I/O in the interpreter
+    that is already running is another, and `subprocess`-only denylisting
+    misses it entirely.
+    """
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {
+            "command": (
+                "python -c \"open('src/answer.py', 'w').write('x = 1')\""
+            )
+        },
+    )
+
+    assert "DENIED" in result
+
+
+async def test_python_read_only_file_access_still_runs(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": "python -c \"print(open('src/answer.py').read())\""},
+    )
+
+    assert result.startswith("exit 0")
+
+
+async def test_a_heredoc_is_denied_instead_of_hanging_until_the_timeout(
+    project: Path,
+) -> None:
+    """`python - <<'EOF'` pipes a script over stdin -- but nothing here reads
+    stdin for it, so instead of failing fast like `&&` does, it just hangs
+    until shell_seconds runs out. Found live: 60 of a job's ~240 spent
+    seconds went to exactly this. shlex glues `<<'EOF'` into one token,
+    `<<EOF`, so this has to be a prefix check, not exact membership.
+    """
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": "python - <<'EOF'"},
+    )
+
+    assert "DENIED" in result
+    assert "no shell interpreter" in result.lower()
+
+
 async def test_a_chained_command_is_denied_instead_of_run_as_literal_args(
     project: Path,
 ) -> None:
