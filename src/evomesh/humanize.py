@@ -52,6 +52,8 @@ def humanize_duration(seconds: float) -> str:
     seconds = max(0, _safe_float(seconds))
     if seconds < 1:
         return f"{seconds * 1000:.0f} ms"
+    if seconds < _DAYS * _HOURS * _MINUTES * _WEEKS:
+        return f"{seconds // (_DAYS * _HOURS)} days"
     parts = []
     remaining = int(seconds)
     weeks, remaining = divmod(remaining, _DAYS * _HOURS * _MINUTES)
