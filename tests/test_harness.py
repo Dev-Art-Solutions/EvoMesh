@@ -1508,7 +1508,9 @@ async def test_a_configured_fetcher_returns_its_output(
 ) -> None:
     calls: list[tuple[str, ...]] = []
 
-    async def fake_run_command(program: str, *arguments: str, cwd: Path | None = None):
+    async def fake_run_command(
+        program: str, *arguments: str, cwd: Path | None = None, timeout_seconds: float | None = None
+    ):
         calls.append((program, *arguments))
         await asyncio.to_thread(
             Path(arguments[3]).write_text, "# Example\n\nHello.\n", encoding="utf-8"
@@ -1537,7 +1539,9 @@ async def test_dynamic_fetch_uses_the_browser_command_and_millisecond_timeout(
 ) -> None:
     calls: list[tuple[str, ...]] = []
 
-    async def fake_run_command(program: str, *arguments: str, cwd: Path | None = None):
+    async def fake_run_command(
+        program: str, *arguments: str, cwd: Path | None = None, timeout_seconds: float | None = None
+    ):
         calls.append((program, *arguments))
         await asyncio.to_thread(
             Path(arguments[3]).write_text, "Rendered.\n", encoding="utf-8"
@@ -1564,7 +1568,9 @@ async def test_dynamic_fetch_uses_the_browser_command_and_millisecond_timeout(
 async def test_a_failed_fetch_is_named_in_the_refusal(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def failing_run_command(program: str, *arguments: str, cwd: Path | None = None):
+    async def failing_run_command(
+        program: str, *arguments: str, cwd: Path | None = None, timeout_seconds: float | None = None
+    ):
         return CommandResult(exit_code=1, output="ConnectionError: name resolution failed")
 
     monkeypatch.setattr("evomesh.harness_tools.run_command", failing_run_command)

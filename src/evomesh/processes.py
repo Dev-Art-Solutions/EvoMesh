@@ -32,24 +32,55 @@ from pathlib import Path
 class CommandResult:
     exit_code: int
     output: str
+    timed_out: bool = False
 
 
 async def run_command(
-    program: str, *arguments: str, cwd: Path | None = None
+    program: str,
+    *arguments: str,
+    cwd: Path | None = None,
+    timeout_seconds: float | None = None,
 ) -> CommandResult:
-    """Run one command to completion, with stderr folded into stdout."""
+    """Run one command to completion, with stderr folded into stdout.
 
-    def call() -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(  # noqa: S603 - the caller supplies the program
-            [program, *arguments],
-            cwd=str(cwd) if cwd else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+    Named ``timeout_seconds``, not ``timeout`` -- ruff's ASYNC109 reads a
+    plain ``timeout`` parameter on an async function as "should have used
+    ``asyncio.timeout()`` instead", which is backwards here: asyncio-level
+    cancellation is exactly what this replaces (see below), so the rule's
+    suggested fix would reintroduce the bug.
 
-    completed = await asyncio.to_thread(call)
+    The value is enforced by ``subprocess.run`` itself, not by a caller
+    wrapping this coroutine in ``asyncio.wait_for``. That used to be the
+    shape here, and it was wrong the same way the module docstring's
+    transport bug was wrong: cancelling the *await* only stops this side
+    from waiting on the worker thread, it does not reach into the thread
+    and stop the blocking ``subprocess.run`` call still running inside it --
+    so a "timed out" child kept running for real. Found live: a python
+    process from a job's hung ``<<'EOF'`` heredoc read (see harness_tools.py)
+    still alive more than two days after its supposed 60s ``shell_seconds``
+    budget, holding no lock and doing nothing anyone could see from the
+    mesh log. ``subprocess.run(timeout=...)`` kills the child itself (via
+    ``Popen.kill()``) before raising, on whichever thread is actually
+    running it, so the process is really gone either way.
+    """
+
+    def call() -> tuple[int, bytes, bool]:
+        try:
+            completed = subprocess.run(  # noqa: S603 - the caller supplies the program
+                [program, *arguments],
+                cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            return completed.returncode, completed.stdout or b"", False
+        except subprocess.TimeoutExpired as exc:
+            return 124, exc.output or b"", True
+
+    exit_code, output, timed_out = await asyncio.to_thread(call)
     return CommandResult(
-        exit_code=completed.returncode,
-        output=(completed.stdout or b"").decode(errors="replace"),
+        exit_code=exit_code,
+        output=output.decode(errors="replace"),
+        timed_out=timed_out,
     )

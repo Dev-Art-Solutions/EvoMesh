@@ -767,19 +767,20 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
             "Run one plain command per `shell` call, with no redirection."
         )
     try:
-        result = await asyncio.wait_for(
-            run_command(parts[0], *parts[1:], cwd=context.root),
-            timeout=context.shell_seconds,
+        result = await run_command(
+            parts[0], *parts[1:], cwd=context.root, timeout_seconds=context.shell_seconds
         )
-    except TimeoutError:
-        # A result, not an exception: a command that ran too long is something
-        # the model can work around, and a tool that can hang is a worker that
-        # never comes back and a queue that never drains.
-        raise ToolDenied(
-            f"DENIED: {program} did not finish within {context.shell_seconds:.0f}s"
-        ) from None
     except OSError as exc:
         raise ToolDenied(f"DENIED: {program} could not be started: {exc}") from exc
+    if result.timed_out:
+        # A result, not an exception: a command that ran too long is something
+        # the model can work around, and a tool that can hang is a worker that
+        # never comes back and a queue that never drains. The process itself
+        # is already dead -- run_command's own timeout killed it -- so this
+        # is just reporting that, not still waiting on anything.
+        raise ToolDenied(
+            f"DENIED: {program} did not finish within {context.shell_seconds:.0f}s"
+        )
     context.tally.reads += 1
     body = _clip(result.output.rstrip(), context.limits, unit="lines")
     return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
@@ -846,16 +847,15 @@ def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = Non
             raise ToolDenied(f"DENIED: {definition.name} needs: {', '.join(missing)}")
         values = [str(args[param.name]) for param in definition.parameters if param.name in args]
         try:
-            result = await asyncio.wait_for(
-                run_command(base[0], *base[1:], *values, cwd=context.root),
-                timeout=context.shell_seconds,
+            result = await run_command(
+                base[0], *base[1:], *values, cwd=context.root, timeout_seconds=context.shell_seconds
             )
-        except TimeoutError:
-            raise ToolDenied(
-                f"DENIED: {definition.name} did not finish within {context.shell_seconds:.0f}s"
-            ) from None
         except OSError as exc:
             raise ToolDenied(f"DENIED: {definition.name} could not be started: {exc}") from exc
+        if result.timed_out:
+            raise ToolDenied(
+                f"DENIED: {definition.name} did not finish within {context.shell_seconds:.0f}s"
+            )
         context.tally.reads += 1
         body = _clip(result.output.rstrip(), context.limits, unit="lines")
         return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
@@ -921,17 +921,18 @@ async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
         if css_selector:
             arguments += ["--css-selector", css_selector]
         try:
-            result = await asyncio.wait_for(
-                run_command(context.scraping_executable, *arguments),
+            result = await run_command(
+                context.scraping_executable,
+                *arguments,
                 # A browser launch is real overhead on top of the page's own
                 # timeout, not covered by --timeout above; the static path
                 # gets the same margin rather than a second code path.
-                timeout=context.scraping_timeout + 30,
+                timeout_seconds=context.scraping_timeout + 30,
             )
-        except TimeoutError:
-            raise ToolDenied(f"DENIED: fetching {url} did not finish in time") from None
         except OSError as exc:
             raise ToolDenied(f"DENIED: the fetcher could not be started: {exc}") from exc
+        if result.timed_out:
+            raise ToolDenied(f"DENIED: fetching {url} did not finish in time")
         if result.exit_code != 0 or not output_path.exists():
             hint = (
                 " (the browser may not be installed -- see "
