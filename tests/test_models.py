@@ -1,7 +1,11 @@
 import httpx
 import pytest
 
-from evomesh.models import _parse_arguments, _post_with_retry
+from evomesh.models import (
+    _extract_thought_signature,
+    _parse_arguments,
+    _post_with_retry,
+)
 
 
 class _FakeClient(httpx.AsyncClient):
@@ -31,3 +35,17 @@ async def test_post_with_retry_returns_response_once():
 
     assert fake.calls == 1
     assert out.status_code == 200
+
+
+def test_extract_thought_signature_returns_nested_string():
+    item = {
+        "extra_content": {
+            "google": {
+                "thought_signature": "thinking step by step",
+            },
+        },
+    }
+
+    out = _extract_thought_signature(item)
+
+    assert out == "thinking step by step"
