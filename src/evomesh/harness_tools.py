@@ -421,7 +421,47 @@ def _match_lines(content: str, needle: str) -> list[int]:
     return lines
 
 
-def _not_found_hint(content: str, old: str) -> str:
+def _distinctive_lines(text: str) -> list[str]:
+    """Lines of `old` worth anchoring on: long enough not to match by luck.
+
+    A short generic line (`continue`, `return None`) matches unrelated code
+    by coincidence and points the model at the wrong place -- found live,
+    right after the first version of this hint shipped. 12+ characters only.
+    """
+    return [line.strip() for line in text.splitlines() if len(line.strip()) >= 12]
+
+
+def _find_elsewhere(context: ToolContext, target: Path, old: str) -> str | None:
+    """Which other tracked file, if any, actually contains this text.
+
+    Found live: a job correctly `read` agent_strategies.py, then submitted an
+    `edit` for that exact content against harness_tools.py -- the wrong path
+    entirely. `old` was not fabricated at all, just aimed at the wrong file,
+    so the in-file "does this one line appear" check below has nothing to
+    show, and without this a job that confuses two files gets the same "no
+    line of old appears anywhere" fallback whether it fabricated the text or
+    just named the wrong path -- two different mistakes that need two
+    different corrections.
+    """
+    candidates = _distinctive_lines(old)
+    if not candidates:
+        return None
+    needle = max(candidates, key=len)
+    for path in sorted(context.root.rglob("*.py")):
+        if path == target or not path.is_file():
+            continue
+        if SKIP_DIRECTORIES & set(_inside(context.root, path)):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if needle in text:
+            return "/".join(_inside(context.root, path))
+    return None
+
+
+def _not_found_hint(context: ToolContext, target: Path, content: str, old: str) -> str:
     """Give a not-found refusal something real to anchor a retry on.
 
     A blind "read the file again" assumes the model's `old` was a faithful
@@ -431,21 +471,12 @@ def _not_found_hint(content: str, old: str) -> str:
     doesn't correct that, it just gets re-fabricated the same way on the next
     attempt. Anchoring on whichever line of `old` does appear verbatim points
     straight at the real text to copy from; when no line of it appears at
-    all, showing the top of the real file at least confirms whether the
-    model even has the right file in mind.
-
-    The anchor line has to be distinctive, not just present. A short generic
-    line (`continue`, `return None`) matches unrelated code by coincidence
-    and points the model at the wrong place -- found live, right after the
-    first version of this hint shipped. Requiring 12+ characters and picking
-    the longest, least-ambiguous match across every line of `old` favours a
-    real anchor over a coincidental one.
+    all, checking every other file before giving up separates "this text is
+    invented" from "this text is real, but for a different path" -- and only
+    the first of those is actually fabrication.
     """
     candidates: list[tuple[str, list[int]]] = []
-    for line in old.splitlines():
-        stripped = line.strip()
-        if len(stripped) < 12:
-            continue
+    for stripped in _distinctive_lines(old):
         at = _match_lines(content, stripped)
         if at:
             candidates.append((stripped, at))
@@ -454,6 +485,13 @@ def _not_found_hint(content: str, old: str) -> str:
         stripped, at = min(candidates, key=lambda c: (len(c[1]), -len(c[0])))
         return "This line of 'old' does appear, but not the rest of it:\n" + _neighbourhoods(
             content, at
+        )
+    elsewhere = _find_elsewhere(context, target, old)
+    if elsewhere is not None:
+        return (
+            f"That text is not in this file, but it does appear in {elsewhere} -- "
+            f'you may be editing the wrong path. Pass "path": "{elsewhere}" instead '
+            "if that is where this change belongs."
         )
     lines = content.splitlines()
     shown = lines[:20]
@@ -504,7 +542,8 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     if not found:
         raise ToolDenied(
             f"DENIED: that text is not in {where}. It may have changed since you last "
-            "saw it, or the indentation may differ.\n" + _not_found_hint(content, old)
+            "saw it, or the indentation may differ.\n"
+            + _not_found_hint(context, target, content, old)
         )
     if len(found) > 1:
         # The refusal carries the surrounding lines, not just the count. A model

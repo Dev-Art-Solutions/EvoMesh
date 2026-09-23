@@ -500,6 +500,34 @@ async def test_a_wholly_fabricated_edit_shows_the_start_of_the_real_file(
     assert "def reconsider() -> bool:" in result
 
 
+async def test_a_not_found_edit_names_the_file_it_actually_came_from(
+    project: Path,
+) -> None:
+    """`old` is not fabricated at all here -- it is real code, copied
+    correctly, just aimed at the wrong path. Found live: a job `read`
+    agent_strategies.py, then submitted this exact `edit` against
+    harness_tools.py instead. That is a different mistake from inventing
+    text, and needs a different correction: the real file's name, not
+    another dump of whatever the wrong file happens to start with."""
+    (project / "src" / "other.py").write_text(
+        "def distinctive_marker_line() -> None:\n    pass\n", encoding="utf-8"
+    )
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {
+            "path": "src/answer.py",
+            "old": "def distinctive_marker_line() -> None:\n    pass",
+            "new": "x",
+        },
+    )
+
+    assert "DENIED: that text is not in" in result
+    assert "it does appear in src/other.py" in result
+    assert "you may be editing the wrong path" in result
+
+
 async def test_a_not_found_edit_prefers_a_distinctive_anchor_over_a_generic_one(
     project: Path,
 ) -> None:
