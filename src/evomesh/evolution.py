@@ -26,6 +26,7 @@ from evomesh.codebase import (
     project_map,
     stray_root_files,
     untested_objective,
+    untested_target,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -1118,6 +1119,64 @@ class EnvironmentEvolver:
         module's exports are all mentioned under tests/ -- the second-tier
         fallback once :meth:`backlog_objective` itself is empty."""
         return untested_objective(self.workspace.repository_root, seed)
+
+    def untested_target(self, seed: int) -> tuple[Module, str] | None:
+        """The (module, exported name) pair an untested objective would
+        target right now."""
+        return untested_target(self.workspace.repository_root, seed)
+
+    def recent_target_failure(
+        self, needles: tuple[str, ...], lookback: int = 20
+    ) -> str | None:
+        """Why the most recent generation aimed at this exact target failed,
+        or ``None`` if none of the last ``lookback`` generation directories
+        were aimed at it (or one was, but there's nothing concrete to say).
+
+        The GEPA-style idea worth taking without taking GEPA itself: don't
+        hand the model a fresh, stateless attempt at a target it (or an
+        earlier generation) already failed -- say how, so the next attempt
+        can avoid the specific mistake instead of rediscovering it. Read the
+        objective's own MUTATION_OBJECTIVE.md prefix to identify a match, the
+        same way :meth:`recent_backlog_streak` does, but scans a wider window
+        (the seed rotation means the *immediately* preceding generation is
+        rarely the same target -- what matters here is the most recent one
+        that was, however many unrelated picks came between) and returns the
+        failure itself rather than just a count.
+        """
+        numbered = sorted(
+            (
+                (int(entry.name.split("-", 1)[0]), entry)
+                for entry in self.workspace.supervisor.root.glob("*-candidate")
+                if entry.name.split("-", 1)[0].isdigit()
+            ),
+            key=lambda pair: -pair[0],
+        )
+        for _, entry in numbered[:lookback]:
+            objective_path = entry / "MUTATION_OBJECTIVE.md"
+            if not objective_path.is_file():
+                continue
+            text = objective_path.read_text(encoding="utf-8", errors="replace")
+            if not text.startswith(needles):
+                continue
+            validation_path = entry / "validation-result.json"
+            if not validation_path.is_file():
+                return (
+                    "it made no real edit at all -- the candidate was discarded "
+                    "before anything could even be validated."
+                )
+            try:
+                result = ValidationResult.model_validate_json(
+                    validation_path.read_text(encoding="utf-8", errors="replace")
+                )
+            except ValueError:
+                return None
+            failure = result.failure()
+            if failure is None:
+                return None
+            command = str(failure.get("command", ""))
+            output = excerpt(str(failure.get("output", "")), 600)
+            return f"`{command}` failed:\n{output}"
+        return None
 
     def recent_backlog_streak(self, module_name: str, lookback: int = 3) -> int:
         """How many of the most recent generations, newest first, targeted

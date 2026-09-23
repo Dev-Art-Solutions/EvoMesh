@@ -772,6 +772,130 @@ async def test_the_delete_nudge_stays_on_once_it_fires_instead_of_flip_flopping(
     ]
 
 
+async def test_recent_target_failure_is_none_with_no_matching_generation(
+    tmp_path: Path, project: Path
+) -> None:
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+
+    assert evolver.recent_target_failure(("Wire src/evomesh/lonely.py",)) is None
+
+
+async def test_recent_target_failure_reports_a_real_validation_failure(
+    tmp_path: Path, project: Path
+) -> None:
+    """The GEPA-style idea: the next attempt at the same target should see
+    exactly why the last one failed, not start from nothing."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+    generation = await evolver.create_candidate("Wire src/evomesh/lonely.py into the mesh.")
+    result = ValidationResult(
+        passed=False,
+        commands=[{"command": "uv run pytest", "exit_code": 1, "output": "AssertionError: boom"}],
+    )
+    (generation.path / "validation-result.json").write_text(
+        result.model_dump_json(), encoding="utf-8"
+    )
+    evolver.workspace.supervisor.discard(generation.number)
+
+    failure = evolver.recent_target_failure(("Wire src/evomesh/lonely.py",))
+
+    assert failure is not None
+    assert "uv run pytest" in failure
+    assert "AssertionError: boom" in failure
+
+
+async def test_recent_target_failure_reports_a_pure_no_op(
+    tmp_path: Path, project: Path
+) -> None:
+    """No validation-result.json at all means the harness job never even
+    produced a real edit to validate -- a different, still useful thing to
+    tell the next attempt."""
+    from evomesh.storage import SQLiteRepository
+
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
+    )
+    generation = await evolver.create_candidate("Wire src/evomesh/lonely.py into the mesh.")
+    evolver.workspace.supervisor.discard(generation.number)
+
+    failure = evolver.recent_target_failure(("Wire src/evomesh/lonely.py",))
+
+    assert failure is not None
+    assert "no real edit" in failure
+
+
+async def test_a_repeated_backlog_target_gets_told_how_it_failed_last_time(
+    tmp_path: Path, project: Path
+) -> None:
+    """A single-module backlog hands the same target back every generation
+    -- the second attempt's objective should carry the first attempt's real
+    failure, not repeat it blind."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text('"""Nobody calls this."""\n', encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)
+    first_state = await evolver.pipeline_state()
+    assert "last attempt" not in first_state["objective"].lower()
+    result = ValidationResult(
+        passed=False,
+        commands=[
+            {"command": "uv run ruff check .", "exit_code": 1, "output": "F821 undefined name"}
+        ],
+    )
+    generation = evolver.candidate(int(first_state["generation"]))
+    (generation.path / "validation-result.json").write_text(
+        result.model_dump_json(), encoding="utf-8"
+    )
+    evolver.workspace.supervisor.discard(generation.number)
+    await evolver.reset_pipeline()
+
+    await behavior.cycle(context)
+    second_state = await evolver.pipeline_state()
+
+    assert second_state["objective"].startswith("Wire src/evomesh/lonely.py")
+    assert "last attempt at this exact target failed" in second_state["objective"].lower()
+    assert "F821 undefined name" in second_state["objective"]
+
+
 async def test_a_plan_is_drafted_reviewed_split_and_worked_item_by_item(
     tmp_path: Path, project: Path
 ) -> None:

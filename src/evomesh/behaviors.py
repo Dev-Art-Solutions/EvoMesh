@@ -155,6 +155,29 @@ def _extract_rationale(answer: str) -> str:
     return answer
 
 
+def _with_recent_failure(
+    evolver: EnvironmentEvolver, objective: str, needles: tuple[str, ...]
+) -> str:
+    """Append how the last attempt at this exact target failed, if any.
+
+    The one idea worth taking from GEPA (github.com/NousResearch/
+    hermes-agent-self-evolution) without taking GEPA itself: read execution
+    history to understand *why* the last attempt failed, and say so, rather
+    than handing the model a fresh, stateless retry that can only rediscover
+    the same mistake. No new dependency, no LLM-as-judge, no eval harness --
+    just the validation record a discarded generation already leaves on
+    disk, read back the same way `recent_backlog_streak` already does.
+    """
+    failure = evolver.recent_target_failure(needles)
+    if failure is None:
+        return objective
+    return (
+        f"{objective}\n\n"
+        "The last attempt at this exact target failed. Read this before "
+        f"trying again, so you do not repeat it:\n{failure}"
+    )
+
+
 class ArchitectBehavior(ReflectiveBehavior):
     """Reactive only. The Architect must not invent agents nobody asked for."""
 
@@ -574,6 +597,15 @@ class EvolverBehavior(BDIBehavior):
             backlog = evolver.backlog_objective(seed, nudge_delete=nudge_delete)
             if backlog is not None:
                 objective = backlog
+                if target is not None:
+                    objective = _with_recent_failure(
+                        evolver,
+                        objective,
+                        (
+                            f"Wire src/evomesh/{target.name}.py",
+                            f"Delete src/evomesh/{target.name}.py",
+                        ),
+                    )
             else:
                 # Found live 2026-09-23: after ~1200 generations the dead-module
                 # backlog above ran dry (0 orphans left, backlog_objective always
@@ -586,6 +618,14 @@ class EvolverBehavior(BDIBehavior):
                 untested = evolver.untested_objective(seed)
                 if untested is not None:
                     objective = untested
+                    pair = evolver.untested_target(seed)
+                    if pair is not None:
+                        module, name = pair
+                        needle = (
+                            f"Write a focused unit test for `{name}` in "
+                            f"`src/evomesh/{module.name}.py`."
+                        )
+                        objective = _with_recent_failure(evolver, objective, (needle,))
         generation = await evolver.create_candidate(objective)
         # create_candidate()/prune_stale() may just have deleted old
         # generation directories, and a harness job's filesystem grant
