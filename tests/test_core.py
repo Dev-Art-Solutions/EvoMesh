@@ -484,6 +484,46 @@ async def test_next_candidate_number_is_persisted_and_monotonic(tmp_path: Path) 
     assert GenerationSupervisor(tmp_path / "runtime").next_candidate_number() == second + 1
 
 
+async def test_total_created_does_not_plateau_once_pruning_caps_the_disk_count(
+    tmp_path: Path,
+) -> None:
+    """The bug this guards against: total_created() used to count
+    *-candidate directories still on disk, which quietly broke its own
+    documented "keeps climbing on every create()" promise once
+    prune_stale() (added later, for unbounded disk/worktree growth) starts
+    deleting the oldest ones past GENERATION_RETENTION -- the on-disk count
+    then plateaus at the retention ceiling instead of climbing further.
+    Found live, 2026-09-23: frozen at 53 (this mesh's real retention cap)
+    for hours, so the untested-export objective's seed rotation
+    (behaviors.py's _open()) deterministically handed the exact same
+    target to generation after generation, across two different models --
+    not a model quality issue, a stuck rotation seed. total_created() must
+    now read the same persisted counter next_candidate_number() advances,
+    so it survives pruning down to nothing.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("ACTIVE = True", encoding="utf-8")
+    workspace = CandidateWorkspace(source, tmp_path / "runtime")
+    first = await workspace.create("first")
+    workspace.supervisor.discard(first.number)
+    second = await workspace.create("second")
+    workspace.supervisor.discard(second.number)
+    before_prune = workspace.supervisor.total_created()
+
+    # Simulate the retention ceiling being reached: prune_stale() only ever
+    # deletes discarded (no longer "open") candidates, the same as a real
+    # mesh's own discard-then-prune sequence -- prune every one away here to
+    # reach the same disk state a long-running mesh reaches once total
+    # generations run well past GENERATION_RETENTION.
+    await workspace.prune_stale(keep=0)
+    assert not list((tmp_path / "runtime").glob("*-candidate"))
+
+    await workspace.create("third")
+
+    assert workspace.supervisor.total_created() > before_prune
+
+
 async def test_a_generation_cannot_be_written_outside_its_candidate(tmp_path: Path) -> None:
     """Containment moved to the tool that writes, and is still enforced.
 

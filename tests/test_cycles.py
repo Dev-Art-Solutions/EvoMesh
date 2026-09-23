@@ -655,20 +655,24 @@ async def test_the_backlog_rotation_seed_survives_a_discard(
         CandidateWorkspace(project, tmp_path / "generations"), repository, MockProvider()
     )
 
+    before_any = evolver.workspace.supervisor.total_created()
     first = await evolver.create_candidate("placeholder")
+    after_first = evolver.workspace.supervisor.total_created()
     evolver.workspace.supervisor.discard(first.number)  # back to zero open candidates
     second = await evolver.create_candidate("placeholder")
 
-    assert evolver.workspace.supervisor.total_created() == 2
     target_0 = evolver.backlog_target(0)
     target_1 = evolver.backlog_target(1)
     assert target_0 is not None
     assert target_1 is not None
     assert target_0.name != target_1.name
-    # The point isn't the exact number (directory-skipping already makes that
-    # monotonic on its own) -- it's that total_created() reflects two
-    # generations having been opened, discard included, not zero.
+    # The point isn't a specific number (total_created() is now read from
+    # next_candidate_number()'s own persisted counter, see its docstring --
+    # what matters is that it keeps climbing on every create(), discard
+    # included, never resets or plateaus).
     assert second.number > first.number
+    assert after_first > before_any
+    assert evolver.workspace.supervisor.total_created() > after_first
 
 
 async def test_a_backlog_target_that_keeps_failing_gets_nudged_toward_deletion(

@@ -488,19 +488,36 @@ class GenerationSupervisor:
         return json.loads(self.metadata_path.read_text(encoding="utf-8"))
 
     def total_created(self) -> int:
-        """How many generations have ever been opened, discards included.
+        """How many generations have ever been opened, discards included --
+        read from the same persisted, monotonically-increasing counter
+        ``next_candidate_number()`` itself advances, so a rotation seed
+        built from this can never plateau.
 
         Unlike ``candidates()`` (open only -- ``discard()`` removes the
         metadata entry) or ``metadata()['active']`` (only moves on a real
-        land), a discarded candidate's directory is kept on disk, so this
-        keeps climbing by exactly one on every single ``create()`` call
-        regardless of what happens to it after. A rotation seed built from
-        either of the other two can sit still for many discards in a row --
-        found live: a length-1 dead-module backlog handed the same stubborn
-        module to five generations straight because the open-candidate count
-        it was seeded from kept resetting to 0 on every discard.
+        land), this was meant to keep climbing by exactly one on every
+        single ``create()`` call regardless of what happens to it after --
+        but it used to count ``*-candidate`` directories still on disk,
+        which quietly broke that exact promise once ``prune_stale()`` (added
+        later, for a different reason -- unbounded disk/worktree growth)
+        started deleting the oldest ones past ``GENERATION_RETENTION``: the
+        on-disk count then plateaus at the retention ceiling instead of ever
+        climbing further. Found live, 2026-09-23: frozen at 53 (this mesh's
+        retention cap) for hours, so ``untested_objective()``'s seed
+        rotation (behaviors.py's ``_open()``) deterministically handed the
+        exact same target (``parse()`` in cron.py) to generation after
+        generation across two different models -- not a model quality
+        issue at all, a stuck rotation seed. ``next_candidate_number()``
+        already solves "monotonic, survives pruning" for the generation
+        *number*; this reads that same persisted counter for the *seed*
+        instead of recomputing something that can plateau. Falls back to
+        the old disk-count for a supervisor.json that predates the
+        ``next_number`` field (before it has ever been written once).
         """
-        self.initialize()
+        metadata = self.metadata()
+        stored = metadata.get("next_number")
+        if isinstance(stored, int) and stored > 0:
+            return stored
         return sum(1 for _ in self.root.glob("*-candidate"))
 
     def next_candidate_number(self) -> int:
