@@ -71,6 +71,15 @@ def test_the_survey_sees_the_package_it_is_pointed_at() -> None:
     assert not modules["__main__"].is_orphan
 
 
+def test_the_survey_marks_agentbehavior_as_a_protocol() -> None:
+    """The real case that motivated Module.protocols: `AgentBehavior` is a
+    bare `Protocol` with no behavior of its own, and was twice handed to a
+    harness job as an untested-export target before this existed."""
+    modules = {item.name: item for item in survey(PROJECT)}
+
+    assert "AgentBehavior" in modules["cognition"].protocols
+
+
 def test_the_map_names_what_is_load_bearing_and_what_is_dead(tmp_path: Path) -> None:
     """Built from its own fixture, not PROJECT: the real package's dead-module
     count is exactly what the Evolver's backlog is meant to shrink to zero, so
@@ -309,6 +318,106 @@ def test_untested_objective_rotates_by_seed_instead_of_repeating(tmp_path: Path)
     assert first != second
     assert "alpha.py" in first  # type: ignore[operator]
     assert "beta.py" in second  # type: ignore[operator]
+
+
+def test_untested_target_prefers_a_plain_function_over_a_class(tmp_path: Path) -> None:
+    """Found live 2026-09-23: the first two real attempts against a picked
+    class both burned their whole step budget without landing anything --
+    constructing an object correctly is a harder first move than calling a
+    function. A function should be offered before a class in the same
+    module, regardless of which one sorts first alphabetically."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import AThing, helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\n'
+        "class AThing:\n    pass\n\n\n"
+        "def helper():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+
+    target = untested_target(tmp_path, seed=0)
+
+    assert target is not None
+    _, name = target
+    assert name == "helper()"
+
+
+def test_untested_target_falls_back_to_a_class_once_every_function_is_tested(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import AThing, helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\n'
+        "class AThing:\n    pass\n\n\n"
+        "def helper():\n    pass\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_busy.py").write_text(
+        "from evomesh.busy import helper\n\n\ndef test_helper():\n    helper()\n",
+        encoding="utf-8",
+    )
+
+    target = untested_target(tmp_path, seed=0)
+
+    assert target is not None
+    _, name = target
+    assert name == "AThing"
+
+
+def test_untested_target_never_picks_a_protocol_or_an_abc(tmp_path: Path) -> None:
+    """Found live: `AgentBehavior(Protocol)` was picked as a test target
+    twice in a row and both attempts failed to produce anything real -- a
+    Protocol has no behavior of its own to call, only implementations of it
+    do. It must never be a candidate at all, not just a low-priority one."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import AnInterface, AnOldStyle\n',
+        encoding="utf-8",
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\n'
+        "from typing import Protocol\n"
+        "from abc import ABC\n\n\n"
+        "class AnInterface(Protocol):\n    def do_it(self) -> None: ...\n\n\n"
+        "class AnOldStyle(ABC):\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+
+    assert untested_target(tmp_path, seed=0) is None
+    assert untested_target(tmp_path, seed=1) is None
+
+
+def test_untested_objective_warns_against_inventing_a_mock(tmp_path: Path) -> None:
+    """Found live: a job fabricated a `MockPrompt` class wholesale instead of
+    reusing what the test file already had. The objective has to say not to
+    do that, not just ask for a test and hope."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+
+    text = untested_objective(tmp_path, seed=0)
+
+    assert text is not None
+    assert "do not invent a mock" in text.lower()
+    assert "one small" in text.lower()
 
 
 def test_no_stray_file_sits_in_this_repository_root() -> None:

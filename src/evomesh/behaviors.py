@@ -622,7 +622,7 @@ class EvolverBehavior(BDIBehavior):
                     if pair is not None:
                         module, name = pair
                         needle = (
-                            f"Write a focused unit test for `{name}` in "
+                            f"Write ONE small, mechanical test for `{name}` in "
                             f"`src/evomesh/{module.name}.py`."
                         )
                         objective = _with_recent_failure(evolver, objective, (needle,))

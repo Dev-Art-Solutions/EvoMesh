@@ -46,6 +46,12 @@ class Module:
     # trusts, so a plan mentioning a real nested helper or a class method is
     # never flagged just for not being a top-level name.
     all_names: frozenset[str] = frozenset()
+    # Top-level classes whose bases name them as an interface (Protocol, ABC)
+    # rather than a concrete, instantiable thing. Bare names, matching
+    # ``exports`` -- used to keep an interface out of the untested-export
+    # backlog (see ``untested_target``): a Protocol has no behavior of its
+    # own to unit-test, only implementations of it do.
+    protocols: frozenset[str] = frozenset()
 
     @property
     def is_entry_point(self) -> bool:
@@ -110,6 +116,35 @@ def _exported_signatures(tree: ast.Module) -> tuple[str, ...]:
     return tuple(names)
 
 
+_INTERFACE_BASE_NAMES = frozenset({"Protocol", "ABC"})
+
+
+def _protocol_class_names(tree: ast.Module) -> frozenset[str]:
+    """Top-level classes declared as an interface: ``class X(Protocol):`` or
+    ``class X(ABC):``, however ``Protocol``/``ABC`` was imported (bare name
+    or ``typing.Protocol`` / ``abc.ABC`` attribute access both count).
+
+    A generic base check, not a semantic one -- a class that merely mixes in
+    an unrelated base also named ``Protocol`` would false-positive here, but
+    that is a name collision worth being suspicious of on its own, and the
+    cost of missing a real interface (handing the model an untestable
+    Protocol as if it were a concrete target) is worse than the cost of
+    treating a false one as untestable.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            base_name = base.id if isinstance(base, ast.Name) else (
+                base.attr if isinstance(base, ast.Attribute) else None
+            )
+            if base_name in _INTERFACE_BASE_NAMES:
+                names.add(node.name)
+                break
+    return frozenset(names)
+
+
 def _all_defined_names(tree: ast.Module) -> frozenset[str]:
     """Every function/class name anywhere in the file, nested included.
 
@@ -130,7 +165,9 @@ def survey(root: Path) -> list[Module]:
     directory = package_root(root)
     if not directory.is_dir():
         return []
-    raw: dict[str, tuple[Path, str, int, set[str], tuple[str, ...], frozenset[str]]] = {}
+    raw: dict[
+        str, tuple[Path, str, int, set[str], tuple[str, ...], frozenset[str], frozenset[str]]
+    ] = {}
     for path in sorted(directory.glob("*.py")):
         source = path.read_text(encoding="utf-8", errors="replace")
         try:
@@ -145,6 +182,7 @@ def survey(root: Path) -> list[Module]:
                 set(),
                 (),
                 frozenset(),
+                frozenset(),
             )
             continue
         raw[path.stem] = (
@@ -154,10 +192,11 @@ def survey(root: Path) -> list[Module]:
             _imported_names(tree),
             _exported_signatures(tree),
             _all_defined_names(tree),
+            _protocol_class_names(tree),
         )
 
     importers: dict[str, set[str]] = {name: set() for name in raw}
-    for name, (_, _, _, imports, _, _) in raw.items():
+    for name, (_, _, _, imports, _, _, _) in raw.items():
         for target in imports:
             if target in importers and target != name:
                 importers[target].add(name)
@@ -172,8 +211,9 @@ def survey(root: Path) -> list[Module]:
             imported_by=frozenset(importers[name]),
             exports=exports,
             all_names=all_names,
+            protocols=protocols,
         )
-        for name, (path, summary, lines, imports, exports, all_names) in raw.items()
+        for name, (path, summary, lines, imports, exports, all_names, protocols) in raw.items()
     ]
 
 
@@ -459,7 +499,7 @@ def _test_source_text(root: Path) -> str:
 
 def untested_target(root: Path, seed: int) -> tuple[Module, str] | None:
     """A (module, exported name) pair never mentioned under tests/, or
-    ``None`` if every export of every live module is.
+    ``None`` if every eligible export of every live module is.
 
     The second-tier objective source, used once the dead-module backlog
     (:func:`backlog_target`) is empty -- found live 2026-09-23: after ~1200
@@ -471,17 +511,41 @@ def untested_target(root: Path, seed: int) -> tuple[Module, str] | None:
     another module could plausibly depend on), sorted for a stable order,
     then rotated by ``seed`` so a module the model cannot manage does not
     get handed back next generation.
+
+    Plain functions are tried before classes, and a ``Protocol``/``ABC`` is
+    never a candidate at all -- found live: the first two real attempts both
+    picked ``AgentBehavior``, a bare ``Protocol`` with no behavior of its own
+    to test, and burned their whole budget on it (one fabricated a mock
+    class wholesale; the other spiralled into believing its own tools were
+    broken). Testing a function means "call it, check the result"; testing a
+    class means constructing one correctly first, and testing an interface
+    means testing nothing at all. Ordering by difficulty, not just by name,
+    is the whole fix.
     """
     modules = survey(root)
     live = [item for item in modules if item.imported_by and item.exports]
     if not live:
         return None
     test_text = _test_source_text(root)
-    candidates = [
+
+    def eligible(module: Module) -> list[str]:
+        return [
+            name
+            for name in module.exports
+            if name not in test_text and name.rstrip("()") not in module.protocols
+        ]
+
+    functions = [
         (module, name)
         for module in sorted(live, key=lambda item: item.name)
-        for name in module.exports
-        if name not in test_text
+        for name in eligible(module)
+        if name.endswith("()")
+    ]
+    candidates = functions or [
+        (module, name)
+        for module in sorted(live, key=lambda item: item.name)
+        for name in eligible(module)
+        if not name.endswith("()")
     ]
     if not candidates:
         return None
@@ -496,23 +560,47 @@ def untested_objective(root: Path, seed: int) -> str | None:
     a coverage gap (see :func:`_test_source_text`). The objective says so,
     so the model spends its first step reading the real definition instead
     of assuming a bug is waiting to be found.
+
+    Deliberately modest about what the test itself has to be, too -- found
+    live 2026-09-23: asking for "a focused test... including at least one
+    edge case" against a 40-60 step budget produced fabricated mock classes
+    and a job that talked itself into believing its tools were broken. One
+    small, real, passing check beats an ambitious one that never lands.
     """
     target = untested_target(root, seed)
     if target is None:
         return None
     module, name = target
     importers = len(module.imported_by)
+    is_function = name.endswith("()")
+    bare_name = name[:-2] if is_function else name
+    how = (
+        f"Call `{bare_name}` with the simplest realistic arguments and assert "
+        "the one obvious thing about its result. Do not try to cover every "
+        "branch or every edge case -- one real, passing check that exercises "
+        "actual behavior is a complete answer."
+        if is_function
+        else (
+            f"Construct one `{bare_name}` the way an existing test already "
+            "constructs something similar (grep tests/ for how other objects "
+            "of a comparable shape are built there), call one real method on "
+            "it, and assert one obvious thing about the result."
+        )
+    )
     lines = [
-        f"Write a focused unit test for `{name}` in `src/evomesh/{module.name}.py`. "
-        f"It is exported and load-bearing (used by {importers} other module"
-        f"{'s' if importers != 1 else ''}), but its name does not appear anywhere "
-        "under tests/, so it has no direct test coverage right now.",
-        "Read the real definition first -- do not guess its signature or behavior "
-        "from the name alone. Add the test to the existing test file for this "
-        f"module if one exists (tests/test_{module.name}.py), or create one if it "
-        "does not. A real, passing test that exercises actual behavior (including "
-        "at least one edge case) is a complete answer; a placeholder that only "
-        "imports the name and asserts nothing is not.",
+        f"Write ONE small, mechanical test for `{name}` in "
+        f"`src/evomesh/{module.name}.py`. It is exported and load-bearing "
+        f"(used by {importers} other module{'s' if importers != 1 else ''}), "
+        "but its name does not appear anywhere under tests/, so it has no "
+        "direct test coverage right now.",
+        f"Read the real definition first -- do not guess its signature or "
+        f"behavior from the name alone. {how}",
+        "Do not invent a mock or stub class from scratch. If this needs a "
+        "stand-in for a dependency, search tests/ first for one that already "
+        "exists and reuse it -- a test that references something imagined is "
+        "worse than no test at all.",
+        "Add it to the existing test file for this module if one exists "
+        f"(tests/test_{module.name}.py), or create one if it does not.",
     ]
     if module.summary:
         lines.append(f"The module's own docstring says what it is for: {module.summary}")
