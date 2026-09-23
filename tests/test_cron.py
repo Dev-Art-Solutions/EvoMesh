@@ -66,3 +66,10 @@ def test_rejects_a_field_out_of_range() -> None:
 def test_rejects_a_malformed_field() -> None:
     with pytest.raises(InvalidCronError):
         parse("abc * * * *")
+
+
+def test_parse_splits_fields_into_sets() -> None:
+    minute, hour, day, month, weekday = parse("0 12 * * 1")
+    assert minute == {0}
+    assert hour == {12}
+    assert weekday == {1}
