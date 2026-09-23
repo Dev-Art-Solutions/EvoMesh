@@ -103,6 +103,17 @@ def test_tool_name_is_prefixed_with_the_server_name() -> None:
     assert tool.name == "mcp__news__search"
 
 
+def test_build_mcp_tool_sets_name_from_info() -> None:
+    """build_mcp_tool() sets the Tool's name from the info it is given."""
+    built = build_mcp_tool(
+        "news",
+        type("T", (), {"name": "search", "description": "x", "input_schema": {}})(),  # type: ignore[arg-type]
+        connection=object(),  # type: ignore[arg-type]
+    )
+
+    assert built.name == "mcp__news__search"
+
+
 # -- real end-to-end against the fixture stdio server ---------------------
 
 
