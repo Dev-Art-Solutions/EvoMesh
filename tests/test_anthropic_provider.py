@@ -71,6 +71,7 @@ def test_consecutive_tool_results_merge_into_one_user_turn() -> None:
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
+        self.status_code = 200
 
     def raise_for_status(self) -> None:
         return None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -8,6 +9,31 @@ from typing import Any, Protocol
 import httpx
 
 from .mesh import Mesh
+
+
+async def _post_with_retry(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """POST, retrying up to twice more on a 503 before handing the response
+    back to the caller's own raise_for_status()/except handling.
+
+    Found live: pointing a system agent at Gemini's OpenAI-compatible
+    endpoint, roughly half of this mesh's real harness/propose calls came
+    back "503 ... currently experiencing high demand ... temporary" within
+    minutes of switching -- while every manually-replicated request of the
+    same shape (plain chat, a large prompt, tool schemas, a system message,
+    all tried separately) succeeded on the first try. Discarding a whole
+    harness job -- and the generation it was working on -- over one
+    transient server blip is a worse failure than waiting a few seconds.
+    Deliberately narrow: only 503 is retried here, so a real refusal (401,
+    404, a genuine 429 quota exhaustion) still reaches the caller as exactly
+    one request, unchanged from before this existed.
+    """
+    response = await client.post(url, **kwargs)
+    for attempt in range(2):
+        if response.status_code != 503:
+            return response
+        await asyncio.sleep(2.0 * (attempt + 1))
+        response = await client.post(url, **kwargs)
+    return response
 
 
 class ModelUnavailableError(RuntimeError):
@@ -187,7 +213,9 @@ class OllamaProvider:
             body["format"] = format
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(f"{self.base_url}/api/generate", json=body)
+                response = await _post_with_retry(
+                    client, f"{self.base_url}/api/generate", json=body
+                )
                 response.raise_for_status()
                 return str(response.json()["response"])
             except (httpx.HTTPError, KeyError) as exc:
@@ -226,7 +254,7 @@ class OllamaProvider:
             body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(f"{self.base_url}/api/chat", json=body)
+                response = await _post_with_retry(client, f"{self.base_url}/api/chat", json=body)
                 response.raise_for_status()
                 answer = response.json()["message"]
             except httpx.HTTPStatusError as exc:
@@ -304,7 +332,8 @@ class OpenAICompatibleProvider:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(
+                response = await _post_with_retry(
+                    client,
                     f"{self.base_url}/chat/completions",
                     headers=self._headers,
                     json={"model": model or self.model, "messages": messages},
@@ -352,8 +381,8 @@ class OpenAICompatibleProvider:
             body["tools"] = tools
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions", headers=self._headers, json=body
+                response = await _post_with_retry(
+                    client, f"{self.base_url}/chat/completions", headers=self._headers, json=body
                 )
                 response.raise_for_status()
                 answer = response.json()["choices"][0]["message"]
@@ -521,8 +550,8 @@ class AnthropicProvider:
             ]
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
-                response = await client.post(
-                    f"{self.base_url}/messages", headers=self._headers, json=body
+                response = await _post_with_retry(
+                    client, f"{self.base_url}/messages", headers=self._headers, json=body
                 )
                 response.raise_for_status()
                 payload = response.json()
