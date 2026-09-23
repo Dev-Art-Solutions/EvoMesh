@@ -5,6 +5,7 @@ from evomesh.models import (
     _extract_thought_signature,
     _parse_arguments,
     _post_with_retry,
+    _tools_are_unsupported,
 )
 
 
@@ -49,3 +50,11 @@ def test_extract_thought_signature_returns_nested_string():
     out = _extract_thought_signature(item)
 
     assert out == "thinking step by step"
+
+
+def test_tools_are_unsupported_flags_a_400_mentioning_tool():
+    request = httpx.Request("POST", "https://example.com")
+    response = httpx.Response(400, text="This model does not support tools", request=request)
+    exc = httpx.HTTPStatusError("boom", request=request, response=response)
+
+    assert _tools_are_unsupported(exc) is True
