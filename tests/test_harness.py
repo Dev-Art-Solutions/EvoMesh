@@ -131,6 +131,41 @@ async def test_grep_and_ls_also_fall_back_to_skills(
     assert "SKILL.md" in listed
 
 
+async def test_a_skills_fallback_match_is_not_hidden_by_an_unrelated_root_path(
+    tmp_path: Path,
+) -> None:
+    """The bug this guards against: `_inside(context.root, path)` falls back
+    to `path`'s full *absolute* parts whenever `path` is not inside
+    `context.root` at all -- exactly the skills/ mesh-wide fallback's shape,
+    since a non-system agent's root is its own playground, nowhere near the
+    mesh-wide skills/ directory. `SKIP_DIRECTORIES` lists "generations", the
+    literal directory name every real candidate generation lives under
+    (`generations/NNNNNN-candidate/`) -- so on the real project, every single
+    skills-fallback grep match was silently discarded as though it sat
+    inside a generations/ directory, purely because of where the checkout
+    happens to live on disk. Found live, 2026-09-23: this is why every real
+    candidate generation ever validated failed
+    test_grep_and_ls_also_fall_back_to_skills above, for a reason with
+    nothing to do with what it actually changed. "generations" here stands
+    in for that real path segment.
+    """
+    mesh_root = tmp_path / "generations" / "001-candidate" / "mesh"
+    (mesh_root / "skills" / "news-impact-analysis").mkdir(parents=True)
+    (mesh_root / "skills" / "news-impact-analysis" / "SKILL.md").write_text(
+        "---\nname: news-impact-analysis\ndescription: d\n---\n\nReport one line per instrument.\n",
+        encoding="utf-8",
+    )
+    playground = tmp_path / "workspace" / "agents" / "newsanalyzer" / "playground"
+    playground.mkdir(parents=True)
+    context = ToolContext(root=playground, skills_root=mesh_root)
+
+    result = await tool_grep(
+        context, {"pattern": "one line", "path": "skills", "glob": "*.md"}
+    )
+
+    assert "one line per instrument" in result
+
+
 async def test_read_without_skills_root_still_refuses_the_fallback(
     mesh_with_a_skill: Path, tmp_path: Path
 ) -> None:

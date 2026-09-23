@@ -322,13 +322,28 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
     context.tally.reads += 1
     glob = str(args.get("glob", "*.py") or "*.py")
     files = [target] if target.is_file() else sorted(target.rglob(glob))
+    # _resolve_readable can hand back a path entirely outside context.root --
+    # the mesh-wide skills/ fallback it documents on itself -- in which case
+    # _inside(context.root, ...) can never find path.relative_to(context.root)
+    # and falls back to path's full *absolute* parts instead. Found live,
+    # 2026-09-23: this checkout (like every candidate generation, which lives
+    # under generations/NNNNNN-candidate/) has "generations" as a literal path
+    # component, which SKIP_DIRECTORIES also lists to avoid descending into --
+    # so every single skills-fallback match was silently discarded as if it
+    # sat inside a generations/ directory, for a reason with nothing to do
+    # with the skill itself. The exact bug the comment below already guards
+    # against for the normal case, just missed for this one. Comparing inside
+    # target instead of context.root when target itself is not under
+    # context.root keeps every match's reported path relative and short,
+    # the same guarantee the normal case already has.
+    report_root = context.root if target.is_relative_to(context.root) else target
     matches: list[str] = []
     for path in files:
         # Compared inside the root, never against the absolute path: a checkout
         # that happens to live under a directory called bin or dist would
         # otherwise have every one of its files skipped, and the tool would
         # report "no match" for code that is plainly there.
-        if not path.is_file() or SKIP_DIRECTORIES & set(_inside(context.root, path)):
+        if not path.is_file() or SKIP_DIRECTORIES & set(_inside(report_root, path)):
             continue
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -338,7 +353,7 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
             continue
         for number, line in enumerate(content.splitlines(), 1):
             if expression.search(line):
-                where = "/".join(_inside(context.root, path))
+                where = "/".join(_inside(report_root, path))
                 matches.append(f"{where}:{number}: {line.strip()}")
             if len(matches) >= context.limits.grep_matches:
                 found = "\n".join(matches)
