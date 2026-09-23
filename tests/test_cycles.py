@@ -545,6 +545,56 @@ async def test_opening_on_the_standing_goal_targets_the_dead_module_backlog(
     )
 
 
+async def test_opening_falls_back_to_the_untested_export_backlog_when_the_dead_module_one_is_empty(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-23: after ~1200 generations the dead-module backlog
+    ran dry (0 orphans), and every generation since fell through all the way
+    to the standing goal's bare text, with nothing concrete to anchor a
+    small model's step budget on. Once backlog_objective is empty, the
+    untested-export backlog is the next concrete source -- checked second,
+    not instead."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+    (project / "tests").mkdir(exist_ok=True)
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert "helper" in state["objective"]
+    assert "busy.py" in state["objective"]
+
+
 async def test_a_human_objective_is_never_overridden_by_the_backlog(
     tmp_path: Path, project: Path
 ) -> None:

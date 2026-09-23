@@ -25,6 +25,7 @@ from evomesh.codebase import (
     new_orphans,
     project_map,
     stray_root_files,
+    untested_objective,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -1111,6 +1112,12 @@ class EnvironmentEvolver:
         return backlog_objective(
             self.workspace.repository_root, seed, nudge_delete=nudge_delete
         )
+
+    def untested_objective(self, seed: int) -> str | None:
+        """A concrete untested-export objective, or ``None`` when every live
+        module's exports are all mentioned under tests/ -- the second-tier
+        fallback once :meth:`backlog_objective` itself is empty."""
+        return untested_objective(self.workspace.repository_root, seed)
 
     def recent_backlog_streak(self, module_name: str, lookback: int = 3) -> int:
         """How many of the most recent generations, newest first, targeted

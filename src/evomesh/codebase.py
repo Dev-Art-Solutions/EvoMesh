@@ -432,3 +432,88 @@ def backlog_objective(root: Path, seed: int, *, nudge_delete: bool = False) -> s
             f"module in the package (used by {len(live[0].imported_by)} others)."
         )
     return "\n".join(lines)
+
+
+def _test_source_text(root: Path) -> str:
+    """Everything under tests/, concatenated, for a cheap "is this name
+    mentioned anywhere in the suite" check.
+
+    Not a coverage tool -- no test runs, nothing is measured. A name that
+    appears in a test file might still not be exercised (a stale import, a
+    comment), and this can never prove a name IS covered, only flag the
+    stronger signal that it is not even *mentioned*. That is enough to be a
+    concrete lead, the same way the dead-module backlog was never proof a
+    wiring was correct, just a real place to look.
+    """
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        return ""
+    chunks: list[str] = []
+    for path in sorted(tests_dir.rglob("*.py")):
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def untested_target(root: Path, seed: int) -> tuple[Module, str] | None:
+    """A (module, exported name) pair never mentioned under tests/, or
+    ``None`` if every export of every live module is.
+
+    The second-tier objective source, used once the dead-module backlog
+    (:func:`backlog_target`) is empty -- found live 2026-09-23: after ~1200
+    generations, ``survey()`` returned zero orphans, and every generation
+    since fell through to the standing goal's bare "improve EvoMesh" text,
+    with nothing concrete to anchor a small model's step budget on. This
+    picks the same way: deterministic across a module's *exported* names
+    only (not every function -- an export is a name whose test coverage
+    another module could plausibly depend on), sorted for a stable order,
+    then rotated by ``seed`` so a module the model cannot manage does not
+    get handed back next generation.
+    """
+    modules = survey(root)
+    live = [item for item in modules if item.imported_by and item.exports]
+    if not live:
+        return None
+    test_text = _test_source_text(root)
+    candidates = [
+        (module, name)
+        for module in sorted(live, key=lambda item: item.name)
+        for name in module.exports
+        if name not in test_text
+    ]
+    if not candidates:
+        return None
+    return candidates[seed % len(candidates)]
+
+
+def untested_objective(root: Path, seed: int) -> str | None:
+    """A concrete objective from the untested-export backlog, or ``None``.
+
+    Deliberately modest about what "untested" means here: a name absent
+    from every file under tests/ is a real, checkable lead, not a proof of
+    a coverage gap (see :func:`_test_source_text`). The objective says so,
+    so the model spends its first step reading the real definition instead
+    of assuming a bug is waiting to be found.
+    """
+    target = untested_target(root, seed)
+    if target is None:
+        return None
+    module, name = target
+    importers = len(module.imported_by)
+    lines = [
+        f"Write a focused unit test for `{name}` in `src/evomesh/{module.name}.py`. "
+        f"It is exported and load-bearing (used by {importers} other module"
+        f"{'s' if importers != 1 else ''}), but its name does not appear anywhere "
+        "under tests/, so it has no direct test coverage right now.",
+        "Read the real definition first -- do not guess its signature or behavior "
+        "from the name alone. Add the test to the existing test file for this "
+        f"module if one exists (tests/test_{module.name}.py), or create one if it "
+        "does not. A real, passing test that exercises actual behavior (including "
+        "at least one edge case) is a complete answer; a placeholder that only "
+        "imports the name and asserts nothing is not.",
+    ]
+    if module.summary:
+        lines.append(f"The module's own docstring says what it is for: {module.summary}")
+    return "\n".join(lines)

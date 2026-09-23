@@ -26,6 +26,8 @@ from evomesh.codebase import (
     project_map,
     stray_root_files,
     survey,
+    untested_objective,
+    untested_target,
 )
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -220,6 +222,93 @@ def test_backlog_objective_suggests_the_most_used_module_as_a_home(
 
     assert text is not None
     assert "hub.py" in text
+
+
+def test_untested_objective_is_none_with_nothing_live(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+
+    assert untested_objective(tmp_path, seed=0) is None
+
+
+def test_untested_objective_ignores_a_dead_modules_exports(tmp_path: Path) -> None:
+    """Nothing imports `lonely`, so it is the dead-module backlog's problem
+    (backlog_objective), not this one's -- an orphan's exports never
+    execute at all, which is a different, worse problem than "executes but
+    untested"."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
+    (package / "lonely.py").write_text(
+        '"""Nobody calls this."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+
+    assert untested_target(tmp_path, seed=0) is None
+
+
+def test_untested_objective_names_a_real_live_export_with_no_test_mention(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+
+    text = untested_objective(tmp_path, seed=0)
+
+    assert text is not None
+    assert "helper" in text
+    assert "busy.py" in text
+
+
+def test_untested_objective_skips_an_export_already_mentioned_in_tests(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_busy.py").write_text(
+        "from evomesh.busy import helper\n\n\ndef test_helper():\n    helper()\n",
+        encoding="utf-8",
+    )
+
+    assert untested_target(tmp_path, seed=0) is None
+
+
+def test_untested_objective_rotates_by_seed_instead_of_repeating(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.alpha import a_func\nfrom evomesh.beta import b_func\n',
+        encoding="utf-8",
+    )
+    (package / "alpha.py").write_text(
+        '"""First."""\n\ndef a_func():\n    pass\n', encoding="utf-8"
+    )
+    (package / "beta.py").write_text(
+        '"""Second."""\n\ndef b_func():\n    pass\n', encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+
+    first = untested_objective(tmp_path, seed=0)
+    second = untested_objective(tmp_path, seed=1)
+
+    assert first != second
+    assert "alpha.py" in first  # type: ignore[operator]
+    assert "beta.py" in second  # type: ignore[operator]
 
 
 def test_no_stray_file_sits_in_this_repository_root() -> None:

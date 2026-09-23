@@ -574,6 +574,18 @@ class EvolverBehavior(BDIBehavior):
             backlog = evolver.backlog_objective(seed, nudge_delete=nudge_delete)
             if backlog is not None:
                 objective = backlog
+            else:
+                # Found live 2026-09-23: after ~1200 generations the dead-module
+                # backlog above ran dry (0 orphans left, backlog_objective always
+                # None), and every generation since fell through all the way to
+                # this goal's own bare text -- no file, no anchor -- so the model
+                # free-explored instead of converging (scratch files, junk test
+                # markers, never a real edit). The untested-export backlog is the
+                # next concrete source once the first one is empty, not a
+                # replacement for it -- checked second, same rotation scheme.
+                untested = evolver.untested_objective(seed)
+                if untested is not None:
+                    objective = untested
         generation = await evolver.create_candidate(objective)
         # create_candidate()/prune_stale() may just have deleted old
         # generation directories, and a harness job's filesystem grant
