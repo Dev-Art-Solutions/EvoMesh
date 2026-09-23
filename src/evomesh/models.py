@@ -12,8 +12,9 @@ from .mesh import Mesh
 
 
 async def _post_with_retry(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """POST, retrying up to twice more on a 503 before handing the response
-    back to the caller's own raise_for_status()/except handling.
+    """POST, retrying up to twice more on a 503 or a transient transport
+    failure, before handing the response (or re-raising the final
+    exception) back to the caller's own raise_for_status()/except handling.
 
     Found live: pointing a system agent at Gemini's OpenAI-compatible
     endpoint, roughly half of this mesh's real harness/propose calls came
@@ -23,17 +24,35 @@ async def _post_with_retry(client: httpx.AsyncClient, url: str, **kwargs: Any) -
     all tried separately) succeeded on the first try. Discarding a whole
     harness job -- and the generation it was working on -- over one
     transient server blip is a worse failure than waiting a few seconds.
-    Deliberately narrow: only 503 is retried here, so a real refusal (401,
-    404, a genuine 429 quota exhaustion) still reaches the caller as exactly
-    one request, unchanged from before this existed.
+    Deliberately narrow: only 503 and network-layer transport errors are
+    retried here, so a real refusal (401, 404, a genuine 429 quota
+    exhaustion) still reaches the caller as exactly one request, unchanged
+    from before this existed.
+
+    Extended 2026-09-23 to also retry ``httpx.TransportError`` (connection
+    drops, read timeouts, protocol errors -- everything below the HTTP
+    layer, so there is no response/status_code to check at all): found
+    live, a real repair job's request to Gemini ended the whole job with a
+    raw ``ReadError`` after 847 seconds, and the 503-only retry above never
+    saw it, since the exception happens instead of a response existing. A
+    dropped connection is at least as transient as a busy server; the same
+    short backoff this function already uses for 503 applies here too.
     """
-    response = await client.post(url, **kwargs)
-    for attempt in range(2):
-        if response.status_code != 503:
+    attempts = 3
+    transport_exc: httpx.TransportError | None = None
+    for attempt in range(attempts):
+        try:
+            response = await client.post(url, **kwargs)
+        except httpx.TransportError as exc:
+            transport_exc = exc
+            if attempt < attempts - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+            continue
+        if response.status_code != 503 or attempt == attempts - 1:
             return response
         await asyncio.sleep(2.0 * (attempt + 1))
-        response = await client.post(url, **kwargs)
-    return response
+    assert transport_exc is not None
+    raise transport_exc
 
 
 class ModelUnavailableError(RuntimeError):
