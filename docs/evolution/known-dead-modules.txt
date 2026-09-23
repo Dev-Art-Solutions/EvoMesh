@@ -14,12 +14,10 @@
 # This is also the Evolver's backlog. Wiring one of these into a module that
 # actually runs -- or deleting it -- is worth more than another new file. When
 # one is wired up its line here simply goes stale; prune it when convenient.
-_agent_ids
-agent_label
-humanize
-mesh
-mesh_utils
-metrics
-node
-phase_label
-verdict_label
+#
+# Emptied 2026-09-24: every name previously listed here (_agent_ids,
+# agent_label, humanize, mesh, mesh_utils, metrics, node, phase_label,
+# verdict_label) is now imported by something that runs -- the dead-module
+# backlog this file feeds (codebase.py's backlog_objective) had already gone
+# to zero, which is exactly what pushed the objective source over to
+# untested_objective (see evolution.py's GenerationSupervisor docstrings).
