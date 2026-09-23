@@ -398,7 +398,13 @@ class HarnessRunner:
                             fabrication_nudged = True
                             self.session.record("fabrication", step=step)
                             result = f"{result}\n\n{FABRICATION_HINT}"
-                    else:
+                    elif call.name in WRITE_NAMES and not result.startswith("DENIED"):
+                        # Only a landed change earns a clean slate. Found live:
+                        # the model re-read the file between two fabricated
+                        # edits (checking itself, reasonably) and that alone
+                        # reset the count to zero, so the nudge needed a third
+                        # fabrication instead of a second -- one that never
+                        # came before the job ran out of steps to act on it.
                         fabrications = 0
                     if call.name in WRITE_NAMES:
                         # A cached read answered from before this write would

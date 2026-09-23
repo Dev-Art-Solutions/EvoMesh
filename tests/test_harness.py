@@ -928,6 +928,53 @@ async def test_a_job_is_told_once_to_stop_fabricating_old(project: Path) -> None
     assert any("stop composing 'old'" in content.lower() for content in tool_messages[1:])
 
 
+async def test_a_read_between_two_fabricated_edits_does_not_reset_the_count(
+    project: Path,
+) -> None:
+    """Found live: a job re-read the file between two fabricated `edit`
+    denials -- a reasonable thing to do, checking itself -- and that alone
+    reset the count to zero, so the nudge needed a third fabrication instead
+    of a second. It never got a third try before the job ran out of steps.
+    Only a landed write should earn a clean slate; a read in between two
+    fabrications is still two fabrications.
+    """
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "def totally_invented() -> None:\n    pass",
+                            "new": "x",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(tool_calls=[ToolCall(name="read", arguments={"path": "src/answer.py"})]),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "def another_invention() -> None:\n    pass",
+                            "new": "x",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="giving up"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=6)
+
+    await runner.run("change something")
+
+    assert runner.session.kinds().count("fabrication") == 1
+
+
 async def test_a_denial_for_a_different_reason_does_not_count_as_fabrication(
     project: Path,
 ) -> None:
