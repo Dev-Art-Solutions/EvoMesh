@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1340](001340.md) — I added `tests/test__agent_ids.py` with a single test that asserts `is_valid("root.child.grandchild")` returns `True`, exercising the real, load-bearing behavior of the function I read from `src/evomesh/_agent_ids.py`.
 - [Generation 1339](001339.md) — Created `tests/test_verdict_label.py` (no such file existed) with a single mechanical test asserting `verdict_label("passed") == "PASS"`, verified against the real module definition so it exercises genuine behavior rather than an imagined signature.
 - [Generation 1338](001338.md) — I created `tests/test_phase_label.py` asserting `phase_label("thinking") == "Thinking"`, which validates the module's stated purpose—rendering an agent phase as a short human label—using the simplest realistic string input against the real `_LABELS` lookup, without inventing any mocks.
 - [Generation 1337](001337.md) — I read the real implementation to confirm it returns True for a 400 whose body contains "tool", then added a single passing test plus the import to the existing `tests/test_models.py`, reusing the file's already-imported `httpx` and mirroring its existing error-construction style.
