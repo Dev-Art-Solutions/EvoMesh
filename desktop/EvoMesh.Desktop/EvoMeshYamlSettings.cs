@@ -5,7 +5,13 @@ internal sealed record ProviderEditorSettings(
     string Model,
     string ApiKey = "",
     double TimeoutSeconds = 600,
-    int NumCtx = 65536)
+    int NumCtx = 65536,
+    // A name looked up in evomesh.secrets.yaml instead of ApiKey being a
+    // literal value -- see EvoMeshSecretsSettings and config.py's own
+    // api_key_ref. Wins over ApiKey when both are somehow set (Save() below
+    // only ever writes one of the two per provider, matching the Python
+    // loader's own precedence).
+    string ApiKeyRef = "")
 {
     /// <summary>Per-model override, keyed by model tag. Not itself part of the
     /// record's equality/`with` shape since it is mutated in place rather than
@@ -261,6 +267,7 @@ internal sealed class EvoMeshYamlSettings
                     "base_url" => current with { BaseUrl = value },
                     "model" => current with { Model = value },
                     "api_key" => current with { ApiKey = value },
+                    "api_key_ref" => current with { ApiKeyRef = value },
                     "timeout_seconds" => current with { TimeoutSeconds = ParseDouble(value, current.TimeoutSeconds) },
                     "num_ctx" => current with { NumCtx = ParseInt(value, current.NumCtx) },
                     _ => current,
@@ -374,7 +381,14 @@ internal sealed class EvoMeshYamlSettings
                     writer.WriteLine($"        {Quote(tag)}: {tagNumCtx}");
                 }
             }
-            if (!string.IsNullOrEmpty(provider.ApiKey))
+            // A ref, when given, wins -- one or the other, never both, so the
+            // saved file never shows a literal key sitting next to a ref that
+            // is what config.py's loader actually uses.
+            if (!string.IsNullOrEmpty(provider.ApiKeyRef))
+            {
+                writer.WriteLine($"      api_key_ref: {Quote(provider.ApiKeyRef)}");
+            }
+            else if (!string.IsNullOrEmpty(provider.ApiKey))
             {
                 writer.WriteLine($"      api_key: {Quote(provider.ApiKey)}");
             }

@@ -23,6 +23,11 @@ internal static class DesktopSelfTest
             {
                 Model = "qwen3:14b",
                 NumCtx = 32768,
+                // Both set deliberately: proves the ref wins and the stale
+                // literal is dropped on save, not just that an unset one
+                // stays unset.
+                ApiKey = "sk-should-not-survive",
+                ApiKeyRef = "ollama_key",
             };
             // The colon is deliberate: an Ollama model tag routinely has one
             // (name:tag), and it is exactly what a naive first-colon split on
@@ -64,6 +69,16 @@ internal static class DesktopSelfTest
             {
                 throw new InvalidOperationException("num_ctx settings were lost on save.");
             }
+            // A ref wins over a literal key -- Save() writes only api_key_ref
+            // when both are somehow set, so this also proves the literal
+            // ApiKey from evomesh.yaml.example's ollama block did not survive
+            // once a ref was given, which is the whole point of the ref
+            // taking precedence (see ProviderEditorSettings' own remark).
+            if (saved.Providers["ollama"].ApiKeyRef != "ollama_key" ||
+                saved.Providers["ollama"].ApiKey.Length != 0)
+            {
+                throw new InvalidOperationException("api_key_ref was lost, or a stale literal key survived, on save.");
+            }
             // Missing entirely (which defaults to off) is the exact shape that
             // left the Evolver logging "the harness is off" every cycle with no
             // way to author a generation -- a save must not reproduce that by
@@ -100,6 +115,30 @@ internal static class DesktopSelfTest
         {
             if (File.Exists(temporary)) File.Delete(temporary);
         }
+
+        var temporarySecrets = Path.Combine(Path.GetTempPath(), $"evomesh-desktop-secrets-{Guid.NewGuid():N}.yaml");
+        try
+        {
+            // A ref name containing a colon (a plausible provider-style name,
+            // e.g. "openai:prod") and a key containing a quote are the two
+            // shapes the simple line parser could plausibly mangle.
+            var secrets = new EvoMeshSecretsSettings();
+            secrets.Refs["openai_primary"] = "sk-test-key";
+            secrets.Refs["has'quote"] = "value'with'quotes";
+            secrets.Save(temporarySecrets);
+            var loaded = EvoMeshSecretsSettings.Load(temporarySecrets);
+            if (loaded.Refs.Count != 2 ||
+                loaded.Refs["openai_primary"] != "sk-test-key" ||
+                loaded.Refs["has'quote"] != "value'with'quotes")
+            {
+                throw new InvalidOperationException("Secrets round-trip failed.");
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporarySecrets)) File.Delete(temporarySecrets);
+        }
+
         using var form = new MainForm(rootPath, "uv");
         form.ValidateUiForTest();
     }

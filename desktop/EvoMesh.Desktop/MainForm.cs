@@ -16,6 +16,8 @@ internal sealed class MainForm : Form
     ];
     private readonly EvoMeshRuntimeProcess _runtime;
     private readonly string _configPath;
+    private readonly string _secretsPath;
+    private EvoMeshSecretsSettings _secrets = new();
     private readonly NotifyIcon _trayIcon;
     private bool _exitRequested;
     private readonly RichTextBox _output = new();
@@ -23,7 +25,7 @@ internal sealed class MainForm : Form
     private readonly Label _status = new();
     private readonly Button _start = new();
     private readonly Button _stop = new();
-    private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key, TextBox NumCtx)> _providers = [];
+    private readonly Dictionary<string, (TextBox Url, ComboBox Model, TextBox Key, TextBox NumCtx, ComboBox KeyRef)> _providers = [];
     private readonly Dictionary<string, (ComboBox Provider, ComboBox Model, TextBox NumCtx)> _systemAgents = [];
     private bool _loadingSettings;
     private bool _running;
@@ -86,6 +88,7 @@ internal sealed class MainForm : Form
     {
         _runtime = new EvoMeshRuntimeProcess(rootPath, uvExecutable);
         _configPath = Path.Combine(rootPath, "evomesh.yaml");
+        _secretsPath = Path.Combine(rootPath, "evomesh.secrets.yaml");
         Text = "EvoMesh Control Center";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         MinimumSize = new Size(980, 680);
@@ -1002,8 +1005,16 @@ internal sealed class MainForm : Form
         _generationPath = AddField(grid, "Generations path", 0, 2);
         _logLevel = AddCombo(grid, "Log level", 2, 2, ["DEBUG", "INFO", "WARNING", "ERROR"]);
         _defaultProvider = AddCombo(grid, "Default provider", 0, 3, ["ollama", "inferhub", "openai_compatible"]);
+        var editSecrets = MakeButton("Edit secrets (API keys)...", 200);
+        editSecrets.Click += (_, _) => OpenSecretsEditor();
+        grid.Controls.Add(editSecrets, 2, 3);
 
         var row = 4;
+        AddHelp(
+            grid,
+            "API keys typed here go straight into evomesh.yaml. Use \"...or key ref\" below " +
+            "instead to keep the real key only in evomesh.secrets.yaml, which is never committed.",
+            ref row);
         foreach (var name in new[] { "ollama", "inferhub", "openai_compatible" })
         {
             var heading = new Label { Text = name.Replace('_', ' ').ToUpperInvariant(), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 18, 3, 6) };
@@ -1022,7 +1033,7 @@ internal sealed class MainForm : Form
             row++;
             var key = AddField(grid, "API key (optional)", 0, row);
             key.UseSystemPasswordChar = true;
-            grid.SetColumnSpan(key, 3);
+            var keyRef = AddEditableCombo(grid, "...or key ref (from secrets file)", 2, row);
             row++;
             var numCtx = AddField(grid, "Context window (num_ctx)", 0, row);
             grid.Controls.Add(
@@ -1035,7 +1046,7 @@ internal sealed class MainForm : Form
                 },
                 2,
                 row);
-            _providers[name] = (url, model, key, numCtx);
+            _providers[name] = (url, model, key, numCtx, keyRef);
             row++;
         }
 
@@ -1354,13 +1365,18 @@ internal sealed class MainForm : Form
             _generationPath.Text = settings.GenerationPath;
             _logLevel.SelectedItem = settings.LogLevel.ToUpperInvariant();
             _defaultProvider.SelectedItem = settings.DefaultProvider;
+            _secrets = EvoMeshSecretsSettings.Load(_secretsPath);
+            var refs = _secrets.Refs.Keys.ToArray();
             foreach (var (name, controls) in _providers)
             {
+                controls.KeyRef.Items.Clear();
+                controls.KeyRef.Items.AddRange(refs);
                 if (settings.Providers.TryGetValue(name, out var provider))
                 {
                     controls.Url.Text = provider.BaseUrl;
                     controls.Model.Text = provider.Model;
                     controls.Key.Text = provider.ApiKey;
+                    controls.KeyRef.Text = provider.ApiKeyRef;
                     controls.NumCtx.Text = provider.NumCtx.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
             }
@@ -1468,14 +1484,19 @@ internal sealed class MainForm : Form
         foreach (var (name, controls) in _providers)
         {
             var existing = settings.Providers.GetValueOrDefault(name);
+            var keyRef = controls.KeyRef.Text.Trim();
             var updated = new ProviderEditorSettings(
                 controls.Url.Text.Trim(),
                 controls.Model.Text.Trim(),
-                controls.Key.Text,
+                // A ref wins: the literal box is only what config.py's loader
+                // actually reads when no ref is set (see ProviderEditorSettings'
+                // own remark, and EvoMeshYamlSettings.Save's matching choice).
+                keyRef.Length == 0 ? controls.Key.Text : "",
                 existing?.TimeoutSeconds ?? 600,
                 int.TryParse(controls.NumCtx.Text.Trim(), out var numCtx) && numCtx > 0
                     ? numCtx
-                    : existing?.NumCtx ?? 65536);
+                    : existing?.NumCtx ?? 65536,
+                keyRef);
             // The record's constructor gives ModelNumCtx a fresh, empty dictionary;
             // a per-model entry a human hand-edited into the file has no editor
             // control at all, so it is copied across rather than dropped here.
@@ -1498,6 +1519,109 @@ internal sealed class MainForm : Form
         }
         settings.Save(_configPath);
         AppendOutput($"[settings saved to {_configPath}]");
+    }
+
+    /// <summary>
+    /// A small modal grid over evomesh.secrets.yaml's ref -&gt; key pairs --
+    /// the only screen in this app that ever shows or writes a real key.
+    /// </summary>
+    /// <remarks>
+    /// Reloads from disk on open (not from the in-memory _secrets, which may
+    /// be stale from whenever the Settings tab last loaded) and, on Save,
+    /// refreshes every provider row's "key ref" combo so a ref added here is
+    /// immediately pickable without reopening the tab.
+    /// </remarks>
+    private void OpenSecretsEditor()
+    {
+        var secrets = EvoMeshSecretsSettings.Load(_secretsPath);
+
+        using var dialog = new Form
+        {
+            Text = "Edit secrets (evomesh.secrets.yaml)",
+            StartPosition = FormStartPosition.CenterParent,
+            Size = new Size(560, 420),
+            MinimumSize = new Size(420, 300),
+            Font = Font,
+            BackColor = BackColor,
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(14) };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var help = new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(3, 0, 3, 10),
+            Text = "Real API keys, named by ref. Written only to evomesh.secrets.yaml, which " +
+                   ".gitignore keeps out of every commit -- point a provider's \"key ref\" field " +
+                   "at the name you give one here instead of pasting the key into evomesh.yaml.",
+            MaximumSize = new Size(520, 0),
+        };
+        layout.Controls.Add(help, 0, 0);
+
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            AllowUserToAddRows = true,
+            AllowUserToDeleteRows = true,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            RowHeadersVisible = false,
+            BackgroundColor = Color.White,
+        };
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Ref", HeaderText = "Ref" });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "API key" });
+        foreach (var (refName, key) in secrets.Refs)
+        {
+            grid.Rows.Add(refName, key);
+        }
+        layout.Controls.Add(grid, 0, 1);
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Right,
+            FlowDirection = FlowDirection.RightToLeft,
+            Margin = new Padding(3, 10, 3, 0),
+        };
+        var cancel = MakeButton("Cancel", 90);
+        cancel.DialogResult = DialogResult.Cancel;
+        var save = MakeButton("Save", 90);
+        save.DialogResult = DialogResult.OK;
+        actions.Controls.AddRange([cancel, save]);
+        layout.Controls.Add(actions, 0, 2);
+
+        dialog.Controls.Add(layout);
+        dialog.AcceptButton = save;
+        dialog.CancelButton = cancel;
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        secrets.Refs.Clear();
+        foreach (DataGridViewRow gridRow in grid.Rows)
+        {
+            var refName = Convert.ToString(gridRow.Cells["Ref"].Value)?.Trim() ?? "";
+            var key = Convert.ToString(gridRow.Cells["Key"].Value) ?? "";
+            if (refName.Length > 0)
+            {
+                secrets.Refs[refName] = key;
+            }
+        }
+        secrets.Save(_secretsPath);
+        _secrets = secrets;
+        var refs = secrets.Refs.Keys.ToArray();
+        foreach (var (_, controls) in _providers)
+        {
+            var current = controls.KeyRef.Text;
+            controls.KeyRef.Items.Clear();
+            controls.KeyRef.Items.AddRange(refs);
+            controls.KeyRef.Text = current;
+        }
+        AppendOutput($"[secrets saved to {_secretsPath}]");
     }
 
     private void EnsureConfiguration()

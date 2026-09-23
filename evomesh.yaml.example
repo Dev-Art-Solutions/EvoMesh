@@ -227,16 +227,31 @@ models:
     # speaks -- so `inferhub` and `openai_compatible` above need no `kind` at
     # all, but a hosted OpenAI-compatible endpoint given a name of your own
     # choosing (openrouter, below) does.
+    #
+    # Use api_key_ref instead of api_key for any of these: this file is
+    # tracked in git (it is the template every fresh checkout copies from),
+    # so a real key typed here as `api_key: sk-...` ships to the remote the
+    # moment it is committed. `api_key_ref` names an entry in
+    # evomesh.secrets.yaml (gitignored, copy it from
+    # evomesh.secrets.yaml.example) instead -- the real key never has to
+    # touch a tracked file. One provider can have more than one key on hand
+    # by giving two named provider blocks two different refs (e.g.
+    # openai_primary/openai_backup below).
     # openai:
     #   kind: openai
     #   base_url: https://api.openai.com/v1
     #   model: gpt-5
-    #   api_key: sk-...
+    #   api_key_ref: openai_primary
+    # openai_backup:
+    #   kind: openai
+    #   base_url: https://api.openai.com/v1
+    #   model: gpt-5
+    #   api_key_ref: openai_backup
     # claude:
     #   kind: anthropic
     #   base_url: https://api.anthropic.com/v1
     #   model: claude-sonnet-5
-    #   api_key: sk-ant-...
+    #   api_key_ref: anthropic_main
     #   # Anthropic's Messages API requires an output cap on every request,
     #   # unlike every other dialect above -- this is that cap, not a context
     #   # window (num_ctx has no equivalent here; Anthropic sizes the model's
@@ -246,7 +261,7 @@ models:
     #   kind: openai
     #   base_url: https://openrouter.ai/api/v1
     #   model: anthropic/claude-sonnet-5
-    #   api_key: sk-or-...
+    #   api_key_ref: openrouter_key
     # gemini:
     #   kind: openai
     #   # Google's own OpenAI-compatibility layer for the Gemini API -- the
@@ -256,7 +271,7 @@ models:
     #   # https://aistudio.google.com/apikey.
     #   base_url: https://generativelanguage.googleapis.com/v1beta/openai
     #   model: gemini-2.5-flash
-    #   api_key: AIza...
+    #   api_key_ref: gemini_key
 
 git:
   # Every generation the mesh commits is signed with this identity, so a human

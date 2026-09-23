@@ -23,6 +23,22 @@ class ProviderSettings(BaseModel):
     base_url: str
     model: str
     api_key: str | None = None
+    # A name looked up in evomesh.secrets.yaml (gitignored, sibling to the
+    # main config) instead of a literal key typed here. Exists so setting up
+    # a new provider never means typing a real key into evomesh.yaml or,
+    # worse, evomesh.yaml.example -- the latter IS committed (it is the
+    # template every fresh checkout copies from), so a key pasted there by
+    # habit during setup ships straight to the remote. When set, this wins
+    # over `api_key` above -- load_settings() resolves it and overwrites
+    # `api_key` with the real value, so every call site downstream
+    # (Environment._build_providers, models.py) keeps reading the one field
+    # it already knew. Two provider entries can point at two different refs
+    # for the same underlying service (e.g. `openai_primary`/
+    # `openai_backup`), which is how "more than one key for one provider"
+    # is expressed -- an agent picks the key by picking the provider name
+    # (AgentModelSettings.provider / AgentDefinition.provider), the same way
+    # it already picks everything else about which endpoint it talks to.
+    api_key_ref: str | None = None
     # Which wire dialect this endpoint speaks. "ollama" is Ollama's own
     # /api/generate + /api/chat; "anthropic" is Claude's Messages API;
     # "openai" is the OpenAI-compatible chat/completions shape that OpenAI
@@ -394,6 +410,47 @@ class Settings(BaseModel):
         return clone
 
 
+SECRETS_FILENAME = "evomesh.secrets.yaml"
+
+
+def _load_secrets(root: Path) -> dict[str, str]:
+    """A flat ``{ref: api key}`` map from evomesh.secrets.yaml next to the
+    main config, or ``{}`` if that file does not exist -- gitignored on
+    purpose (see .gitignore), so it is the one place a real key can live
+    without ever being staged by an ordinary `git add`."""
+    secrets_path = root / SECRETS_FILENAME
+    if not secrets_path.exists():
+        return {}
+    raw = yaml.safe_load(secrets_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{secrets_path} must be a mapping of ref: key, got {type(raw).__name__}")
+    return {str(ref): str(value) for ref, value in raw.items()}
+
+
+def _resolve_api_key_refs(settings: Settings, root: Path) -> Settings:
+    """Every ProviderSettings.api_key_ref resolved against evomesh.secrets.yaml
+    into the real api_key, failing fast (not silently running unauthenticated)
+    when a provider names a ref that file does not have."""
+    refs_used = [
+        (name, provider.api_key_ref)
+        for name, provider in settings.models.providers.items()
+        if provider.api_key_ref
+    ]
+    if not refs_used:
+        return settings
+    secrets = _load_secrets(root)
+    for name, ref in refs_used:
+        if ref not in secrets:
+            secrets_path = root / SECRETS_FILENAME
+            raise ValueError(
+                f"models.providers.{name}.api_key_ref '{ref}' is not in {secrets_path} "
+                f"({'the file does not exist' if not secrets_path.exists() else 'no such key'}). "
+                f"See {SECRETS_FILENAME}.example for the format."
+            )
+        settings.models.providers[name].api_key = secrets[ref]
+    return settings
+
+
 def load_settings(path: Path | None = None) -> Settings:
     config_path = path or Path("evomesh.yaml")
     if not config_path.exists():
@@ -402,4 +459,6 @@ def load_settings(path: Path | None = None) -> Settings:
     raw: dict[str, Any] = {}
     if config_path.exists():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return Settings.model_validate(raw).resolve(config_path.resolve().parent)
+    root = config_path.resolve().parent
+    settings = Settings.model_validate(raw).resolve(root)
+    return _resolve_api_key_refs(settings, root)

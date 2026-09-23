@@ -13,6 +13,7 @@ generations/*
 workspace/*
 !workspace/.gitkeep
 evomesh.yaml
+evomesh.secrets.yaml
 .env
 desktop/**/bin/
 desktop/**/obj/
