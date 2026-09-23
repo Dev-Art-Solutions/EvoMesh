@@ -97,6 +97,24 @@ BUDGET_NOTE = (
     "read more afterwards if the edit is refused."
 )
 
+# Said once, after `edit` has been denied twice in a row for text that does
+# not exist in the file at all (not just stale or mis-indented). Two of those
+# back to back is not bad luck -- it is the model composing `old` from what it
+# thinks the code should say, rather than from what `read` actually showed it.
+# Found live (generation 1219/1220, sessions 010969 and 010979 both): a job
+# read the real file correctly, then submitted seven straight `edit` calls
+# whose `old` text matched none of it, describing a plausible-looking function
+# that was never in the file -- and never once responded to the denial's own
+# "actual start" excerpt by copying from it. The denial already shows the real
+# text; this says, once, to use it verbatim instead of guessing again.
+FABRICATION_HINT = (
+    "That is the second edit in a row where 'old' matches nothing in the "
+    "file -- not stale, not mis-indented, just not there. Stop composing "
+    "'old' from what the change should look like. Call `read` on the exact "
+    "lines you are about to change, then paste that output's text into "
+    "'old' character-for-character, including its indentation."
+)
+
 # Said once, to a model whose tool call did not parse. Observed on gemma:2b: it
 # opens the object, forgets a brace, and the reply is neither a call nor an
 # answer -- accepting it as the answer ends a job that had not finished.
@@ -252,6 +270,8 @@ class HarnessRunner:
         last_call = ""
         repeats = 0
         nudged = False
+        fabrications = 0
+        fabrication_nudged = False
         seen: dict[str, str] = {}
         self.tool_chars = 0
         self.prompt_chars = 0
@@ -370,6 +390,16 @@ class HarnessRunner:
                 else:
                     repeats = 0
                     result = await self._invoke(call)
+                    if call.name == "edit" and result.startswith(
+                        "DENIED: that text is not in"
+                    ):
+                        fabrications += 1
+                        if fabrications >= 2 and not fabrication_nudged:
+                            fabrication_nudged = True
+                            self.session.record("fabrication", step=step)
+                            result = f"{result}\n\n{FABRICATION_HINT}"
+                    else:
+                        fabrications = 0
                     if call.name in WRITE_NAMES:
                         # A cached read answered from before this write would
                         # be stale, possibly hiding the model's own edit from

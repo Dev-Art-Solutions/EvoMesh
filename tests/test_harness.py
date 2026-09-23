@@ -850,6 +850,94 @@ async def test_a_writing_job_is_told_once_that_it_has_changed_nothing(
     assert any("have not changed a file yet" in message.content for message in sent)
 
 
+async def test_a_job_is_told_once_to_stop_fabricating_old(project: Path) -> None:
+    """Two `edit` calls in a row whose `old` text matches nothing in the file
+    at all -- not stale, not mis-indented -- is a model composing `old` from
+    what it thinks the code should say rather than from an actual `read`.
+    Found live: a job did this seven times straight and never once corrected
+    itself off the denial's own excerpt of the real file, burning its whole
+    budget on edits that could never land.
+    """
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "def totally_invented() -> None:\n    pass",
+                            "new": "x",
+                        },
+                    )
+                ]
+            ),
+            # Different `old` text -- a second, differently fabricated guess,
+            # not the exact same call the repeat guard already catches.
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "def another_invention() -> None:\n    pass",
+                            "new": "x",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="giving up"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=5)
+
+    await runner.run("change something")
+
+    assert runner.session.kinds().count("fabrication") == 1
+    sent = provider.chats[-1]
+    tool_messages = [message.content for message in sent if message.role == "tool"]
+    assert not any("stop composing 'old'" in content.lower() for content in tool_messages[:1])
+    assert any("stop composing 'old'" in content.lower() for content in tool_messages[1:])
+
+
+async def test_a_denial_for_a_different_reason_does_not_count_as_fabrication(
+    project: Path,
+) -> None:
+    """`old == new` and `old` missing entirely are different failures -- only
+    the second one is the model inventing text, so only it should count
+    toward the fabrication nudge."""
+    provider = MockProvider(
+        turns=[
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={"path": "src/answer.py", "old": "x", "new": "x"},
+                    )
+                ]
+            ),
+            ChatTurn(
+                tool_calls=[
+                    ToolCall(
+                        name="edit",
+                        arguments={
+                            "path": "src/answer.py",
+                            "old": "def invented() -> None:\n    pass",
+                            "new": "x",
+                        },
+                    )
+                ]
+            ),
+            ChatTurn(text="done"),
+        ]
+    )
+    runner = build_runner(provider, project, read_only=False, allow_write=True, max_steps=5)
+
+    await runner.run("change something")
+
+    assert runner.session.kinds().count("fabrication") == 0
+
+
 async def test_a_job_that_is_already_editing_is_not_nagged(project: Path) -> None:
     provider = MockProvider(
         turns=[
