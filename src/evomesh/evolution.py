@@ -520,6 +520,31 @@ class GenerationSupervisor:
             return stored
         return sum(1 for _ in self.root.glob("*-candidate"))
 
+    def record_no_op(self) -> int:
+        """Bump the persisted count of consecutive generations that wrote no
+        file, and return the new total.
+
+        Counts across restarts and across candidates being discarded (their
+        metadata entry disappears, same as every other counter on this class
+        would plateau if it lived there instead) -- the streak this exists to
+        catch is exactly the one ``total_created()``'s docstring already
+        found live: dozens of generations in a row burning a full step budget
+        with nothing to show, silent until a human happened to read
+        mesh.log. Reset with :meth:`reset_no_op_streak` the moment any
+        generation actually changes a file.
+        """
+        metadata = self.metadata()
+        streak = int(metadata.get("no_op_streak", 0)) + 1
+        metadata["no_op_streak"] = streak
+        self._write(metadata)
+        return streak
+
+    def reset_no_op_streak(self) -> None:
+        metadata = self.metadata()
+        if metadata.get("no_op_streak"):
+            metadata["no_op_streak"] = 0
+            self._write(metadata)
+
     def next_candidate_number(self) -> int:
         """The next generation number to use -- persisted, and strictly
         increasing regardless of what happens to any candidate after it is
@@ -1184,6 +1209,14 @@ class EnvironmentEvolver:
         """The (module, exported name) pair an untested objective would
         target right now."""
         return untested_target(self.workspace.repository_root, seed)
+
+    def record_no_op(self) -> int:
+        """Forwarded to :meth:`GenerationSupervisor.record_no_op`."""
+        return self.workspace.supervisor.record_no_op()
+
+    def reset_no_op_streak(self) -> None:
+        """Forwarded to :meth:`GenerationSupervisor.reset_no_op_streak`."""
+        self.workspace.supervisor.reset_no_op_streak()
 
     def recent_target_failure(
         self, needles: tuple[str, ...], lookback: int = 20

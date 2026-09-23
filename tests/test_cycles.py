@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 
-from evomesh.behaviors import STAGE_REPAIR, EvolverBehavior, GuardianBehavior, _extract_rationale
+from evomesh.behaviors import (
+    NO_OP_STREAK_ALERT_EVERY,
+    STAGE_REPAIR,
+    EvolverBehavior,
+    GuardianBehavior,
+    _extract_rationale,
+)
 from evomesh.cognition import CycleContext, parse_cycle_reply, strip_reasoning
 from evomesh.config import EvolutionSettings, RuntimeSettings, Settings
 from evomesh.console import ConsoleChannel
@@ -2326,6 +2332,35 @@ async def test_auto_promote_discards_a_candidate_the_harness_never_touched(
     assert (await evolver.pipeline_state())["stage"] == "plan"
     assert "2" not in evolver.workspace.supervisor.metadata().get("candidates", {})
     assert len(harness.objectives) == 1
+
+
+async def test_no_op_streak_pings_the_environment_after_repeated_empty_generations(
+    tmp_path: Path, project: Path
+) -> None:
+    """The failure shape found live 2026-09-23: 41 generations in a row wrote
+    no file, silent except in mesh.log, before anyone noticed both concrete
+    objective backlogs had run dry. NO_OP_STREAK_ALERT_EVERY should reach a
+    human through Environment.announce well before a streak gets that long."""
+    validator = ScriptedValidator([passing()] * (2 * NO_OP_STREAK_ALERT_EVERY))
+    evolver, context, harness = await evolving(
+        tmp_path, project, [NOTHING] * NO_OP_STREAK_ALERT_EVERY, validator, StubRepairer()
+    )
+    announced: list[str] = []
+
+    class FakeEnvironment:
+        async def announce(self, text: str) -> None:
+            announced.append(text)
+
+    context.services["environment"] = FakeEnvironment()
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(NO_OP_STREAK_ALERT_EVERY):
+        await behavior.cycle(context)  # plan
+        await behavior.cycle(context)  # propose: job wrote nothing, discards
+
+    assert len(announced) == 1
+    assert f"{NO_OP_STREAK_ALERT_EVERY} generations in a row" in announced[0]
+    assert evolver.workspace.supervisor.metadata()["no_op_streak"] == NO_OP_STREAK_ALERT_EVERY
 
 
 async def test_max_repairs_zero_keeps_the_single_shot_pipeline(

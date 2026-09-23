@@ -524,6 +524,26 @@ async def test_total_created_does_not_plateau_once_pruning_caps_the_disk_count(
     assert workspace.supervisor.total_created() > before_prune
 
 
+async def test_no_op_streak_counts_across_restarts_and_resets_on_demand(
+    tmp_path: Path,
+) -> None:
+    """record_no_op() persists like every other counter on this class (a
+    fresh GenerationSupervisor pointed at the same root must see the same
+    count), and reset_no_op_streak() is the only thing that brings it back
+    to zero."""
+    runtime = tmp_path / "runtime"
+    supervisor = GenerationSupervisor(runtime)
+
+    assert supervisor.record_no_op() == 1
+    assert supervisor.record_no_op() == 2
+    assert GenerationSupervisor(runtime).record_no_op() == 3
+
+    supervisor.reset_no_op_streak()
+
+    assert GenerationSupervisor(runtime).metadata()["no_op_streak"] == 0
+    assert supervisor.record_no_op() == 1
+
+
 async def test_a_generation_cannot_be_written_outside_its_candidate(tmp_path: Path) -> None:
     """Containment moved to the tool that writes, and is still enforced.
 

@@ -60,6 +60,16 @@ STAGE_REPAIR = "repair"
 STAGE_REPORT = "report"
 STAGE_AWAIT_HUMAN = "await-human"
 
+# How many consecutive no-file-changed generations pass before a human is
+# pinged. Found live 2026-09-23: 41 generations straight (1286-1326) burned a
+# full step budget each with nothing written, silent except in mesh.log,
+# before the objective source that was starving them (both concrete backlogs
+# empty, standing goal text with no file and no anchor) got noticed and
+# fixed. A streak this long should reach a human via the same channel a
+# restart or a promotion already does (Environment.announce) long before it
+# gets anywhere near that count again.
+NO_OP_STREAK_ALERT_EVERY = 5
+
 # The Evolver's plan, in the order the pipeline runs. A stage's index here is
 # also the plan cursor, so the checklist and the persisted pipeline state cannot
 # drift apart. Repair is the one stage that can be skipped or entered several
@@ -1017,12 +1027,24 @@ class EvolverBehavior(BDIBehavior):
             # generation that passes while changing nothing is the dead-module
             # failure wearing a verdict.
             await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT, "passed": None})
+            streak = evolver.record_no_op()
             summary = (
                 f"harness job {job.number} finished without changing a file "
                 f"({job.describe()}); there is nothing to validate"
             )
+            if streak > 0 and streak % NO_OP_STREAK_ALERT_EVERY == 0:
+                environment = context.service("environment")
+                if environment is not None:
+                    with suppress(Exception):
+                        await cast("Any", environment).announce(
+                            f"evolution: {streak} generations in a row wrote no file "
+                            f"(latest: generation {generation.number}, {job.describe()}). "
+                            "The standing objective or step budget may be too tight for "
+                            "the current model -- check /evolution status."
+                        )
             fact = f"generation {generation.number} was authored but changed nothing"
             return await self._discard_no_op_or_report(evolver, generation, moved, summary, fact)
+        evolver.reset_no_op_streak()
         stage, extra = on_done(touched)
         await evolver.set_pipeline_state({**moved, **extra, "stage": stage})
         return StepResult(
