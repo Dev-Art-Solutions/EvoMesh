@@ -99,6 +99,7 @@ class ModelProvider(Protocol):
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str: ...
 
     async def chat(
@@ -167,6 +168,7 @@ class OllamaProvider:
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "model": model or self.model,
@@ -176,6 +178,13 @@ class OllamaProvider:
         }
         if options := self._options(num_ctx):
             body["options"] = options
+        if format is not None:
+            # Ollama's own grammar-constrained decoding: the whole response
+            # is forced to validate against this JSON Schema. Used by the
+            # harness's text-protocol fallback (see harness.py's
+            # structured_fallback) to make a malformed/fabricated tool-call
+            # envelope structurally impossible instead of merely unlikely.
+            body["format"] = format
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await client.post(f"{self.base_url}/api/generate", json=body)
@@ -281,12 +290,17 @@ class OpenAICompatibleProvider:
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str:
         # No OpenAI-compatible equivalent to Ollama's options.num_ctx exists in
         # the chat-completions spec; a server this points at sizes its own
         # context (e.g. vLLM's --max-model-len), so the argument is accepted
         # for interface parity with OllamaProvider and otherwise unused.
         del num_ctx
+        # Same parity reasoning for `format`: Ollama's grammar-constrained
+        # decoding has no OpenAI chat-completions equivalent reachable from
+        # this thin wrapper.
+        del format
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -421,8 +435,10 @@ class AnthropicProvider:
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str:
         del num_ctx  # see chat(): no equivalent on this dialect
+        del format  # see OpenAICompatibleProvider.generate(): same, no equivalent
         turn = await self.chat(
             [ChatMessage(role="user", content=prompt)], system=system, model=model
         )
@@ -541,7 +557,7 @@ class MockProvider:
         turns: list[ChatTurn] | None = None,
     ) -> None:
         self.responses = responses or ["Mock response"]
-        self.calls: list[dict[str, str | int | None]] = []
+        self.calls: list[dict[str, Any]] = []
         # None means "this model has no tools", which is the case the harness
         # has to work in anyway -- so it is the default a test gets for free.
         self.turns = turns
@@ -560,9 +576,16 @@ class MockProvider:
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str:
         self.calls.append(
-            {"prompt": prompt, "system": system, "model": model, "num_ctx": num_ctx}
+            {
+                "prompt": prompt,
+                "system": system,
+                "model": model,
+                "num_ctx": num_ctx,
+                "format": format,
+            }
         )
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 

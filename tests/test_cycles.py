@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -151,6 +152,7 @@ async def test_a_model_failure_costs_an_attempt_and_shows_up_as_error(tmp_path: 
             system: str = "",
             model: str | None = None,
             num_ctx: int | None = None,
+            format: dict[str, Any] | None = None,
         ) -> str:
             raise RuntimeError("model is down")
 

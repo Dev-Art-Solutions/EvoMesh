@@ -299,6 +299,35 @@ class TelegramSettings(BaseModel):
     announcements: bool = True
 
 
+class McpServerConfig(BaseModel):
+    """One Model Context Protocol server this mesh (or one agent) may use as
+    a tool source -- see mcp_client.py for the connection itself.
+
+    ``name`` is both the merge key (Settings.mcp_servers + AgentDefinition.
+    mcp_servers, merged by name, agent wins on a collision -- see
+    Environment.active_mcp_tools) and the prefix every tool from this server
+    gets: ``mcp__{name}__{tool}``.
+
+    Exactly one of ``command`` (stdio -- spawned as a local subprocess,
+    talked to over its stdin/stdout) or ``url`` (HTTP) should be set; empty
+    ``command`` means HTTP. ``command``/``args``/``env``/``url``/``headers``
+    must only ever come from a human-edited evomesh.yaml or an agent
+    definition a human/console command wrote -- never from a harness job's
+    own write tools, which is already true today because job filesystem
+    grants are scoped to one candidate generation directory, never the live
+    config or a persisted AgentDefinition row. An MCP server can execute
+    arbitrary commands or reach arbitrary URLs on its own, same trust level
+    as HarnessSettings.shell_allow -- this is not itself a sandbox.
+    """
+
+    name: str
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
 class MindState(BaseModel):
     beliefs: list[Belief] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
@@ -482,6 +511,15 @@ class AgentDefinition(BaseModel):
     # separate from the mesh-wide bot in Settings.telegram. None means this
     # agent is only reachable through the mesh-wide bot (or the console).
     telegram: TelegramSettings | None = None
+    # MCP servers this agent uses as a tool source, on top of the mesh-wide
+    # default list in Settings.mcp_servers -- merged by McpServerConfig.name,
+    # this agent's own entry winning on a name collision (see
+    # Environment.active_mcp_tools). Empty (the default) means exactly the
+    # mesh-wide list, same shape as skills/permissions above: an explicit,
+    # per-agent grant list, not a mesh-wide switch. See McpServerConfig's own
+    # docstring for why its fields must never be settable from inside a
+    # harness job.
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     # A command run on its own short, fixed interval, outside this agent's
     # cognition cycle entirely -- for state that moves on a scale of seconds
     # (open orders, account equity) where an LLM turn every few seconds would

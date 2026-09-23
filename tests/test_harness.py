@@ -20,6 +20,7 @@ from evomesh.config import HarnessSettings, ProviderSettings, Settings
 from evomesh.contracts import AgentDefinition, AgentPhase
 from evomesh.environment import Environment
 from evomesh.harness import (
+    TEXT_PROTOCOL_FORMAT,
     HarnessResult,
     HarnessRunner,
     build_runner,
@@ -611,6 +612,26 @@ async def test_a_model_without_tool_calling_drives_the_same_tools_in_text(projec
     assert result.used_tool_protocol == "text protocol"
     assert result.tool_calls == 1
     assert "src/answer.py" in result.answer
+
+
+async def test_structured_fallback_sends_format_on_the_text_protocol_only(
+    project: Path,
+) -> None:
+    provider = MockProvider(responses=["It is defined in src/answer.py."])
+    runner = build_runner(provider, project, structured_fallback=True)
+
+    await runner.run("where does reconsider live?")
+
+    assert provider.calls[-1]["format"] == TEXT_PROTOCOL_FORMAT
+
+
+async def test_structured_fallback_off_by_default_sends_no_format(project: Path) -> None:
+    provider = MockProvider(responses=["It is defined in src/answer.py."])
+    runner = build_runner(provider, project)
+
+    await runner.run("where does reconsider live?")
+
+    assert provider.calls[-1]["format"] is None
 
 
 async def test_a_denied_tool_does_not_end_the_job(project: Path) -> None:
@@ -2730,6 +2751,23 @@ def test_arguments_sent_as_a_json_string_are_still_understood() -> None:
     turn = parse_text_call('{"tool": "grep", "arguments": "{\\"pattern\\": \\"x\\"}"}')
 
     assert turn.tool_calls[0].arguments == {"pattern": "x"}
+
+
+def test_an_answer_key_is_the_finished_case_under_structured_fallback() -> None:
+    """structured_fallback (harness.py's TEXT_PROTOCOL_FORMAT) forces every
+    fallback response to be one JSON object, so the model's "I'm done" case
+    can no longer be plain text -- it uses an 'answer' key instead, a fourth
+    terminal spelling alongside the three tool-name ones."""
+    turn = parse_text_call('{"answer": "the fix is in bdi.py"}')
+
+    assert not turn.tool_calls
+    assert turn.text == "the fix is in bdi.py"
+
+
+def test_an_answer_key_does_not_shadow_a_real_tool_call() -> None:
+    turn = parse_text_call('{"tool": "read", "args": {"path": "a.py"}, "answer": "ignored"}')
+
+    assert turn.tool_calls[0].name == "read"
 
 
 async def test_a_refused_edit_does_not_end_the_job_and_the_model_widens_its_anchor(

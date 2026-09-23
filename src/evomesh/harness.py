@@ -25,6 +25,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from evomesh.cognition import strip_reasoning
 from evomesh.harness_session import HarnessSession
@@ -83,6 +84,39 @@ TEXT_SYSTEM = (
     "When you can answer, reply with the answer as plain text and no JSON. "
     "Name the files it came from. Never guess a file's contents."
 )
+
+# Appended to TEXT_SYSTEM only when HarnessRunner.structured_fallback is on
+# (see _ask() below) -- structured_fallback constrains OllamaProvider.
+# generate() to TEXT_PROTOCOL_FORMAT, which forces the *entire* response to
+# be one JSON object, so the plain-text final answer TEXT_SYSTEM asks for
+# above is no longer a shape the model can produce. This line replaces that
+# instruction with an equally terminal JSON shape instead, left off by
+# default so a mesh that never opts in never sees its fallback prompt change.
+TEXT_SYSTEM_STRUCTURED_SUFFIX = (
+    "\nYour reply is grammar-constrained to JSON. When you can answer, use "
+    'an \'answer\' key instead of \'tool\'/\'args\': {"answer": "..."}.'
+)
+
+# The envelope structured_fallback constrains OllamaProvider.generate() to,
+# on the text-protocol fallback path -- see HarnessRunner.structured_fallback
+# and _ask() below. Both "tool" and "answer" are optional at the schema level
+# (required=[]) because Ollama's `format` forces the *entire* response to
+# validate against this shape, and the fallback protocol genuinely has two
+# distinct terminal cases (call a tool, or give the final answer) -- a schema
+# that required one specific key would make the other case impossible to
+# express. parse_text_call() below treats "answer" as a fourth, terminal
+# spelling alongside its existing three tool-name spellings, unconditionally
+# (harmless when structured_fallback is off: a model that never sends an
+# "answer" key simply never exercises this branch).
+TEXT_PROTOCOL_FORMAT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tool": {"type": "string"},
+        "args": {"type": "object"},
+        "answer": {"type": "string"},
+    },
+    "required": [],
+}
 
 OUTCOMES = ("answered", "capped", "failed")
 
@@ -253,6 +287,8 @@ class HarnessRunner:
     # See HarnessSettings.self_check_command -- empty turns this off.
     self_check_command: str = ""
     self_check_max_attempts: int = 2
+    # See HarnessSettings.structured_fallback -- off by default.
+    structured_fallback: bool = False
     _self_check_attempts: int = field(default=0, init=False, repr=False)
     _self_check_last_output: str = field(default="", init=False, repr=False)
     # A separate flag from the output string above: a check can fail (a
@@ -451,11 +487,15 @@ class HarnessRunner:
             except ToolsUnsupportedError as exc:
                 logger.info("harness: falling back to the text protocol (%s)", exc)
                 self.session.record("fallback", reason=str(exc))
+        text_system = TEXT_SYSTEM + (
+            TEXT_SYSTEM_STRUCTURED_SUFFIX if self.structured_fallback else ""
+        )
         answer = await self.provider.generate(
             self._render(messages),
-            system=f"{TEXT_SYSTEM}\n\nTools:\n{self.registry.describe()}",
+            system=f"{text_system}\n\nTools:\n{self.registry.describe()}",
             model=self.model,
             num_ctx=self.num_ctx,
+            format=TEXT_PROTOCOL_FORMAT if self.structured_fallback else None,
         )
         return parse_text_call(strip_reasoning(answer)), False
 
@@ -663,6 +703,16 @@ def parse_text_call(raw: str) -> ChatTurn:
             continue
         name = payload.get("tool") or payload.get("name")
         if not isinstance(name, str) or not name:
+            # Not a tool call -- but under structured_fallback, a finished
+            # turn is *also* one JSON object (Ollama's `format` allows no
+            # other shape), naming its answer instead of a tool. Checked
+            # here, not as an earlier/separate branch, so an object that
+            # has neither key still falls through to the loop's next object
+            # or the plain-text return below, exactly as before this key
+            # existed.
+            answer = payload.get("answer")
+            if isinstance(answer, str) and answer:
+                return ChatTurn(text=answer)
             continue
         # Three spellings, because three model families use different ones and
         # the arguments are the part a refusal cannot recover from.
@@ -705,6 +755,7 @@ def build_runner(
     custom_tools: tuple[Tool, ...] = (),
     self_check_command: str = "",
     self_check_max_attempts: int = 2,
+    structured_fallback: bool = False,
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -759,4 +810,5 @@ def build_runner(
         system=SYSTEM if read_only else WRITE_SYSTEM,
         self_check_command=self_check_command if allow_write else "",
         self_check_max_attempts=self_check_max_attempts,
+        structured_fallback=structured_fallback,
     )

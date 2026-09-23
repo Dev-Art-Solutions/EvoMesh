@@ -1028,8 +1028,10 @@ class ConsoleChannel:
                 else ""
             ),
             scraping_timeout=self.environment.settings.scraping.timeout_seconds,
-            custom_tools=self.environment.active_custom_tools(),
+            custom_tools=self.environment.active_custom_tools()
+            + await self.environment.active_mcp_tools(""),
             skills_root=self.environment.skills.root,
+            structured_fallback=settings.structured_fallback,
         )
         catalog = self.environment.skills.render_catalog()
         result = await runner.run(f"{catalog}\n\n{task}" if catalog else task)

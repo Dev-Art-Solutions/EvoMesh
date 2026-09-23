@@ -33,6 +33,7 @@ from evomesh.harness import HarnessResult, build_runner
 from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue, HarnessWorker
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
+from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
 from evomesh.messaging import MessageBus
 from evomesh.models import (
@@ -67,6 +68,7 @@ class Environment:
         self.permissions = FilesystemPolicy(self.repository)
         self.skills = SkillRegistry(self.project_root)
         self.tools = CustomToolRegistry(self.project_root)
+        self.mcp = McpManager(settings.mcp_servers)
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
         # non-durability the harness queue's own jobs already accept.
@@ -411,6 +413,12 @@ class Environment:
         # Shutting the mesh down leaves every agent's desired status untouched,
         # so the next boot starts exactly what was running before.
         await self._stop_harness_workers()
+        # After the workers, not before: no in-flight harness job should
+        # still be mid call_tool() on an MCP connection this is about to
+        # close (see mcp_client.py's own docstring on why this matters --
+        # the same "actually terminate it" lesson as processes.py's timeout
+        # fix, this time for MCP servers' own child processes/connections).
+        await self.mcp.shutdown()
         await self.evolver.cancel_validation()
         for runtime in list(self.runtimes.values()):
             await runtime.stop(persist_status=False)
@@ -632,6 +640,17 @@ class Environment:
             if custom_tool_program(definition) in allow
         )
 
+    async def active_mcp_tools(self, agent_id: str) -> tuple[Tool, ...]:
+        """MCP-sourced tools for one agent's harness job: the mesh-wide
+        default server list plus this agent's own AgentDefinition.
+        mcp_servers, merged by name (see McpManager.resolve). Async, unlike
+        active_custom_tools above, because tool discovery is a real
+        list_tools() round trip against each connected server, not a
+        filesystem scan."""
+        definition = self.registry.get(agent_id) if agent_id and self._has(agent_id) else None
+        overrides = definition.mcp_servers if definition is not None else []
+        return await self.mcp.tools_for(overrides)
+
     def _make_ask_agent(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
         """A harness job's ``ask_agent`` tool, bound to the agent it runs for.
 
@@ -852,9 +871,11 @@ class Environment:
                 else None
             ),
             skills_root=self.skills.root,
-            custom_tools=self.active_custom_tools(),
+            custom_tools=self.active_custom_tools()
+            + await self.active_mcp_tools(job.agent_id or ""),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,
+            structured_fallback=settings.structured_fallback,
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.
@@ -914,6 +935,7 @@ class Environment:
             "evolver": self.evolver,
             "skills": self.skills,
             "tools": self.tools,
+            "mcp": self.mcp,
             "permissions": self.permissions,
             "repository": self.repository,
             "runtime_states": self.runtime_states(),

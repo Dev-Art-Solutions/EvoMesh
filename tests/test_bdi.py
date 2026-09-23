@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -69,9 +70,16 @@ class ScriptedProvider(MockProvider):
         system: str = "",
         model: str | None = None,
         num_ctx: int | None = None,
+        format: dict[str, Any] | None = None,
     ) -> str:
         self.calls.append(
-            {"prompt": prompt, "system": system, "model": model, "num_ctx": num_ctx}
+            {
+                "prompt": prompt,
+                "system": system,
+                "model": model,
+                "num_ctx": num_ctx,
+                "format": format,
+            }
         )
         return self.plan if PLANNING_MARKER in prompt else self.step
 
@@ -806,6 +814,7 @@ async def test_a_model_that_is_down_still_yields_a_usable_plan(tmp_path: Path) -
             system: str = "",
             model: str | None = None,
             num_ctx: int | None = None,
+            format: dict[str, Any] | None = None,
         ) -> str:
             raise RuntimeError("model is down")
 

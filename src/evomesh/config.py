@@ -6,7 +6,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from evomesh.contracts import TelegramSettings
+from evomesh.contracts import McpServerConfig, TelegramSettings
 from evomesh.git import (
     DEFAULT_AUTHOR_EMAIL,
     DEFAULT_AUTHOR_NAME,
@@ -16,7 +16,7 @@ from evomesh.git import (
 from evomesh.harness_tools import ToolLimits
 from evomesh.memory import MemoryBudget
 
-__all__ = ["Settings", "TelegramSettings", "load_settings"]
+__all__ = ["McpServerConfig", "Settings", "TelegramSettings", "load_settings"]
 
 
 class ProviderSettings(BaseModel):
@@ -240,6 +240,19 @@ class HarnessSettings(BaseModel):
     # wants every write reviewed regardless of which agent made it, not a
     # requirement for the capability to work at all.
     skill_write_approval: bool = False
+    # When true, a harness job that falls back to the text protocol (a model
+    # with no native tool calling) has its generate() call constrained to
+    # Ollama's own `format` field -- see harness.py's TEXT_PROTOCOL_FORMAT
+    # and HarnessRunner.structured_fallback. Off by default: only
+    # OllamaProvider honors it (see models.py, other dialects just accept
+    # and drop the parameter), and it only ever touches the fallback branch
+    # of _ask -- the native-tools path (chat() with tools=) is never
+    # affected. Found live: a small model on the fallback path repeatedly
+    # fabricated tool-call envelopes with invented field names or wrong
+    # file paths, caught only after the fact by validation. Grammar-
+    # constrained decoding makes an unparseable envelope structurally
+    # impossible rather than merely unlikely.
+    structured_fallback: bool = False
 
     def shell_programs(self) -> frozenset[str]:
         return frozenset(name.strip().lower() for name in self.shell_allow if name.strip())
@@ -361,6 +374,14 @@ class Settings(BaseModel):
     scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    # Mesh-wide default MCP servers, merged with each agent's own
+    # AgentDefinition.mcp_servers (agent wins on a name collision) -- see
+    # McpServerConfig's own docstring and Environment.active_mcp_tools.
+    # Unlike telegram above, there is no separate `enabled` flag: a list of
+    # independently-named servers has no single on/off switch, so an empty
+    # list (the default) is itself "off", the same shape HarnessSettings.
+    # shell_allow already uses for its own allow-list.
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
     def resolve(self, root: Path) -> Settings:
         clone = self.model_copy(deep=True)
