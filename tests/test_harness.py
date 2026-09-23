@@ -1288,6 +1288,27 @@ async def test_a_python_snippet_with_no_process_spawning_still_runs(project: Pat
     assert result.startswith("exit 0")
 
 
+async def test_a_chained_command_is_denied_instead_of_run_as_literal_args(
+    project: Path,
+) -> None:
+    """There is no shell interpreter, so `&&` is not an operator -- it is
+    just another argument. Found live: `python -m py_compile x.py && echo OK`
+    handed py_compile a file literally named `&&` to compile next, and came
+    back as `[Errno 2] No such file or directory: '&&'` -- a result that
+    means nothing to a model that just wanted to chain two commands. Denying
+    it up front, by name, beats letting the model spend a step on a traceback
+    it cannot interpret.
+    """
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": 'python -m py_compile x.py && echo OK'},
+    )
+
+    assert "DENIED" in result
+    assert "no shell interpreter" in result.lower()
+
+
 async def test_a_pipe_is_an_argument_and_not_an_operator(project: Path) -> None:
     """No shell interpreter, so the allow-list cannot be walked around.
 

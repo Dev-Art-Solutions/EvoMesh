@@ -681,6 +681,16 @@ _PYTHON_ESCAPE_NEEDLES = (
     "pty.spawn",
 )
 
+# There is no shell interpreter here (see the docstring below), so these
+# never act as operators -- they land as literal arguments to whatever ran
+# first, which almost always fails in a way that means nothing to the model.
+# Found live: `python -m py_compile environment.py && echo "OK"` handed
+# py_compile a nonexistent file named literally `&&` to compile next, and
+# came back as `[Errno 2] No such file or directory: '&&'` -- a step spent on
+# a self-check the model had no way to interpret, right after it had finally
+# started landing closer edits post-fabrication-nudge.
+_SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
+
 
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     """Run one allowed program in the job root. The only tool that can do harm.
@@ -721,6 +731,13 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         )
     if program == "python" and any(needle in raw for needle in _PYTHON_ESCAPE_NEEDLES):
         raise ToolDenied(PYTHON_ESCAPE_HINT)
+    if _SHELL_OPERATOR_TOKENS & set(parts[1:]):
+        raise ToolDenied(
+            "DENIED: there is no shell interpreter here, so `&&`, `||`, `;`, "
+            "`|` and `&` are not operators -- they would reach the program as "
+            "literal arguments, which fails in a way that has nothing to do "
+            "with your command. Run one plain command per `shell` call."
+        )
     try:
         result = await asyncio.wait_for(
             run_command(parts[0], *parts[1:], cwd=context.root),
