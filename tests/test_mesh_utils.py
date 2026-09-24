@@ -1,4 +1,4 @@
-from evomesh.mesh_utils import edge_snapshot, undirected_edges
+from evomesh.mesh_utils import edge_snapshot, merge_attributes, undirected_edges
 
 
 def test_undirected_edges_dedupes_reversed_pair_keeps_first_direction():
@@ -12,3 +12,10 @@ def test_edge_snapshot_returns_copy_with_same_contents():
     # live views, so the snapshot has the same contents as the input.
     edges = {"a": {"b": "label"}}
     assert edge_snapshot(edges) == {"a": {"b": "label"}}
+
+
+def test_merge_attributes_combines_base_and_override():
+    # merge_attributes returns a dict combining the base keys with the
+    # override keys.
+    result = merge_attributes({"a": 1}, {"b": 2})
+    assert result == {"a": 1, "b": 2}
