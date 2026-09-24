@@ -12,7 +12,7 @@ files. An item three recent generations failed is set aside until those attempts
 of the look-back window. The pipeline ticks an item (`- [x]`) inside the very commit that
 implemented it; do not tick one by hand unless you did the work yourself.
 
-- [ ] Back off exponentially when Telegram polling keeps failing, and log what actually failed
+- [x] Back off exponentially when Telegram polling keeps failing, and log what actually failed
     `TelegramChannel`'s poll loop in src/evomesh/telegram.py catches `httpx.HTTPError` and
     logs `"Telegram poll failed, retrying: %s", exc`, then sleeps a fixed 5 seconds. Two real
     problems, both visible in mesh.log: an `httpx.ReadTimeout` stringifies to an empty string,

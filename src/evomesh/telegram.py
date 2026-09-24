@@ -38,6 +38,11 @@ ALLOWED_STATE_KEY = "telegram.allowed_chats"
 # a status listing cut in half is worse than one that arrives in two messages.
 MESSAGE_LIMIT = 3800
 
+# Base backoff interval and its ceiling for consecutive poll failures, which
+# double each time in a row (5s, 10s, 20s ...) until one succeeds again.
+BACKOFF_INTERVAL_SECONDS = 5
+BACKOFF_MAX_SECONDS = 120
+
 WELCOME = (
     "EvoMesh is connected.\n\n"
     "Send a message to talk to the selected agent, or use a command:\n"
@@ -78,6 +83,8 @@ class TelegramChannel:
         self._allowed: set[int] = {int(item) for item in settings.allowed_chat_ids}
         self._offset = 0
         self._running = False
+        # Exponential backoff for consecutive poll failures, reset after a success.
+        self._backoff = BACKOFF_INTERVAL_SECONDS
         self.identity = ""
         # None: the mesh-wide bot, talking to whichever agent /chat selected.
         # Set: a private bot for exactly one agent -- no /chat, no switching.
@@ -235,9 +242,16 @@ class TelegramChannel:
             except asyncio.CancelledError:
                 raise
             except (httpx.HTTPError, TelegramError) as exc:
-                logger.warning("Telegram poll failed, retrying: %s", exc)
-                await asyncio.sleep(5)
+                logger.warning(
+                    "Telegram poll failed, retrying in %.0fs: %s: %s",
+                    self._backoff,
+                    type(exc).__name__,
+                    exc,
+                )
+                await asyncio.sleep(self._backoff)
+                self._backoff = min(self._backoff * 2, BACKOFF_MAX_SECONDS)
                 continue
+            self._backoff = BACKOFF_INTERVAL_SECONDS
             for update in updates if isinstance(updates, list) else []:
                 await self._consume(update)
 
