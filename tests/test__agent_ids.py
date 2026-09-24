@@ -1,4 +1,4 @@
-from evomesh._agent_ids import is_valid, make_id, next_id
+from evomesh._agent_ids import AgentIdValidator, is_valid, make_id, next_id
 
 
 def test_is_valid_accepts_a_hierarchical_identifier() -> None:
@@ -15,3 +15,7 @@ def test_next_id_is_zero_padded_and_increments() -> None:
     assert first == "0001"
     assert second == "0002"
     assert second > first
+
+
+def test_agent_id_validator_accepts_a_hierarchical_identifier() -> None:
+    assert AgentIdValidator().is_valid("root.child.grandchild") is True
