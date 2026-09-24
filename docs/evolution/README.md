@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1413](001413.md) — I added one test that calls `is_valid_cron_expression("0 * * * *")` (the simplest realistic 5-field expression, already used successfully by an existing test) and asserts it returns `True`, matching exactly what the code under test shows — it returns `True` when `parse()` succeeds. The import was extended to include `is_valid_cron_expression`. No changes were made under `src/evomesh/`.
 - [Generation 1412](001412.md) — A single passing assertion against the exact output (verified by reading the source, not a mock) fully covers `plan_objective()` without inventing stubs or changing production code.
 - [Generation 1411](001411.md) — The test asserts the single, unambiguous behavior visible in the code — that `harness_objective` returns a string containing the `OBJECTIVE:` line it builds — rather than every branch, and the import was added alongside the existing ones so the module is wired in with the rest.
 - [Generation 1410](001410.md) — `call_key` is the `f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"` string that uniquely identifies a tool invocation. A single `ToolCall` (already imported) is the simplest real input, and the assertion checks the one obvious thing the code does — name + colon + deterministic JSON of the arguments — without asserting anything beyond the contract shown in the source.

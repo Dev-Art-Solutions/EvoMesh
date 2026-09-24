@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from evomesh.cron import InvalidCronError, next_after, parse
+from evomesh.cron import InvalidCronError, is_valid_cron_expression, next_after, parse
 
 
 def test_every_hour_on_the_hour() -> None:
@@ -73,3 +73,7 @@ def test_parse_splits_fields_into_sets() -> None:
     assert minute == {0}
     assert hour == {12}
     assert weekday == {1}
+
+
+def test_is_valid_cron_expression_returns_true_for_a_valid_expression() -> None:
+    assert is_valid_cron_expression("0 * * * *") is True
