@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1449](001449.md) — The test directly exercises the code under test — `agent_label("trader")` returns `"Trader"` per `_AGENT_LABELS` — which is the simplest realistic call and the one real, observable behavior, matching the style of the analogous `test_phase_label.py`/`test_verdict_label.py` without inventing any mocks.
 - [Generation 1447](001447.md) — Added a single, minimal test calling `directed_pair_count` with realistic edge arguments and asserting the one obvious result it produces, without modifying any source under src/evomesh/.
 - [Generation 1441](001441.md) — The simplest realistic call is a full sentence with an explicit `named "X"` token; the code's first branch (`if explicit: return _title(explicit.group(1).strip())`) deterministically returns that stated name, which is the one obvious, passing check worth asserting.
 - [Generation 1439](001439.md) — The test exercises the one clearly observable behavior of `merge_attributes` — merging base and override dicts — with minimal real arguments, satisfying the requirement of a single passing, load-bearing check.
