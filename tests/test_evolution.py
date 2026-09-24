@@ -12,6 +12,7 @@ from evomesh.evolution import (
     PlanNode,
     clip,
     decompose_objective,
+    evaluate_plan_objective,
     harness_objective,
     parse_plan_verdict,
     review_objective,
@@ -44,3 +45,9 @@ def test_decompose_objective_embeds_project_and_title() -> None:
     prompt = decompose_objective(node, "evomesh")
     assert "evomesh" in prompt
     assert "ITEM TITLE: item A" in prompt
+
+
+def test_evaluate_plan_objective_embeds_plan_and_project() -> None:
+    prompt = evaluate_plan_objective("add a new module", "evomesh")
+    assert "add a new module" in prompt
+    assert "evomesh" in prompt

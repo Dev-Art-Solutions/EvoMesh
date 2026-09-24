@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1417](001417.md) — The implementation is a pure string-builder that returns a join of the inputs; asserting the plan text and project strings are embedded is the single real, passing check of what the code does, matching the style of the neighboring mechanical tests.
 - [Generation 1416](001416.md) — One real, passing check against the demonstrated behavior; `belief_key` takes a plain str so no mock or stand-in was needed.
 - [Generation 1415](001415.md) — The function is a pure string-builder that joins `project`, the node path, `title`, `reasoning`, and rules. The single obvious check is that the inputs it was handed appear in the output — the project string and the "ITEM TITLE:" line — rather than testing every branch.
 - [Generation 1414](001414.md) — The test reuses `clip`'s default `keep_end=True` path with minimal args, asserting the concrete output `"...\n" + text[-limit:]` — the real behavior the code shows — without touching anything under `src/evomesh/`, adding only the needed import.
