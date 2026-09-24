@@ -26,6 +26,7 @@ from evomesh.harness import (
     build_runner,
     call_key,
     compact,
+    looks_like_broken_call,
     message_size,
     parse_text_call,
 )
@@ -3127,3 +3128,9 @@ def test_call_key_is_the_name_joined_with_its_json_arguments() -> None:
     result = call_key(call)
 
     assert result == "read:{\"path\": \"notes/todo.txt\"}"
+
+
+def test_a_missing_closing_brace_is_still_recognised_as_a_tool_call() -> None:
+    text = '{"tool": "read", "args": {"path": "notes/todo.txt"}'
+
+    assert looks_like_broken_call(text) is True
