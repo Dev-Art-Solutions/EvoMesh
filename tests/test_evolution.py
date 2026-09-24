@@ -12,6 +12,7 @@ from evomesh.evolution import (
     PlanNode,
     clip,
     decompose_objective,
+    draft_plan_objective,
     evaluate_plan_objective,
     harness_objective,
     parse_plan_children,
@@ -58,3 +59,9 @@ def test_parse_plan_children_returns_the_first_child_title() -> None:
     result = parse_plan_children("- title one :: reason one")
     assert result is not None
     assert result[0]["title"] == "title one"
+
+
+def test_draft_plan_objective_embeds_objective_and_project() -> None:
+    prompt = draft_plan_objective("add a test", "evomesh")
+    assert "OBJECTIVE: add a test" in prompt
+    assert "evomesh" in prompt
