@@ -1,8 +1,10 @@
 from evomesh.codebase import (
     PACKAGE,
+    Improvement,
     fabricated_references,
     known_dead,
     package_root,
+    plan_needle,
     stray_root_files,
     survey,
 )
@@ -40,3 +42,9 @@ def test_known_dead_read_and_skips_comments(tmp_path):
 def test_stray_root_files_lists_a_file_left_at_the_project_root(tmp_path):
     (tmp_path / "orphan.py").write_text("# left behind by accident\n")
     assert stray_root_files(tmp_path) == ["orphan.py"]
+
+
+def test_plan_needle_prefixed_with_the_objective_prefix():
+    assert plan_needle(Improvement("Wire up `known_dead", "In codebase.")) == (
+        "Plan this improvement to EvoMesh: Wire up `known_dead"
+    )
