@@ -2,11 +2,13 @@ from evomesh.codebase import (
     IMPROVEMENTS_FILE,
     PACKAGE,
     Improvement,
+    Step,
     fabricated_references,
     known_dead,
     package_root,
     plan_needle,
     plan_objective,
+    step_needle,
     stray_root_files,
     survey,
 )
@@ -61,4 +63,12 @@ def test_plan_objective_uses_the_item_title_on_its_own_line():
             "becomes one later generation's whole objective.",
             "THE ITEM: Split the DB module",
         ]
+    )
+
+
+def test_step_needle_prefixed_with_the_improvement_needle_and_step_number():
+    assert step_needle(
+        Improvement("Split the DB module"), Step(number=3, path="", symbol="", change="")
+    ) == (
+        "Implement this improvement to EvoMesh: Split the DB module [step 3]"
     )
