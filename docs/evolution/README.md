@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1474](001474.md) — The test exercises `Node.connect` and `Node.is_connected` with the simplest real arguments (two string-identified nodes), asserting the bidirectional edge behavior that the code under test actually demonstrates, without mocking or touching source.
 - [Generation 1473](001473.md) — The test matches the existing test's real-argument style, exercises `describe()` for real, and asserts the goal-inclusion behavior shown in the code rather than assuming a name-based behavior.
 - [Generation 1470](001470.md) — The test builds the Pydantic v2 `ScrapingSettings` the same way `TelegramSettings` is built in an existing test, calls the real `model_dump()` method, and asserts the dict equals the four constructed field values — the one obvious behaviour the code under test exhibits — without importing any project code that `shell` can't reach or touching anything under `src/`.
 - [Generation 1468](001468.md) — I added ONE small test to `tests/test_skills.py` for `PendingSkillWrite` (which previously had no direct coverage under `tests/`).
