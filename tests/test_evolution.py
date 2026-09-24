@@ -9,6 +9,7 @@ objective and diff it was handed.
 from __future__ import annotations
 
 from evomesh.evolution import (
+    GenerationChange,
     ObjectivePick,
     PlanNode,
     clip,
@@ -88,3 +89,9 @@ def test_objective_pick_repr_names_its_fields() -> None:
     assert rendered.startswith("ObjectivePick(")
     assert "make x faster" in rendered.lower()
     assert "Faster startup" in rendered
+
+
+def test_generation_change_defaults_kind_to_mutation() -> None:
+    change = GenerationChange(path="src/evomesh/evolution.py", rationale="add test")
+    assert change.kind == "mutation"
+    assert change.path == "src/evomesh/evolution.py"
