@@ -8,7 +8,7 @@ objective and diff it was handed.
 
 from __future__ import annotations
 
-from evomesh.evolution import harness_objective, parse_plan_verdict, review_objective
+from evomesh.evolution import clip, harness_objective, parse_plan_verdict, review_objective
 
 
 def test_review_objective_embeds_objective_and_diff() -> None:
@@ -26,3 +26,7 @@ def test_parse_plan_verdict_returns_true_for_approve() -> None:
 def test_harness_objective_embeds_objective_and_project() -> None:
     prompt = harness_objective("add a test", "evomesh")
     assert "OBJECTIVE: add a test" in prompt
+
+
+def test_clip_keeps_the_tail_when_longer_than_limit() -> None:
+    assert clip("abcdef", 2) == "...\nef"
