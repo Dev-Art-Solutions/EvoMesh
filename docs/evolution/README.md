@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1441](001441.md) — The simplest realistic call is a full sentence with an explicit `named "X"` token; the code's first branch (`if explicit: return _title(explicit.group(1).strip())`) deterministically returns that stated name, which is the one obvious, passing check worth asserting.
 - [Generation 1439](001439.md) — The test exercises the one clearly observable behavior of `merge_attributes` — merging base and override dicts — with minimal real arguments, satisfying the requirement of a single passing, load-bearing check.
 - [Generation 1438](001438.md) — The test calls the load-bearing, untested `humanize_size()` with a realistic sub-1024 input and asserts exactly what the code shows it does (whole-number byte rendering), a single passing check covering the byte branch without duplicating the existing KiB-decimal test.
 - [Generation 1437](001437.md) — The test asserts the one obvious, counterintuitive result of `humanize_duration` — that a sub-second value like `0.5` renders as `"500 ms"` (via the `seconds < 1` branch) rather than `0.5 s`, using the simplest realistic argument with a single real assertion and no mocks.

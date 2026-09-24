@@ -1,6 +1,7 @@
 from evomesh.architect import (
     derive_access,
     derive_model,
+    derive_name,
     plausible_constraints,
     plausible_name,
     plausible_purpose,
@@ -42,3 +43,9 @@ def test_plausible_purpose_rejects_a_purpose_that_is_shorter_than_the_need():
     # survive when the need was a full sentence.
     need = "Explain the risk and expected return of this position"
     assert plausible_purpose("trading", need) is False
+
+
+def test_derive_name_returns_the_explicitly_named_name_when_given_a_sentence():
+    # An explicit `named "..."` token wins: the name that was stated is what comes
+    # back, title-cased.
+    assert derive_name("Please create an agent named Mercury") == "Mercury"
