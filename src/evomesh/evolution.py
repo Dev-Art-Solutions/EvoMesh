@@ -30,16 +30,28 @@ from evomesh.codebase import (
     improvement_objective,
     new_orphans,
     open_improvements,
+    plan_needle,
+    plan_objective,
+    plan_task,
     project_map,
     runtime_fault_needle,
     runtime_fault_objective,
     runtime_faults,
+    scout_modules,
+    scout_needle,
     scout_objective,
+    scout_task,
+    step_needle,
+    step_objective,
+    step_task,
     stray_root_files,
     tick_improvement,
+    tick_step,
     untested_objective,
     untested_target,
     vet_new_improvements,
+    vet_plan,
+    warning_leads,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -1219,13 +1231,20 @@ class ValidationRun:
 
 PICK_RUNTIME_FAULT = "runtime-fault"
 PICK_IMPROVEMENT = "improvement"
+PICK_PLAN = "plan-item"
 PICK_SCOUT = "scout"
 # The picks that are, by definition, a change to how EvoMesh behaves -- a
 # candidate answering one must still differ under src/evomesh/ when it lands.
 SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT})
+# The picks that write docs/evolution/improvements.md and nothing else.
+BACKLOG_PICKS = frozenset({PICK_PLAN, PICK_SCOUT})
 # How many of the recent generations may aim at one substantive target before
 # it is set aside for the others -- see `substantive_objective`.
 MAX_TARGET_ATTEMPTS = 3
+# Scouts aim at one module each, so MAX_TARGET_ATTEMPTS sets aside a module, not
+# scouting; this caps scouts of any module in the same window, so a model that
+# cannot scout at all still leaves the maintenance backlogs a turn.
+MAX_SCOUT_ATTEMPTS = 6
 
 
 @dataclass(frozen=True)
@@ -1235,12 +1254,17 @@ class ObjectivePick:
     ``needle`` is the prefix the objective starts with (what the look-back
     helpers match a generation's MUTATION_OBJECTIVE.md on); ``key`` is what a
     later stage acts on -- the improvement's title, for ticking it off.
+    ``work`` is what the job for it is built from once the candidate exists
+    (see `EnvironmentEvolver.work_order`): a step's anchor, or the module a
+    scout looks at. Empty for a pick that gets the full, unanchored prompt.
     """
 
     kind: str
     objective: str
     needle: str
     key: str
+    step: int = 0
+    work: dict[str, str] = field(default_factory=dict[str, str])
 
 
 class EnvironmentEvolver:
@@ -1361,25 +1385,90 @@ class EnvironmentEvolver:
                 needle=runtime_fault_needle(fault),
                 key=f"{fault.module}.{fault.function}:{fault.exception}",
             )
-        items = [item for item in open_improvements(root) if fresh(improvement_needle(item))]
-        if items:
-            item = items[seed % len(items)]
+        picks = [
+            pick
+            for item in open_improvements(root)
+            if (pick := self._item_pick(item, fresh)) is not None
+        ]
+        if picks:
+            return picks[seed % len(picks)]
+        # Nothing left to hand out: find more, rather than fall through to the
+        # maintenance backlogs whose best outcome is one more test. Only where
+        # the backlog file exists -- that is the project opting in to one.
+        scouted = sum(text.startswith(SCOUT_NEEDLE) for text in recent)
+        if not (root / IMPROVEMENTS_FILE).is_file() or scouted >= MAX_SCOUT_ATTEMPTS:
+            return None
+        leads = warning_leads(root)
+        modules = [name for name in scout_modules(root, leads) if fresh(scout_needle(name))]
+        # The log points somewhere: scout there until each of those is set aside.
+        pool = [name for name in modules if name in leads] or modules
+        if not pool:
+            return None
+        module = pool[seed % len(pool)]
+        return ObjectivePick(
+            kind=PICK_SCOUT,
+            objective=scout_objective(root, module, leads.get(module)),
+            needle=scout_needle(module),
+            key="",
+            work={"module": module},
+        )
+
+    @staticmethod
+    def _item_pick(item: Improvement, fresh: Callable[[str], bool]) -> ObjectivePick | None:
+        """What to do next about one backlog item, or ``None`` for nothing yet.
+
+        An item with steps hands out its first open one. An item without is
+        planned first -- split into anchored steps by a job whose output is
+        checked by code -- and only once planning has used up its attempts is
+        it handed out whole, the way every item was before steps existed.
+        """
+        if item.steps:
+            step = item.next_step
+            if step is None or not fresh(step_needle(item, step)):
+                return None
+            return ObjectivePick(
+                kind=PICK_IMPROVEMENT,
+                objective=step_objective(item, step),
+                needle=step_needle(item, step),
+                key=item.title,
+                step=step.number,
+                work={"path": step.path, "symbol": step.symbol},
+            )
+        if fresh(plan_needle(item)):
+            return ObjectivePick(
+                kind=PICK_PLAN,
+                objective=plan_objective(item),
+                needle=plan_needle(item),
+                key=item.title,
+                work={"title": item.title},
+            )
+        if fresh(improvement_needle(item)):
             return ObjectivePick(
                 kind=PICK_IMPROVEMENT,
                 objective=improvement_objective(item),
                 needle=improvement_needle(item),
                 key=item.title,
             )
-        # Nothing left to hand out: find more, rather than fall through to the
-        # maintenance backlogs whose best outcome is one more test. Only where
-        # the backlog file exists -- that is the project opting in to one.
-        if (root / IMPROVEMENTS_FILE).is_file() and fresh(SCOUT_NEEDLE):
-            return ObjectivePick(
-                kind=PICK_SCOUT,
-                objective=scout_objective(root),
-                needle=SCOUT_NEEDLE,
-                key="",
-            )
+        return None
+
+    def work_order(
+        self, generation: Generation, objective: str, pick: str, work: dict[str, Any]
+    ) -> str | None:
+        """The whole harness task for an anchored pick, built from the
+        candidate's own files, or ``None`` for a pick that has no anchor and
+        gets :meth:`mutation_objective`'s full prompt instead.
+
+        No package map, no skills catalog, rules a third the length of
+        HARNESS_RULES: the room goes to the code the job needs instead, so
+        a small model's transcript can hold the task and still do the work.
+        """
+        root = generation.path
+        if pick == PICK_IMPROVEMENT and work.get("path") and work.get("symbol"):
+            return step_task(root, objective, str(work["path"]), str(work["symbol"]))
+        if pick == PICK_PLAN and work.get("title"):
+            return plan_task(root, objective, str(work["title"]))
+        if pick == PICK_SCOUT and work.get("module"):
+            return scout_task(root, objective, str(work["module"]))
         return None
 
     def vet_scouted_items(
@@ -1392,6 +1481,12 @@ class EnvironmentEvolver:
         kept, dropped = vet_new_improvements(before, generation.path)
         drop_improvements(generation.path, {item.title for item, _ in dropped})
         return kept, dropped
+
+    def vet_plan(self, generation: Generation, title: str) -> str | None:
+        """Why the steps a plan generation wrote under ``title`` cannot be
+        used, or ``None`` -- the evaluation a plan gets, by code, not a model."""
+        before = open_improvements(self.workspace.repository_root)
+        return vet_plan(before, generation.path, title)
 
     async def candidate_diff(self, generation: Generation, limit: int = 9000) -> str:
         """What the candidate changed against its parent, new files included,
@@ -1417,6 +1512,11 @@ class EnvironmentEvolver:
         commit as the change that implemented it -- and disappears with the
         candidate if that change is discarded."""
         return tick_improvement(generation.path, title)
+
+    def tick_step(self, generation: Generation, title: str, number: int) -> bool:
+        """Tick one step of ``title`` off inside the candidate, and the item
+        itself when that was its last open step -- same commit, same reason."""
+        return tick_step(generation.path, title, number)
 
     def _recent_objectives(self, lookback: int = 20) -> list[str]:
         """The MUTATION_OBJECTIVE.md text of the newest ``lookback``

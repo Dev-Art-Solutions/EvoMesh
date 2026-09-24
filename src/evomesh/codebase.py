@@ -651,12 +651,79 @@ def untested_objective(root: Path, seed: int) -> str | None:
 # any better.
 IMPROVEMENTS_FILE = Path("docs") / "evolution" / "improvements.md"
 _OPEN_ITEM = re.compile(r"^- \[ \] (?P<title>\S.*?)\s*$")
+# One step of an item: one change to one existing function, method or
+# constant in one file, e.g.
+#     1. [ ] src/evomesh/evolution.py `GenerationSupervisor.discard` -- remember it
+# Found 2026-09-24 reading the transcripts of three generations that failed an
+# improvements.md item: a harness job's transcript is harness.transcript_chars
+# (12000) and the task alone took 6.6-7.9K of it, so what was left held about
+# one 4000-char read. A job that read `GenerationSupervisor`, then console.py's
+# handler, had lost the first by the time it edited, wrote an `old` from memory
+# (an invented `track_success`), and spent forty steps sure its read tool was
+# lying. A step is the unit that fits: the pipeline hands the job the anchored
+# function's current source up front, so there is nothing left to navigate.
+_STEP = re.compile(
+    r"^\s+(?P<number>\d+)\.\s*\[(?P<done>[ xX])\]\s*"
+    r"(?P<path>src/evomesh/\w+\.py)\s+"
+    r"`(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)`"
+    r"\s*(?:--|:|-|—|–)?\s*(?P<change>.*?)\s*$"
+)
+# More than this and an item is a project, not a backlog entry: every step is
+# a whole generation (propose, validate, review) of its own.
+MAX_ITEM_STEPS = 4
+
+
+@dataclass(frozen=True)
+class Step:
+    number: int
+    path: str
+    symbol: str
+    change: str
+    done: bool = False
+
+    def describe(self) -> str:
+        return f"{self.path} `{self.symbol}` -- {self.change}"
 
 
 @dataclass(frozen=True)
 class Improvement:
     title: str
     detail: str = ""
+    steps: tuple[Step, ...] = ()
+
+    @property
+    def next_step(self) -> Step | None:
+        """The first step not landed yet, or ``None`` (no steps, or all done)."""
+        return next((step for step in self.steps if not step.done), None)
+
+    @property
+    def source_paths(self) -> list[str]:
+        """Every ``src/evomesh/<module>.py`` the item names, first mention first."""
+        text = "\n".join((self.title, self.detail, *(step.path for step in self.steps)))
+        seen: dict[str, None] = {}
+        for match in _SOURCE_PATH.finditer(text):
+            seen.setdefault(match.group(0), None)
+        return list(seen)
+
+
+def _parse_item(title: str, block: list[str]) -> Improvement:
+    detail: list[str] = []
+    steps: list[Step] = []
+    for line in block:
+        match = _STEP.match(line)
+        if match is None:
+            detail.append(line.strip())
+            continue
+        steps.append(
+            Step(
+                number=int(match.group("number")),
+                path=match.group("path"),
+                symbol=match.group("symbol"),
+                change=match.group("change"),
+                done=match.group("done") != " ",
+            )
+        )
+    return Improvement(title, "\n".join(detail).strip(), tuple(steps))
 
 
 def open_improvements(root: Path) -> list[Improvement]:
@@ -664,27 +731,28 @@ def open_improvements(root: Path) -> list[Improvement]:
 
     An item's detail is whatever indented lines follow it, dedented -- the
     concrete where/why that turns a wish into something a small model can act
-    on in one harness job.
+    on in one harness job. Indented lines in the step shape (see ``_STEP``)
+    become its steps instead of detail.
     """
     path = root / IMPROVEMENTS_FILE
     if not path.is_file():
         return []
     items: list[Improvement] = []
     title: str | None = None
-    detail: list[str] = []
+    block: list[str] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         match = _OPEN_ITEM.match(line)
         if match is not None:
             if title is not None:
-                items.append(Improvement(title, "\n".join(detail).strip()))
-            title, detail = match.group("title"), []
+                items.append(_parse_item(title, block))
+            title, block = match.group("title"), []
         elif title is not None and (line.startswith((" ", "\t")) or not line.strip()):
-            detail.append(line.strip())
+            block.append(line)
         elif title is not None:
-            items.append(Improvement(title, "\n".join(detail).strip()))
-            title, detail = None, []
+            items.append(_parse_item(title, block))
+            title, block = None, []
     if title is not None:
-        items.append(Improvement(title, "\n".join(detail).strip()))
+        items.append(_parse_item(title, block))
     return items
 
 
@@ -709,6 +777,44 @@ def improvement_objective(item: Improvement) -> str:
     return "\n".join(lines)
 
 
+def step_needle(item: Improvement, step: Step) -> str:
+    """The prefix of the objective for one step. ``[step 1]`` is never a
+    prefix of ``[step 10]``, so the look-back counts each step on its own."""
+    return f"{improvement_needle(item)} [step {step.number}]"
+
+
+def step_objective(item: Improvement, step: Step) -> str:
+    """One step of ``item``, and just enough of the rest to keep it in scope.
+
+    Short on purpose: :func:`step_task` adds the anchored code and the rules
+    when the job is built, from the candidate itself, and everything here also
+    lands in MUTATION_OBJECTIVE.md and the review's prompt.
+    """
+    lines = [
+        f"{step_needle(item, step)} -- one step of a larger item; do this step "
+        "and nothing else.",
+        f"THIS STEP: in {step.path}, `{step.symbol}`: {step.change}",
+    ]
+    if item.detail:
+        lines.append(f"Why the item exists (context, not your task): {item.detail}")
+    landed = [other for other in item.steps if other.done]
+    later = [other for other in item.steps if not other.done and other.number != step.number]
+    if landed:
+        lines.append(
+            "Already landed: " + "; ".join(f"{s.number}. {s.describe()}" for s in landed)
+        )
+    if later:
+        lines.append(
+            "Later steps, NOT this one: "
+            + "; ".join(f"{s.number}. {s.describe()}" for s in later)
+        )
+    lines.append(
+        f"Do not edit {IMPROVEMENTS_FILE.as_posix()}: the pipeline ticks this step "
+        "off once your change lands."
+    )
+    return "\n".join(lines)
+
+
 def tick_improvement(root: Path, title: str) -> bool:
     """Mark ``title`` done in ``root``'s backlog; ``False`` if it is not open there."""
     path = root / IMPROVEMENTS_FILE
@@ -720,6 +826,32 @@ def tick_improvement(root: Path, title: str) -> bool:
         if match is not None and match.group("title") == title:
             lines[index] = line.replace("- [ ] ", "- [x] ", 1)
             path.write_text("".join(lines), encoding="utf-8")
+            return True
+    return False
+
+
+def tick_step(root: Path, title: str, number: int) -> bool:
+    """Mark step ``number`` of open item ``title`` done, and the item itself
+    once that was its last open step; ``False`` if there is no such open step."""
+    path = root / IMPROVEMENTS_FILE
+    if not path.is_file():
+        return False
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    inside = False
+    for index, line in enumerate(lines):
+        bare = line.rstrip("\r\n")
+        if (match := _OPEN_ITEM.match(bare)) is not None:
+            inside = match.group("title") == title
+            continue
+        if inside and bare.strip() and not bare.startswith((" ", "\t")):
+            inside = False
+        step = _STEP.match(bare) if inside else None
+        if step is not None and int(step.group("number")) == number and step.group("done") == " ":
+            lines[index] = line.replace("[ ]", "[x]", 1)
+            path.write_text("".join(lines), encoding="utf-8")
+            item = next((item for item in open_improvements(root) if item.title == title), None)
+            if item is not None and item.next_step is None:
+                tick_improvement(root, title)
             return True
     return False
 
@@ -858,15 +990,23 @@ def runtime_fault_objective(fault: RuntimeFault) -> str:
 # test-writing. Found 2026-09-24: a hand-seeded backlog of four items was used
 # up within the hour, and a backlog only a human can refill stops being the
 # mesh's own the moment that human is away.
+#
+# One module per scout, its outline handed over up front, and one item with
+# steps as the answer. The first version asked for "2 to 5 real problems in
+# EvoMesh" -- 17k lines, through a transcript that holds one read at a time:
+# generation 1377 read 31 file windows, lost each one to the next, and wrote
+# nothing at all.
 SCOUT_NEEDLE = "Refill the improvement backlog"
-SCOUT_MAX_ITEMS = 5
-# Below this, a "detail" is a restated title, not a where-and-why a small model
-# can act on without re-deriving the whole problem itself.
+SCOUT_MAX_ITEMS = 2
+# Below this, an item is a restated title, not a where-and-why a small model can
+# act on without re-deriving the whole problem itself. Its steps count: they are
+# the most concrete part of it.
 SCOUT_MIN_DETAIL_CHARS = 80
 _DONE_ITEM = re.compile(r"^- \[[xX]\] (?P<title>\S.*?)\s*$")
 _SOURCE_PATH = re.compile(r"src/evomesh/(?P<module>\w+)\.py")
 _CALLED_NAME = re.compile(r"`(?:[\w.]+\.)?(?P<name>[A-Za-z_]\w*)\(\)`")
 _LEVEL_WARNING = ("WARNING", "ERROR", "CRITICAL")
+_STEP_SHAPE = "N. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change>"
 
 
 def done_improvements(root: Path) -> list[str]:
@@ -881,6 +1021,26 @@ def done_improvements(root: Path) -> list[str]:
     ]
 
 
+def _warning_entries(root: Path) -> list[tuple[float, str]]:
+    """``(time, message)`` for every WARNING/ERROR line in the mesh log's
+    tail, numbers masked so one message in many variants reads as one."""
+    path = root / RUNTIME_LOG
+    if not path.is_file():
+        return []
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        handle.seek(max(0, size - RUNTIME_LOG_TAIL_BYTES))
+        text = handle.read().decode("utf-8", errors="replace")
+    entries: list[tuple[float, str]] = []
+    for line in text.splitlines():
+        entry = _LOG_ENTRY.match(line)
+        if entry is None or entry.group("level") not in _LEVEL_WARNING:
+            continue
+        message = line.split('"message":"', 1)[-1].rstrip('"}')
+        entries.append((_log_time(entry.group("time")), re.sub(r"\d+", "N", message)[:160]))
+    return entries
+
+
 def recurring_warnings(root: Path, limit: int = 8) -> list[tuple[int, str]]:
     """The most frequent WARNING/ERROR messages in the mesh log's tail, with
     numbers masked so one message in many variants counts as one.
@@ -889,73 +1049,116 @@ def recurring_warnings(root: Path, limit: int = 8) -> list[tuple[int, str]]:
     kind: a poll that keeps failing, a watcher that keeps timing out. Each is
     a lead for the scout, not an objective by itself.
     """
-    path = root / RUNTIME_LOG
-    if not path.is_file():
-        return []
-    with path.open("rb") as handle:
-        size = handle.seek(0, 2)
-        handle.seek(max(0, size - RUNTIME_LOG_TAIL_BYTES))
-        text = handle.read().decode("utf-8", errors="replace")
     counts: dict[str, int] = {}
-    for line in text.splitlines():
-        entry = _LOG_ENTRY.match(line)
-        if entry is None or entry.group("level") not in _LEVEL_WARNING:
-            continue
-        message = line.split('"message":"', 1)[-1].rstrip('"}')
-        key = re.sub(r"\d+", "N", message)[:160]
-        counts[key] = counts.get(key, 0) + 1
+    for _, message in _warning_entries(root):
+        counts[message] = counts.get(message, 0) + 1
     ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
     return [(count, message) for message, count in ranked[:limit]]
 
 
-def scout_objective(root: Path) -> str:
-    done = done_improvements(root)
-    warnings = recurring_warnings(root)
-    leads = (
-        "\n".join(f"  - {count}x {message}" for count, message in warnings)
-        if warnings
-        else "  (none in the current log)"
+def _module_logging(message: str, sources: dict[str, tuple[str, float]]) -> str | None:
+    """The module whose source holds the longest leading run (three to eight
+    words) of ``message`` -- where that log line is written."""
+    words = message.split()
+    for size in range(min(8, len(words)), 2, -1):
+        prefix = " ".join(words[:size])
+        for name, (text, _) in sources.items():
+            if prefix in text:
+                return name
+    return None
+
+
+def warning_leads(root: Path) -> dict[str, list[tuple[int, str]]]:
+    """Recurring WARNING/ERROR messages keyed by the module that logs them,
+    counting only what was logged since that file last changed.
+
+    The same notion of "fixed" :func:`runtime_faults` uses. Found live: an
+    hour after the two items that fixed them had landed, the scout's leads
+    were still those same two warnings, because the log remembers further
+    back than the code does.
+    """
+    entries = _warning_entries(root)
+    if not entries:
+        return {}
+    sources = {
+        path.stem: (path.read_text(encoding="utf-8", errors="replace"), path.stat().st_mtime)
+        for path in sorted(package_root(root).glob("*.py"))
+    }
+    grouped: dict[str, list[float]] = {}
+    for time, message in entries:
+        grouped.setdefault(message, []).append(time)
+    leads: dict[str, list[tuple[int, str]]] = {}
+    for message, times in grouped.items():
+        module = _module_logging(message, sources)
+        if module is None:
+            continue
+        count = sum(time > sources[module][1] for time in times)
+        if count >= MIN_FAULT_OCCURRENCES:
+            leads.setdefault(module, []).append((count, message))
+    for found in leads.values():
+        found.sort(key=lambda pair: (-pair[0], pair[1]))
+    return leads
+
+
+def scout_modules(root: Path, leads: dict[str, list[tuple[int, str]]]) -> list[str]:
+    """The modules worth a scout, most promising first: the ones the log's
+    warnings point into, most-warned first, then every other live module."""
+    live = {
+        module.name
+        for module in survey(root)
+        if not module.is_orphan and not module.name.startswith("_")
+    }
+    warned = sorted(
+        (name for name in leads if name in live),
+        key=lambda name: (-sum(count for count, _ in leads[name]), name),
     )
+    return warned + sorted(live - set(warned))
+
+
+def scout_needle(module: str) -> str:
+    """The prefix of a scout objective aimed at ``module``."""
+    return f"{SCOUT_NEEDLE} from src/evomesh/{module}.py"
+
+
+def scout_objective(
+    root: Path, module: str, leads: list[tuple[int, str]] | None = None
+) -> str:
+    done = done_improvements(root)
+    summary = next((item.summary for item in survey(root) if item.name == module), "")
     lines = [
-        f"{SCOUT_NEEDLE} in {IMPROVEMENTS_FILE.as_posix()}: every item there is done "
-        "or has been set aside, so the next generation has nothing substantive to "
-        f"work on. Your job this generation is to FIND 2 to {SCOUT_MAX_ITEMS} real "
-        "problems or missing capabilities in EvoMesh and write them down as new "
-        "items -- not to fix any of them.",
-        "Where to look, most valuable first:",
-        "1. What the running mesh keeps logging (WARNING/ERROR, numbers masked). "
-        "The log reaches back further than the code: a line here may come from "
-        "before a done item below fixed it, so read the code before trusting one.",
-        leads,
-        "2. The code itself: a function that does the wrong thing on an input it "
-        "really gets, error handling that swallows the cause, a fixed number that "
-        "should come from settings, a loop with no backoff, work repeated on every "
-        "cycle that could be cached, something README.md or CLAUDE.md promises "
-        "that the code does not actually do.",
-        "Rules for every item:",
-        "- Read the code before writing the item. Name the real file as "
-        "src/evomesh/<module>.py and the real function or class in backticks, "
-        "copied from what you read. An item naming a file or a function that does "
-        "not exist is dropped automatically.",
-        "- Say what is wrong today, how you know (what you read, or the log line), "
-        "and what the change should be -- concretely enough that someone with "
-        "about a hundred tool calls can do it in one or two files.",
-        "- It must change behavior in src/evomesh/. No items that only add tests, "
-        "docs, comments, type hints or renames: those are dropped too.",
-        "- Append the items at the end of the file, in exactly this shape (the "
-        "detail lines indented by four spaces):",
-        "- [ ] <short imperative title>",
-        "    <where: file and function> <what is wrong today and how you know>",
-        "    <what the change should be>",
-        f"- Edit only {IMPROVEMENTS_FILE.as_posix()}. Never tick an item and never "
-        "remove one.",
+        f"{scout_needle(module)}: {IMPROVEMENTS_FILE.as_posix()} has nothing left "
+        "to hand out. Find ONE real problem or missing capability in "
+        f"src/evomesh/{module}.py and write it down as one new item with its "
+        "steps -- do not fix it.",
     ]
+    if summary:
+        lines.append(f"What the module is for: {summary}")
+    if leads:
+        lines.append(
+            "What the running mesh logged from it since the file last changed "
+            "(numbers masked) -- the strongest lead there is:\n"
+            + "\n".join(f"  - {count}x {message}" for count, message in leads[:3])
+        )
+    lines.append(
+        "Otherwise look for: a function that does the wrong thing on an input it "
+        "really gets, error handling that swallows the cause, a fixed number that "
+        "should come from settings, a loop with no backoff, work repeated every "
+        "cycle that could be cached."
+    )
     if done:
         lines.append(
-            "Already done -- do not propose any of these again:\n"
-            + "\n".join(f"  - {title}" for title in done[-30:])
+            "Already done -- do not propose these again:\n"
+            + "\n".join(f"  - {title}" for title in done[-15:])
         )
     return "\n".join(lines)
+
+
+def _unanchored(root: Path, item: Improvement) -> list[str]:
+    return [
+        f"{step.path} `{step.symbol}`"
+        for step in item.steps
+        if find_symbol(root, step.path, step.symbol) is None
+    ]
 
 
 def vet_new_improvements(
@@ -966,23 +1169,25 @@ def vet_new_improvements(
 
     The scout's output becomes the next generations' objectives verbatim, so
     anything a model recalled rather than read has to stop here: an item has
-    to name a source file that exists, every backticked ``name()`` in it has
-    to be defined somewhere in the package, and ``module.symbol`` mentions go
-    through the same :func:`fabricated_references` check plans already do.
+    to carry steps, every step's anchor has to exist in the file it names
+    (:func:`find_symbol`), every backticked ``name()`` has to be defined
+    somewhere in the package, and ``module.symbol`` mentions go through the
+    same :func:`fabricated_references` check plans already do.
     """
     known = {item.title.casefold() for item in before}
     known.update(title.casefold() for title in done_improvements(root))
+    modules_now = survey(root)
     defined: set[str] = set()
-    for module in survey(root):
+    for module in modules_now:
         defined.update(module.all_names)
-    existing = {module.name for module in survey(root)}
+    existing = {module.name for module in modules_now}
     kept: list[Improvement] = []
     dropped: list[tuple[Improvement, str]] = []
     for item in open_improvements(root):
         if item.title.casefold() in known:
             continue
         known.add(item.title.casefold())
-        text = f"{item.title}\n{item.detail}"
+        text = "\n".join((item.title, item.detail, *(step.describe() for step in item.steps)))
         modules = {match.group("module") for match in _SOURCE_PATH.finditer(text)}
         missing = sorted(
             {
@@ -991,13 +1196,18 @@ def vet_new_improvements(
                 if match.group("name") not in defined
             }
         )
-        if len(item.detail) < SCOUT_MIN_DETAIL_CHARS:
+        size = len(item.detail) + sum(len(step.change) for step in item.steps)
+        if size < SCOUT_MIN_DETAIL_CHARS:
             reason = "its detail is too short to act on"
-        elif not modules:
-            reason = "it names no src/evomesh/<module>.py file"
+        elif not item.steps:
+            reason = f"it has no steps in the shape `{_STEP_SHAPE}`"
+        elif len(item.steps) > MAX_ITEM_STEPS:
+            reason = f"it has {len(item.steps)} steps, more than the {MAX_ITEM_STEPS} one item may"
         elif not modules <= existing:
             unknown = ", ".join(sorted(modules - existing))
             reason = f"it names a file that does not exist ({unknown})"
+        elif unanchored := _unanchored(root, item):
+            reason = f"its steps name code that does not exist ({', '.join(unanchored)})"
         elif missing:
             reason = f"it names functions that do not exist ({', '.join(missing)})"
         elif fabricated := fabricated_references(text, root):
@@ -1009,6 +1219,48 @@ def vet_new_improvements(
     return kept[:SCOUT_MAX_ITEMS], dropped + [
         (item, "over the per-refill limit") for item in kept[SCOUT_MAX_ITEMS:]
     ]
+
+
+# Planning, for an item a human wrote without steps: one harness job that adds
+# them, checked by code instead of by another model. It replaces what
+# evolution.auto_plan's draft -> evaluate -> decompose asked for (three or more
+# 12-step jobs of free prose per generation, off since 2026-09-19 after five
+# generations in a row died inside them without ever reaching propose): the
+# steps are the plan, and "does this anchor exist" is the evaluation.
+def plan_needle(item: Improvement) -> str:
+    """The prefix of the objective that splits ``item`` into steps."""
+    return f"Plan this improvement to EvoMesh: {item.title}"
+
+
+def plan_objective(item: Improvement) -> str:
+    lines = [
+        f"{plan_needle(item)}",
+        "Split this backlog item into 1 to 3 small steps and write them under it "
+        f"in {IMPROVEMENTS_FILE.as_posix()}. Do not change any code: each step "
+        "becomes one later generation's whole objective.",
+        f"THE ITEM: {item.title}",
+    ]
+    if item.detail:
+        lines.append(item.detail)
+    return "\n".join(lines)
+
+
+def vet_plan(before: list[Improvement], root: Path, title: str) -> str | None:
+    """Why the steps a plan generation wrote under ``title`` in ``root``'s
+    backlog cannot be used, or ``None`` when every one of them can."""
+    after = open_improvements(root)
+    item = next((item for item in after if item.title == title), None)
+    if item is None:
+        return "the item it was planning is gone from the backlog"
+    if {entry.title for entry in after} != {entry.title for entry in before}:
+        return "it added, removed or renamed backlog items; a plan only adds steps"
+    if not item.steps:
+        return f"it wrote no step under the item in the shape `{_STEP_SHAPE}`"
+    if len(item.steps) > MAX_ITEM_STEPS:
+        return f"it wrote {len(item.steps)} steps, more than the {MAX_ITEM_STEPS} one item may"
+    if unanchored := _unanchored(root, item):
+        return f"its steps name code that does not exist ({', '.join(unanchored)})"
+    return None
 
 
 def drop_improvements(root: Path, titles: set[str]) -> None:
@@ -1027,3 +1279,333 @@ def drop_improvements(root: Path, titles: set[str]) -> None:
         if not skipping:
             kept.append(line)
     path.write_text("".join(kept), encoding="utf-8")
+
+
+# -- Work orders: code cut to fit a small context window ----------------------
+# What a harness job for a step, a plan or a scout is handed up front, so it
+# starts working instead of navigating. Numbered exactly like the harness's own
+# `read` (`{n:>5}| line`), so an `edit` anchor copied from here is copied the
+# same way as one from a read. The budgets leave most of a 12000-char
+# transcript for the job's own reads and edits.
+EXCERPT_CHARS = 3000
+OUTLINE_CHARS = 2400
+# Shared by the (at most two) files a plan's item names. A plan job reads less
+# than a step job and anchors more, so its outlines get more of the room.
+PLAN_OUTLINE_CHARS = 3600
+_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _named(node: ast.stmt, name: str) -> bool:
+    if isinstance(node, _DEFS):
+        return node.name == name
+    if isinstance(node, ast.Assign):
+        return any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    return False
+
+
+def _symbol_node(tree: ast.Module, symbol: str) -> ast.stmt | None:
+    """A top-level function, class or constant, or ``Class.member``."""
+    head, _, member = symbol.partition(".")
+    owner = next((node for node in tree.body if _named(node, head)), None)
+    if owner is None or not member:
+        return owner
+    if not isinstance(owner, ast.ClassDef):
+        return None
+    return next((node for node in owner.body if _named(node, member)), None)
+
+
+def _parse(root: Path, path: str) -> tuple[list[str], ast.Module] | None:
+    file = root / path
+    if not file.is_file():
+        return None
+    text = file.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    return text.splitlines(), tree
+
+
+def _span(node: ast.stmt) -> tuple[int, int]:
+    decorators = getattr(node, "decorator_list", [])
+    start = min([node.lineno, *(decorator.lineno for decorator in decorators)])
+    return start, node.end_lineno or node.lineno
+
+
+def find_symbol(root: Path, path: str, symbol: str) -> tuple[int, int] | None:
+    """The line span of ``symbol`` in ``root / path``, or ``None`` if it is not there."""
+    parsed = _parse(root, path)
+    if parsed is None:
+        return None
+    node = _symbol_node(parsed[1], symbol)
+    return _span(node) if node is not None else None
+
+
+def _numbered(lines: list[str], start: int, end: int) -> list[str]:
+    return [f"{number:>5}| {lines[number - 1]}" for number in range(start, end + 1)]
+
+
+def _take(rows: list[str], budget: int) -> list[str]:
+    """The longest run of whole rows from the top that fits ``budget``."""
+    kept: list[str] = []
+    size = 0
+    for row in rows:
+        size += len(row) + 1
+        if size > budget:
+            break
+        kept.append(row)
+    return kept
+
+
+def symbol_excerpt(
+    root: Path, path: str, symbol: str, budget: int = EXCERPT_CHARS
+) -> str | None:
+    """``symbol``'s current source, numbered, or as much of it as fits.
+
+    A class too long to show whole is shown as its outline (header and one
+    line per member); a function too long is cut at a line, and the cut says
+    exactly which ``read`` returns the rest.
+    """
+    parsed = _parse(root, path)
+    if parsed is None:
+        return None
+    lines, tree = parsed
+    node = _symbol_node(tree, symbol)
+    if node is None:
+        return None
+    start, end = _span(node)
+    rows = _numbered(lines, start, end)
+    if len("\n".join(rows)) <= budget:
+        return "\n".join(rows)
+    if isinstance(node, ast.ClassDef):
+        members = [child for child in node.body if isinstance(child, _DEFS)]
+        head_end = _span(members[0])[0] - 1 if members else end
+        head = _numbered(lines, start, min(head_end, start + 11))
+        outline = [f"{child.lineno:>5}| {lines[child.lineno - 1]}" for child in members]
+        shown = _take([*head, "  ...", *outline], budget)
+        return "\n".join(shown) + (
+            f"\n[`{symbol}` is lines {start}-{end}, too long to show whole -- that is "
+            "its outline. read offset=<line> limit=40 for the member you change.]"
+        )
+    shown = _take(rows, budget)
+    resume = start + len(shown)
+    return "\n".join(shown) + (
+        f"\n[... lines {resume}-{end} not shown: read offset={resume} "
+        f"limit={end - resume + 1} for them ...]"
+    )
+
+
+def outline_focus(item: Improvement) -> frozenset[str]:
+    """What an outline of a file ``item`` names should keep in view: every
+    word of a backticked name in it, and the title's longer words."""
+    text = f"{item.title}\n{item.detail}"
+    words = {
+        word.lower()
+        for quoted in re.findall(r"`([^`]+)`", text)
+        for word in re.findall(r"[A-Za-z_][A-Za-z_]{3,}", quoted)
+    }
+    words.update(word.lower() for word in re.findall(r"[A-Za-z]{5,}", item.title))
+    return frozenset(words)
+
+
+def module_outline(
+    root: Path, path: str, budget: int = OUTLINE_CHARS, focus: frozenset[str] = frozenset()
+) -> str | None:
+    """One numbered line per function and class in ``path``, methods included,
+    so a job can pick an anchor without reading the file.
+
+    What does not fit goes in this order: methods ``focus`` does not mention,
+    then top-level definitions it does not mention. Found on the live tree:
+    cut from the top alone, evolution.py's outline stopped 150 lines before the
+    `GenerationSupervisor` its item was about, and console.py's showed one
+    class with "44 methods" and not the `_command_evolution` the item meant.
+    """
+    parsed = _parse(root, path)
+    if parsed is None:
+        return None
+    lines, tree = parsed
+
+    def hit(name: str) -> bool:
+        bare = name.lstrip("_").lower()
+        return any(word in bare or (len(bare) >= 5 and bare in word) for word in focus)
+
+    # (line, row, rank): 0 is in focus, 1 an unfocused top-level definition,
+    # 2 an unfocused method -- the first thing to go.
+    rows: list[tuple[int, str, int]] = []
+    for node in tree.body:
+        if not isinstance(node, _DEFS):
+            continue
+        row = f"{node.lineno:>5}| {lines[node.lineno - 1].strip()[:110]}"
+        if isinstance(node, ast.ClassDef):
+            members = [
+                child
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            # Every member only for a class named outright; a class whose name
+            # merely contains a title word ("Evolver's" in EnvironmentEvolver,
+            # 65 methods) keeps just the members that match on their own.
+            whole = node.name.lower() in focus
+            rows.extend(
+                (
+                    child.lineno,
+                    f"{child.lineno:>5}|     {lines[child.lineno - 1].strip()[:100]}",
+                    0 if whole or hit(child.name) else 2,
+                )
+                for child in members
+            )
+            row += f"  ({len(members)} methods, lines {node.lineno}-{node.end_lineno})"
+        rows.append((node.lineno, row, 0 if hit(node.name) else 1))
+    if not rows:
+        return "(no functions or classes)"
+    rows.sort()
+    for allowed in (2, 1):
+        chosen = [row for _, row, rank in rows if rank <= allowed]
+        if len("\n".join(chosen)) <= budget:
+            return "\n".join(chosen)
+    candidates = sorted((rank, line, row) for line, row, rank in rows if rank <= 1)
+    kept = _take([row for _, _, row in candidates], budget)
+    shown = sorted(candidates[: len(kept)], key=lambda entry: entry[1])
+    return "\n".join(row for _, _, row in shown) + (
+        f"\n[... {len(candidates) - len(kept)} more definitions: grep 'def ' in {path} ...]"
+    )
+
+
+def _backlog_rows(root: Path, title: str | None) -> list[str]:
+    """Numbered backlog lines: item ``title``'s own block, or with ``None``,
+    the file's last three lines."""
+    path = root / IMPROVEMENTS_FILE
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if title is None:
+        # Up to the last line with something on it: that is the edit anchor.
+        last = max((number for number, line in enumerate(lines, 1) if line.strip()), default=0)
+        return _numbered(lines, max(1, last - 2), last)
+    for index, line in enumerate(lines):
+        match = _OPEN_ITEM.match(line)
+        if match is not None and match.group("title") == title:
+            end = index + 1
+            while end < len(lines) and lines[end].startswith((" ", "\t")):
+                end += 1
+            return _numbered(lines, index + 1, end)
+    return []
+
+
+def _step_rules(path: str) -> str:
+    return "\n".join(
+        (
+            "Rules for this step -- your working memory is small, and what this step "
+            "needs is already above:",
+            "- Start by editing, not by searching. CURRENT CODE is the file as it is "
+            "now; read more only for a line it does not show, with offset and limit, "
+            "never the whole file.",
+            "- Copy `old` character-for-character from CURRENT CODE, without the "
+            "`NNNNN| ` prefix, and keep it to the few lines you change.",
+            f"- Change {path}. A test for the new behavior under tests/ is welcome; "
+            "nothing else. Do this step only -- later steps are other generations' work.",
+            "- Never create a new module under src/evomesh/: nothing would import it.",
+            "- Do not run ruff, pyright or pytest: validation runs them once you stop. "
+            "`shell` is a bare python with none of them installed.",
+            "- End with one line starting exactly with 'RATIONALE:' saying what you "
+            "changed and why.",
+        )
+    )
+
+
+_ANCHOR_RULE = (
+    "- Each step changes ONE existing function, method or constant in ONE file, "
+    "spelled exactly as in the OUTLINE (`Class.method` for a method); for a brand "
+    "new function, anchor on the existing one it goes next to. A step naming "
+    "anything that is not in its file is thrown away, and everything with it."
+)
+PLAN_RULES = "\n".join(
+    (
+        "Rules -- the steps are the plan, and nothing else is:",
+        "- Write 1 to 3 steps. Order them so each works on its own once the ones "
+        "before it have landed: validation runs after every step.",
+        _ANCHOR_RULE,
+        f"- Put them right after the item's last line in {IMPROVEMENTS_FILE.as_posix()}, "
+        "indented four spaces, one per line, exactly:",
+        "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
+        "in one sentence>",
+        "- Use edit on that file: `old` = the item's last line as shown above, "
+        "without the `NNNNN| ` prefix; `new` = that line followed by your steps. "
+        "Change nothing else in the file and no code anywhere.",
+        "- Read a function (offset and limit from the OUTLINE's line numbers) only "
+        "when its name does not tell you enough.",
+        "- End with one line starting exactly with 'RATIONALE:'.",
+    )
+)
+SCOUT_RULES = "\n".join(
+    (
+        "Rules -- one well-anchored item beats five vague ones:",
+        "- Read two or three functions from the OUTLINE (offset and limit, never "
+        "the whole file), then write. A log line may predate a fix: read the code "
+        "before trusting it.",
+        "- It must change behavior in src/evomesh/: no item that only adds tests, "
+        "docs, comments, type hints or renames.",
+        f"- Append it after the last line of {IMPROVEMENTS_FILE.as_posix()} (shown "
+        "above), exactly in this shape, with 1 to 3 steps:",
+        "- [ ] <short imperative title>",
+        "    <what is wrong today and how you know: the code you read, or the log line>",
+        "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
+        "in one sentence>",
+        _ANCHOR_RULE,
+        "- Use edit: `old` = the file's last line as shown above, without the "
+        "`NNNNN| ` prefix; `new` = that line followed by your item. Never tick or "
+        "remove an item.",
+        "- End with one line starting exactly with 'RATIONALE:'.",
+    )
+)
+
+
+def step_task(root: Path, objective: str, path: str, symbol: str) -> str:
+    """The whole harness task for one step: the step, the anchored code as it
+    is in ``root`` right now, and rules short enough to leave room to work."""
+    excerpt = symbol_excerpt(root, path, symbol) or (
+        f"(`{symbol}` is not in {path} any more -- grep for it first)"
+    )
+    return "\n\n".join(
+        (objective, f"CURRENT CODE -- {path}, `{symbol}`:\n{excerpt}", _step_rules(path))
+    )
+
+
+def plan_task(root: Path, objective: str, title: str) -> str:
+    """The whole harness task that splits item ``title`` into steps: the
+    outlines of the (at most two) files it names, and the item's own lines."""
+    item = next((item for item in open_improvements(root) if item.title == title), None)
+    paths = item.source_paths[:2] if item is not None else []
+    focus = outline_focus(item) if item is not None else frozenset[str]()
+    parts = [objective]
+    for path in paths:
+        outline = module_outline(root, path, PLAN_OUTLINE_CHARS // len(paths), focus)
+        if outline is not None:
+            parts.append(f"OUTLINE -- {path} (line| definition):\n{outline}")
+    if not paths:
+        parts.append(
+            "OUTLINE: the item names no src/evomesh/ file -- grep for the function "
+            "it is about, and anchor on what you find."
+        )
+    rows = "\n".join(_backlog_rows(root, title))
+    parts.append(f"THE ITEM IN {IMPROVEMENTS_FILE.as_posix()}, as it stands:\n{rows}")
+    parts.append(PLAN_RULES)
+    return "\n\n".join(parts)
+
+
+def scout_task(root: Path, objective: str, module: str) -> str:
+    """The whole harness task for a scout of ``module``: its outline, and the
+    backlog's last lines to append after."""
+    path = f"src/evomesh/{module}.py"
+    outline = module_outline(root, path) or "(the file is missing)"
+    rows = "\n".join(_backlog_rows(root, None))
+    return "\n\n".join(
+        (
+            objective,
+            f"OUTLINE -- {path} (line| definition):\n{outline}",
+            f"{IMPROVEMENTS_FILE.as_posix()} ENDS WITH:\n{rows}",
+            SCOUT_RULES,
+        )
+    )

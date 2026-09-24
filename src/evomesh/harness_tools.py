@@ -264,24 +264,42 @@ async def _permit(context: ToolContext, target: Path, operation: str) -> None:
         raise ToolDenied(f"DENIED: {exc}") from exc
 
 
-def _clip(text: str, limits: ToolLimits, *, unit: str) -> str:
+def _clip(text: str, limits: ToolLimits, *, unit: str, offset: int | None = None) -> str:
     """Cut to budget and say what was withheld, in terms of the next request.
 
     The withheld count is what makes the truncation recoverable: a model told
     "240 more lines, use offset=201" can ask for the rest, while one handed a
     silently shortened file believes it has seen the whole thing.
+
+    The count and the offset have to be the real ones. Found live 2026-09-24:
+    a read cut by the character budget said "1 more lines withheld, use
+    offset=201" whatever it had actually shown -- a read at offset=481 that
+    showed 60 lines sent the model back to line 201, and after a few of those
+    it decided the read tool was returning fabricated content. ``offset`` is
+    the file line ``text`` starts at, for a read; the cut is on a line
+    boundary whenever there is one, so the next read picks up exactly there.
     """
     lines = text.splitlines()
-    withheld = 0
-    if len(lines) > limits.result_lines:
-        withheld = len(lines) - limits.result_lines
-        lines = lines[: limits.result_lines]
-    body = "\n".join(lines)
+    shown = lines[: limits.result_lines]
+    body = "\n".join(shown)
+    partial = False
     if len(body) > limits.result_chars:
-        body = body[: limits.result_chars]
-        withheld = max(withheld, 1)
+        cut = body.rfind("\n", 0, limits.result_chars)
+        if cut > 0:
+            body = body[:cut]
+            shown = shown[: body.count("\n") + 1]
+        else:
+            body = body[: limits.result_chars]
+            partial = True
+    withheld = max(len(lines) - len(shown), 1 if partial else 0)
     if withheld:
-        hint = f"use offset={limits.result_lines + 1}" if unit == "lines" else "narrow the pattern"
+        if unit != "lines":
+            hint = "narrow the pattern"
+        elif offset is None:
+            hint = f"use offset={len(shown) + 1}"
+        else:
+            first, last = offset, offset + len(shown) - 1
+            hint = f"showing lines {first}-{last}, use offset={last + 1 - partial}"
         body += f"\n[... {withheld} more {unit} withheld, {hint} ...]"
     return body
 
@@ -306,7 +324,7 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
     # The bar is not decoration. With two spaces, a 27B model copied the number
     # and the indentation into its edit anchor and lost two attempts to a target
     # that was never in the file; a delimiter makes the prefix unmistakable.
-    return _clip(numbered, context.limits, unit="lines")
+    return _clip(numbered, context.limits, unit="lines", offset=offset)
 
 
 async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:

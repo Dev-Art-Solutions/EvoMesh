@@ -285,6 +285,29 @@ async def test_a_truncated_read_says_what_it_withheld_and_how_to_ask(project: Pa
     assert "use offset=11" in result
 
 
+async def test_a_read_cut_by_characters_says_where_it_really_stopped(project: Path) -> None:
+    """Found live 2026-09-24: a read at offset=481 cut by the character budget
+    said "1 more lines withheld, use offset=201" whatever it had shown, and a
+    small model sent back to line 201 over and over decided its read tool was
+    returning fabricated content. The cut is on a whole line, and the hint
+    names the real next line."""
+    rows = "\n".join(f"line {n:04d} " + "x" * 30 for n in range(1, 501))
+    (project / "long.py").write_text(rows, encoding="utf-8")
+    context = ToolContext(root=project, limits=ToolLimits(result_chars=500))
+
+    result = await tool_read(context, {"path": "long.py", "offset": 481, "limit": 15})
+
+    body, note = result.rsplit("\n", 1)
+    last_row = body.splitlines()[-1]
+    last = int(last_row.split("|")[0])
+    assert 481 < last < 495
+    assert last_row.endswith("x" * 30)  # a whole line, never half of one
+    assert note == (
+        f"[... {495 - last} more lines withheld, showing lines 481-{last}, "
+        f"use offset={last + 1} ...]"
+    )
+
+
 async def test_grep_reports_matches_relative_to_the_root(project: Path) -> None:
     result = await ToolRegistry().invoke(
         ToolContext(root=project), "grep", {"pattern": "reconsider", "path": "."}

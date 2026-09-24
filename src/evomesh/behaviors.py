@@ -31,7 +31,9 @@ from evomesh.bdi import (
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
 from evomesh.evolution import (
+    BACKLOG_PICKS,
     PICK_IMPROVEMENT,
+    PICK_PLAN,
     PICK_SCOUT,
     PLAN_DIR,
     REVIEW_COMMAND,
@@ -615,7 +617,7 @@ class EvolverBehavior(BDIBehavior):
         self, context: CycleContext, evolver: EnvironmentEvolver, objective: str
     ) -> StepResult:
         goal = context.goal
-        substantive: dict[str, str] = {}
+        substantive: dict[str, Any] = {}
         if goal is not None and goal.recurring:
             # The standing goal names no file and no change -- concrete beats
             # vague for a small model with a step budget, and the dead-module
@@ -650,6 +652,10 @@ class EvolverBehavior(BDIBehavior):
             if pick is not None:
                 objective = _with_recent_failure(evolver, pick.objective, (pick.needle,))
                 substantive = {"pick": pick.kind, "pick_key": pick.key}
+                if pick.step:
+                    substantive["pick_step"] = pick.step
+                if pick.work:
+                    substantive["work"] = dict(pick.work)
             elif backlog is not None:
                 objective = backlog
                 if target is not None:
@@ -894,11 +900,21 @@ class EvolverBehavior(BDIBehavior):
         objective = str(state["objective"])
         work_items = list(state.get("work_items", []))
         item = evolver.plan_node(generation, work_items[0]) if work_items else None
-        build = (lambda: evolver.leaf_objective(item)) if item is not None else (
-            lambda: evolver.mutation_objective(objective)
-        )
-        label = item.title if item is not None else objective
         pick = state.get("pick")
+        # A step, a plan or a scout: the job is built around the code it is
+        # about, from the candidate's own files, instead of the package map,
+        # the skills catalog and the long rules (see EnvironmentEvolver.work_order).
+        work = cast("dict[str, Any]", state.get("work") or {})
+        anchored = item is None and bool(work)
+
+        def build() -> str:
+            if item is not None:
+                return evolver.leaf_objective(item)
+            if anchored and (order := evolver.work_order(generation, objective, str(pick), work)):
+                return order
+            return evolver.mutation_objective(objective)
+
+        label = item.title if item is not None else objective
 
         def accept(touched: list[str]) -> str | None:
             if pick in SOURCE_PICKS and not any(
@@ -908,6 +924,16 @@ class EvolverBehavior(BDIBehavior):
                     "it answered a substantive objective without touching "
                     f"src/evomesh/ (only {', '.join(touched)})"
                 )
+            step_path = str(work.get("path", ""))
+            if pick == PICK_IMPROVEMENT and step_path and not any(
+                path.replace("\\", "/").endswith(step_path) for path in touched
+            ):
+                # Found live: a job that edits the right text in the wrong
+                # file. The step names one file; landing a change elsewhere
+                # would tick a step that never happened.
+                return f"its step changes {step_path}, and it changed only {', '.join(touched)}"
+            if pick == PICK_PLAN:
+                return evolver.vet_plan(generation, str(state.get("pick_key", "")))
             if pick == PICK_SCOUT:
                 kept, dropped = evolver.vet_scouted_items(generation)
                 for dropped_item, reason in dropped:
@@ -918,7 +944,7 @@ class EvolverBehavior(BDIBehavior):
                         reason,
                     )
                 if not kept:
-                    return "the scout added no backlog item that names real code"
+                    return "the scout added no backlog item with steps anchored in real code"
             return None
 
         async def on_no_op() -> tuple[str, dict[str, Any]] | None:
@@ -954,8 +980,9 @@ class EvolverBehavior(BDIBehavior):
             ),
             on_no_op=on_no_op,
             accept=accept,
-            # A scout writes the backlog and nothing else.
-            write_prefix="docs/evolution" if pick == PICK_SCOUT else None,
+            # A scout or a plan writes the backlog and nothing else.
+            write_prefix="docs/evolution" if pick in BACKLOG_PICKS else None,
+            catalog=not anchored,
             # Only a decomposed leaf gets the tight budget: it was already
             # split down to "one small change to one module that already
             # runs" (PLAN_DECOMPOSE_RULES), so it should not need more room
@@ -985,6 +1012,7 @@ class EvolverBehavior(BDIBehavior):
         max_steps: int | None = None,
         max_seconds: float | None = None,
         accept: Callable[[list[str]], str | None] | None = None,
+        catalog: bool = True,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -1047,6 +1075,7 @@ class EvolverBehavior(BDIBehavior):
                 write_prefix=write_prefix,
                 max_steps=max_steps,
                 max_seconds=max_seconds,
+                catalog=catalog,
                 # This pipeline polls `harness.job(state["job"])` again every
                 # cycle until it finishes (see below) -- an inbox delivery on
                 # top of that would hand the Evolver its own stage result a
@@ -1520,7 +1549,11 @@ class EvolverBehavior(BDIBehavior):
             elif state.get("pick") == PICK_IMPROVEMENT:
                 # Ticked inside the candidate, so it lands in the very commit
                 # that implemented it.
-                evolver.tick_improvement(generation, str(state.get("pick_key", "")))
+                title = str(state.get("pick_key", ""))
+                if step := int(state.get("pick_step", 0) or 0):
+                    evolver.tick_step(generation, title, step)
+                else:
+                    evolver.tick_improvement(generation, title)
         try:
             commit = await evolver.decide_candidate(
                 number, promote=passed, objective=str(state.get("objective", ""))

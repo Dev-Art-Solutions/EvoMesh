@@ -905,7 +905,7 @@ class Environment:
         # all: naming it and where to read it, so the model decides whether to
         # spend a step on it, rather than the description being pinned to
         # every job whether it turns out relevant or not.
-        catalog = self.skills.render_catalog()
+        catalog = self.skills.render_catalog() if job.catalog else ""
         task = f"{catalog}\n\n{job.objective}" if catalog else job.objective
         try:
             return await runner.run(task)

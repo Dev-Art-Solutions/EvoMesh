@@ -76,6 +76,11 @@ class HarnessJob:
     # message, forever: an agent (NewsAnalyzer, live) stuck answering its
     # own last answer in an ever-growing loop that never touched news again.
     notify: bool = True
+    # Whether the skills catalog is spliced in front of the objective (see
+    # Environment._run_harness_job). Off for the Evolver's anchored work orders:
+    # a small model's transcript is better spent on the code the job is about
+    # than on news and trading skills it will never read.
+    catalog: bool = True
     result: HarnessResult | None = None
     detail: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -199,6 +204,7 @@ class HarnessQueue:
         max_seconds: float | None = None,
         notify: bool = True,
         priority: bool = False,
+        catalog: bool = True,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -220,6 +226,7 @@ class HarnessQueue:
             max_seconds=max_seconds,
             notify=notify,
             priority=priority,
+            catalog=catalog,
         )
         self._next += 1
         self.jobs[job.number] = job
@@ -322,6 +329,7 @@ class HarnessGateway:
         notify: bool = True,
         priority: bool = False,
         allow_write: bool = True,
+        catalog: bool = True,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -334,6 +342,7 @@ class HarnessGateway:
             max_steps=max_steps,
             max_seconds=max_seconds,
             notify=notify,
+            catalog=catalog,
         )
 
     def job(self, number: int) -> HarnessJob | None:

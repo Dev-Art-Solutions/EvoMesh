@@ -47,6 +47,7 @@ class FakeHarness(HarnessGateway):
         self.objectives: list[str] = []
         self.labels: list[str] = []
         self.priorities: list[bool] = []
+        self.catalogs: list[bool] = []
 
     def submit(
         self,
@@ -61,10 +62,12 @@ class FakeHarness(HarnessGateway):
         notify: bool = True,
         priority: bool = False,
         allow_write: bool = True,
+        catalog: bool = True,
     ) -> HarnessJob:
         self.objectives.append(objective)
         self.labels.append(label)
         self.priorities.append(priority)
+        self.catalogs.append(catalog)
         job = self.queue.submit(
             objective,
             root,
@@ -76,6 +79,7 @@ class FakeHarness(HarnessGateway):
             max_seconds=max_seconds,
             notify=notify,
             priority=priority,
+            catalog=catalog,
         )
         batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
         entries: list[dict[str, object]] = []

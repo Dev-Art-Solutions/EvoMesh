@@ -191,10 +191,28 @@ regresses.
     propose and again at promotion. Without this, the best any generation could do was add one
     test, and ~30 straight did exactly that. improvements.md is how a human steers the mesh, but
     the mesh keeps it stocked itself: with no fresh item left, `_open` picks a **scout**
-    generation (`codebase.scout_objective`) that may only write under `docs/evolution/` and
-    appends 2-5 new items; `vet_new_improvements` strips any item naming a file or `function()`
-    that does not exist, and a scout left with none is a no-op. The scout only runs where
-    improvements.md exists — the file's presence is the opt-in.
+    generation (`codebase.scout_objective`) aimed at **one module** — the one the log's
+    recurring warnings point into (`warning_leads`, counted only since that file last changed),
+    else a seed-rotated live module — that may only write under `docs/evolution/` and appends
+    **one item with steps**; `vet_new_improvements` strips any item without steps, or whose
+    step anchors (`find_symbol`), files or `function()`s do not exist, and a scout left with
+    none is a no-op. The scout only runs where improvements.md exists — the file's presence is
+    the opt-in.
+
+    **Items are split into steps, and a step is the unit of work** (2026-09-24, from reading
+    the transcripts of the generations that failed items): a step names one file and one
+    anchor (`func`, `Class.method` or a constant), and its job is a **work order**
+    (`EnvironmentEvolver.work_order` → `codebase.step_task`) — the anchor's current source cut
+    to `EXCERPT_CHARS`, the step, and short rules, with **no package map and no skills catalog**
+    (`HarnessJob.catalog=False`). The old prompt spent 6.6–7.9K of the 12000-char transcript
+    before the job read anything, so Ornith could hold one read at a time and rebuilt the rest
+    from memory. A step's candidate must change the step's own file; landing it ticks that step
+    (`tick_step`), and the item with its last one. An item written without steps first gets a
+    **plan** generation (`PICK_PLAN`, `codebase.plan_task`: focused outlines of the files it
+    names, via `outline_focus`) that writes the steps under it, checked by `vet_plan` — code,
+    not a second model — which is what replaced `evolution.auto_plan`'s draft/evaluate/decompose
+    prose for backlog items. Keep any new prompt for these jobs inside that budget: measure it
+    against `harness.transcript_chars`, not against what looks reasonable to read.
 
     **Validation cannot tell a finished change from its scaffolding** (generation 1370 landed an
     `env` parameter nobody passes as "stop the VIRTUAL_ENV warning"). With `evolution.review`

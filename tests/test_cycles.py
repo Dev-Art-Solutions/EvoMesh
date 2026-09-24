@@ -610,7 +610,8 @@ async def test_opening_prefers_an_improvement_over_another_test(
     ~30 generations straight landed one more small test each and the system
     itself never changed. An open item in docs/evolution/improvements.md is
     checked first, and the pipeline remembers which one it is so the item can
-    be ticked off when the change lands."""
+    be ticked off when the change lands. An item a human wrote without steps
+    is split into steps first (see the work-order tests further down)."""
     from evomesh.storage import SQLiteRepository
 
     package = project / "src" / "evomesh"
@@ -651,10 +652,8 @@ async def test_opening_prefers_an_improvement_over_another_test(
     await behavior.cycle(context)
 
     state = await evolver.pipeline_state()
-    assert state["objective"].startswith(
-        "Implement this improvement to EvoMesh: Make helper useful"
-    )
-    assert state["pick"] == "improvement"
+    assert state["objective"].startswith("Plan this improvement to EvoMesh: Make helper useful")
+    assert state["pick"] == "plan-item"
     assert state["pick_key"] == "Make helper useful"
 
 
@@ -2920,14 +2919,13 @@ async def test_a_scout_that_names_only_imaginary_code_lands_nothing(
     """With the backlog empty the Evolver scouts for new items instead of
     writing one more test -- but an item naming code that does not exist is
     stripped, and a scout left with none is a no-op, not a landed backlog."""
-    backlog = project / "docs" / "evolution" / "improvements.md"
-    backlog.parent.mkdir(parents=True)
-    backlog.write_text("# Backlog\n\n- [x] Old item\n", encoding="utf-8")
+    _seed_package(project, "# Backlog\n\n- [x] Old item\n")
     invented = (
         "# Backlog\n\n- [x] Old item\n"
         "- [ ] Speed up the imaginary cache\n"
         "    In src/evomesh/nowhere.py, `warm_cache()` rebuilds everything on every cycle,\n"
         "    which is slow; cache it between cycles instead.\n"
+        "    1. [ ] src/evomesh/nowhere.py `warm_cache` -- cache it\n"
     )
     validator = ScriptedValidator([passing()])
     evolver, context, harness = await evolving(
@@ -2944,3 +2942,176 @@ async def test_a_scout_that_names_only_imaginary_code_lands_nothing(
 
     assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
     assert validator.calls == 0
+
+
+# -- work orders: steps, plans and scouts sized for a small model -------------
+
+BUSY_SOURCE = '"""Does the real work."""\n\n\ndef helper(value):\n    return value\n'
+STEPPED_BACKLOG = (
+    "# Backlog\n\n"
+    "- [ ] Double the helper\n"
+    "    The helper should double what it gets.\n"
+    "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+    "    2. [ ] src/evomesh/busy.py `helper` -- say so in its docstring\n"
+)
+UNPLANNED_BACKLOG = (
+    "# Backlog\n\n"
+    "- [ ] Double the helper\n"
+    "    In src/evomesh/busy.py the helper should double what it gets.\n"
+)
+
+
+def _seed_package(root: Path, backlog: str) -> None:
+    package = root / "src" / "evomesh"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(BUSY_SOURCE, encoding="utf-8")
+    path = root / "docs" / "evolution" / "improvements.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(backlog, encoding="utf-8")
+
+
+async def test_a_step_is_handed_its_code_and_ticked_in_the_commit_that_lands_it(
+    tmp_path: Path,
+) -> None:
+    """Found live 2026-09-24: with the package map, the skills catalog and the
+    long rules in front of it, a job had room for about one 4000-char read, and
+    the model rebuilt `GenerationSupervisor` from memory. A step's job gets the
+    anchored function's code instead, and no catalog; landing the step ticks
+    that step -- not the item, which still has one to go."""
+    root = tmp_path / "project"
+    _seed_package(root, STEPPED_BACKLOG)
+    project = await git_project(root)
+    doubled = BUSY_SOURCE.replace("return value", "return value * 2")
+    evolver, context, harness = await evolving(
+        tmp_path,
+        project,
+        [[("src/evomesh/busy.py", doubled)]],
+        ScriptedValidator([passing()]),
+        StubRepairer(),
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    await behavior.cycle(context)  # plan
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "improvement"
+    assert state["pick_step"] == 1
+    assert state["work"] == {"path": "src/evomesh/busy.py", "symbol": "helper"}
+    assert state["objective"].startswith(
+        "Implement this improvement to EvoMesh: Double the helper [step 1]"
+    )
+
+    for _ in range(3):  # propose, validate, decide
+        await behavior.cycle(context)
+
+    task = harness.objectives[0]
+    assert "CURRENT CODE -- src/evomesh/busy.py, `helper`:\n    4| def helper(value):" in task
+    assert "THE PACKAGE AS IT STANDS" not in task
+    assert harness.catalogs == [False]
+    assert (project / "src" / "evomesh" / "busy.py").read_text(encoding="utf-8") == doubled
+    backlog = (project / "docs" / "evolution" / "improvements.md").read_text(encoding="utf-8")
+    assert "    1. [x] src/evomesh/busy.py `helper`" in backlog
+    assert "    2. [ ] src/evomesh/busy.py `helper`" in backlog
+    assert "- [ ] Double the helper" in backlog
+
+
+async def test_a_step_answered_in_another_file_lands_nothing(
+    tmp_path: Path, project: Path
+) -> None:
+    """A step names one file. The right change in the wrong file (found live:
+    an edit aimed at harness_tools.py with agent_strategies.py's text) would
+    tick a step that never happened."""
+    _seed_package(project, STEPPED_BACKLOG)
+    (project / "src" / "evomesh" / "other.py").write_text("X = 1\n", encoding="utf-8")
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [[("src/evomesh/other.py", "X = 2\n")]], validator
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    await behavior.cycle(context)
+
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+    assert validator.calls == 0
+
+
+async def test_an_item_without_steps_is_planned_before_anyone_codes_it(
+    tmp_path: Path, project: Path
+) -> None:
+    """The plan is the steps, and the evaluation is code: one job writes them
+    under the item with the file's outline in hand, and they go on to
+    validation only if every anchor exists."""
+    _seed_package(project, UNPLANNED_BACKLOG)
+    planned = UNPLANNED_BACKLOG + "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[("docs/evolution/improvements.md", planned)]], validator
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "plan-item"
+    assert state["objective"].startswith("Plan this improvement to EvoMesh: Double the helper")
+
+    await behavior.cycle(context)
+
+    task = harness.objectives[0]
+    assert "OUTLINE -- src/evomesh/busy.py (line| definition):\n    4| def helper(value):" in task
+    assert "    3| - [ ] Double the helper" in task
+    assert harness.catalogs == [False]
+    assert (await evolver.pipeline_state())["stage"] == "validate"
+
+
+async def test_a_plan_naming_code_that_is_not_there_lands_nothing(
+    tmp_path: Path, project: Path
+) -> None:
+    _seed_package(project, UNPLANNED_BACKLOG)
+    planned = UNPLANNED_BACKLOG + "    1. [ ] src/evomesh/busy.py `double_it` -- add it\n"
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [[("docs/evolution/improvements.md", planned)]], validator
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    await behavior.cycle(context)
+
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+    assert validator.calls == 0
+
+
+async def test_a_scout_looks_at_one_module_and_keeps_an_anchored_item(
+    tmp_path: Path, project: Path
+) -> None:
+    """The first scout was asked for 2 to 5 problems anywhere in EvoMesh and
+    read 31 file windows without writing one. A scout now gets one module's
+    outline and the backlog's last lines, and its item needs steps."""
+    _seed_package(project, "# Backlog\n\n- [x] Old item\n")
+    scouted = (
+        "# Backlog\n\n- [x] Old item\n"
+        "- [ ] Double the helper\n"
+        "    helper() returns what it gets, and every caller doubles it by hand.\n"
+        "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+    )
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[("docs/evolution/improvements.md", scouted)]], validator
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "scout"
+    assert state["objective"].startswith("Refill the improvement backlog from src/evomesh/busy.py")
+
+    await behavior.cycle(context)
+
+    task = harness.objectives[0]
+    assert "OUTLINE -- src/evomesh/busy.py (line| definition):\n    4| def helper(value):" in task
+    assert "ENDS WITH:" in task and "    3| - [x] Old item" in task
+    assert harness.catalogs == [False]
+    assert (await evolver.pipeline_state())["stage"] == "validate"

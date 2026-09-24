@@ -6,11 +6,23 @@ generation opened under the standing goal; see `codebase.open_improvements` and
 `EnvironmentEvolver.substantive_objective`.
 
 Format: one `- [ ] <title>` line per item, followed by indented lines saying *where* and
-*why* -- name the file and the function, and say what is wrong today. A small local model
-gets one harness job (~60 steps) per attempt, so an item has to be doable in one or two
-files. An item three recent generations failed is set aside until those attempts age out
-of the look-back window. The pipeline ticks an item (`- [x]`) inside the very commit that
-implemented it; do not tick one by hand unless you did the work yourself.
+*why* -- name the file and the function, and say what is wrong today -- and then its
+**steps**, one per line, each one change to one existing function, method or constant:
+
+    - [ ] <short imperative title>
+        <what is wrong today and how you know>
+        1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, one sentence>
+        2. [ ] ...
+
+Steps are what makes an item fit a small local model. A harness job's whole transcript is
+`harness.transcript_chars` (12000); a job that has to find its own way through two large
+files loses the first by the time it edits the second. A step's job is handed its anchor's
+current source up front instead, and nothing else to navigate. Each step is one generation;
+the pipeline ticks it (`1. [x]`) in the commit that landed it, and the item itself with its
+last step. An item written without steps is split into steps by a *plan* generation first
+(`codebase.plan_task`) -- only if that fails three times is it handed out whole. A step (or
+a plan) three recent generations failed is set aside until those attempts age out of the
+look-back window. Do not tick anything by hand unless you did the work yourself.
 
 - [x] Back off exponentially when Telegram polling keeps failing, and log what actually failed
     `TelegramChannel`'s poll loop in src/evomesh/telegram.py catches `httpx.HTTPError` and
@@ -39,10 +51,12 @@ implemented it; do not tick one by hand unless you did the work yourself.
 - [ ] Show the Evolver's recent success rate in `/evolution status`
     Nothing tells a human whether evolution is actually working: 363 of the last ~550
     generations were discarded "not validated" and that was only found by grepping mesh.log.
-    Count promoted vs discarded generations among the recent candidates the supervisor already
-    tracks (src/evomesh/evolution.py, `GenerationSupervisor`) and add one line to the
-    `/evolution status` output in src/evomesh/console.py, e.g.
-    `recent: 4 promoted, 16 discarded of the last 20`.
+    Nothing keeps that count today: `GenerationSupervisor.promote` and
+    `GenerationSupervisor.discard` (src/evomesh/evolution.py) both drop the candidate's entry
+    from supervisor.json and remember nothing about how it ended. Have both also append the
+    outcome to a short list in the metadata (the last 20), and add one line built from it to
+    the `/evolution status` output (`ConsoleChannel._command_evolution` in
+    src/evomesh/console.py), e.g. `recent: 4 promoted, 16 discarded of the last 20`.
 - [x] Actually pass the VIRTUAL_ENV-free environment to the candidate's uv commands
     Generation 1370 added `env: Mapping[str, str] | None = None` to `run_command` in
     src/evomesh/processes.py, but nothing passes it yet, so uv still prints
