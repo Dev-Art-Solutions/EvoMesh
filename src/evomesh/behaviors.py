@@ -31,6 +31,8 @@ from evomesh.bdi import (
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
 from evomesh.evolution import (
+    BACKLOG_MAX_SECONDS,
+    BACKLOG_MAX_STEPS,
     BACKLOG_PICKS,
     PICK_IMPROVEMENT,
     PICK_PLAN,
@@ -1016,8 +1018,20 @@ class EvolverBehavior(BDIBehavior):
             # generation with no plan tree behind it is asking for whatever
             # `objective` describes, which may be exactly as open-ended as a
             # repair -- that path keeps the full harness.max_steps budget.
-            max_steps=self.plan_max_steps if item is not None else None,
-            max_seconds=self.plan_max_seconds if item is not None else None,
+            max_steps=(
+                self.plan_max_steps
+                if item is not None
+                else BACKLOG_MAX_STEPS
+                if pick in BACKLOG_PICKS
+                else None
+            ),
+            max_seconds=(
+                self.plan_max_seconds
+                if item is not None
+                else BACKLOG_MAX_SECONDS
+                if pick in BACKLOG_PICKS
+                else None
+            ),
         )
 
     async def _through_harness(

@@ -193,8 +193,9 @@ regresses.
     the mesh keeps it stocked itself: with no fresh item left, `_open` picks a **scout**
     generation (`codebase.scout_objective`) aimed at **one module** — the one the log's
     recurring warnings point into (`warning_leads`, counted only since that file last changed),
-    else a seed-rotated live module — that may only write under `docs/evolution/` and appends
-    **one item with steps**; `vet_new_improvements` strips any item without steps, or whose
+    else a seed-rotated live module — that **only reads** and ends its answer with **one item
+    with steps**, which the pipeline appends (`item_from_answer` → `append_item`, via
+    `EnvironmentEvolver.apply_backlog_answer`); `vet_new_improvements` strips any item without steps, or whose
     step anchors (`find_symbol`), files or `function()`s do not exist, or that quotes no code
     (`> ` detail lines, each of which must appear in a file the item names — a small model
     describes code it has not read: gen 1386's item was about a fallback and a ValueError in a
@@ -211,10 +212,18 @@ regresses.
     from memory. A step's candidate must change the step's own file; landing it ticks that step
     (`tick_step`), and the item with its last one. An item written without steps first gets a
     **plan** generation (`PICK_PLAN`, `codebase.plan_task`: focused outlines of the files it
-    names, via `outline_focus`) that writes the steps under it, checked by `vet_plan` — code,
-    not a second model — which is what replaced `evolution.auto_plan`'s draft/evaluate/decompose
-    prose for backlog items. Keep any new prompt for these jobs inside that budget: measure it
-    against `harness.transcript_chars`, not against what looks reasonable to read.
+    names, via `outline_focus`) that only reads and answers with the steps; the pipeline writes
+    them under the item (`steps_from_answer` → `write_planned_steps`) and `vet_plan` — code,
+    not a second model — decides whether they stay. That replaced `evolution.auto_plan`'s
+    draft/evaluate/decompose prose for backlog items. **Plans and scouts answer, they never
+    edit**: when they wrote improvements.md themselves, each lost edits to copying an anchor out
+    of a numbered read; read-only, they carry three tools, no anchor, and 40 steps/900s
+    (`BACKLOG_MAX_STEPS`) instead of the code budget. Keep any new prompt for these jobs inside
+    that budget: measure it against `harness.transcript_chars`, not against what looks
+    reasonable to read — and remember the tool schemas ride along on every turn, uncounted:
+    `AgentDefinition.tools` names the custom tools an agent's jobs are offered (a system agent
+    that names none gets none; before 2026-09-24 every job carried all seven, 5.9K chars a turn,
+    `mt5_signal` included).
 
     **Validation cannot tell a finished change from its scaffolding** (generation 1370 landed an
     `env` parameter nobody passes as "stop the VIRTUAL_ENV warning"). With `evolution.review`

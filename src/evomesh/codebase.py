@@ -611,31 +611,25 @@ def untested_objective(root: Path, seed: int) -> str | None:
     bare_name = name[:-2] if is_function else name
     how = (
         f"Call `{bare_name}` with the simplest realistic arguments and assert "
-        "the one obvious thing about its result. Do not try to cover every "
-        "branch or every edge case -- one real, passing check that exercises "
-        "actual behavior is a complete answer."
+        "the one obvious thing about its result -- one real, passing check is a "
+        "complete answer, not every branch."
         if is_function
         else (
-            f"Construct one `{bare_name}` the way an existing test already "
-            "constructs something similar (grep tests/ for how other objects "
-            "of a comparable shape are built there), call one real method on "
-            "it, and assert one obvious thing about the result."
+            f"Construct one `{bare_name}` the way an existing test constructs "
+            "something similar, call one real method on it, and assert one "
+            "obvious thing about the result."
         )
     )
+    # The rest -- its code, the test file's edges, no invented mocks, where the
+    # test goes -- is the work order's (write_test_task), not repeated here:
+    # this text is also the needle, MUTATION_OBJECTIVE.md and the review's brief.
     lines = [
         f"Write ONE small, mechanical test for `{name}` in "
         f"`src/evomesh/{module.name}.py`. It is exported and load-bearing "
         f"(used by {importers} other module{'s' if importers != 1 else ''}), "
         "but its name does not appear anywhere under tests/, so it has no "
         "direct test coverage right now.",
-        f"Read the real definition first -- do not guess its signature or "
-        f"behavior from the name alone. {how}",
-        "Do not invent a mock or stub class from scratch. If this needs a "
-        "stand-in for a dependency, search tests/ first for one that already "
-        "exists and reuse it -- a test that references something imagined is "
-        "worse than no test at all.",
-        "Add it to the existing test file for this module if one exists "
-        f"(tests/test_{module.name}.py), or create one if it does not.",
+        how,
     ]
     if module.summary:
         lines.append(f"The module's own docstring says what it is for: {module.summary}")
@@ -809,7 +803,10 @@ def step_objective(item: Improvement, step: Step) -> str:
         f"THIS STEP: in {step.path}, `{step.symbol}`: {step.change}",
     ]
     if item.detail:
-        lines.append(f"Why the item exists (context, not your task): {item.detail}")
+        # Context, not the task: a long item's whole essay does not belong in
+        # every one of its steps' prompts.
+        why = item.detail if len(item.detail) <= 600 else f"{item.detail[:600]} [...]"
+        lines.append(f"Why the item exists (context, not your task): {why}")
     landed = [other for other in item.steps if other.done]
     later = [other for other in item.steps if not other.done and other.number != step.number]
     if landed:

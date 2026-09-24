@@ -3063,6 +3063,8 @@ async def test_an_item_without_steps_is_planned_before_anyone_codes_it(
     assert "OUTLINE -- src/evomesh/busy.py (line| definition):\n    4| def helper(value):" in task
     assert "END YOUR ANSWER with the steps" in task
     assert harness.catalogs == [False]
+    job = next(iter(harness.queue.jobs.values()))
+    assert (job.allow_write, job.max_steps, job.max_seconds) == (False, 40, 900.0)
     assert (await evolver.pipeline_state())["stage"] == "validate"
     generation = evolver.latest_candidate()
     assert generation is not None

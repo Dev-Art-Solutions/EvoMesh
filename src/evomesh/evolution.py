@@ -1274,6 +1274,11 @@ TEST_ONLY_NOTE = (
 SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT})
 # The picks that write docs/evolution/improvements.md and nothing else.
 BACKLOG_PICKS = frozenset({PICK_PLAN, PICK_SCOUT})
+# A plan or a scout only reads and then answers: the first ones took 9 to 21
+# steps. harness.max_steps (150/2700s, sized for code changes) would let one
+# that lost its way hold the pipeline for three quarters of an hour.
+BACKLOG_MAX_STEPS = 40
+BACKLOG_MAX_SECONDS = 900.0
 # How many of the recent generations may aim at one substantive target before
 # it is set aside for the others -- see `substantive_objective`.
 MAX_TARGET_ATTEMPTS = 3

@@ -28,6 +28,7 @@ from evomesh.codebase import (
     survey,
     untested_objective,
     untested_target,
+    write_test_task,
 )
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -444,8 +445,10 @@ def test_untested_objective_warns_against_inventing_a_mock(tmp_path: Path) -> No
     text = untested_objective(tmp_path, seed=0)
 
     assert text is not None
-    assert "do not invent a mock" in text.lower()
     assert "one small" in text.lower()
+    # The no-invented-mocks rule travels with the work order the job gets.
+    order = write_test_task(tmp_path, text, "src/evomesh/busy.py", "helper", "tests/test_busy.py")
+    assert "do not invent a mock" in order.lower()
 
 
 def test_no_stray_file_sits_in_this_repository_root() -> None:
