@@ -1,4 +1,4 @@
-from evomesh.codebase import PACKAGE, package_root, survey
+from evomesh.codebase import PACKAGE, known_dead, package_root, survey
 
 
 def test_package_root_points_at_the_source_package(project_root):
@@ -11,3 +11,14 @@ def test_survey_reports_the_load_bearing_modules(project_root):
 
     base = next(module for module in survey(project_root) if module.name == "codebase")
     assert base.path == package_root(project_root) / "codebase.py"
+
+
+def test_known_dead_returns_empty_when_no_baseline_file(tmp_path):
+    assert known_dead(tmp_path) == frozenset()
+
+
+def test_known_dead_read_and_skips_comments(tmp_path):
+    baseline = tmp_path / "docs" / "evolution" / "known-dead-modules.txt"
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text("# stale orphans\nreachability\n\n\norchestration.py\n")
+    assert known_dead(tmp_path) == frozenset({"reachability", "orchestration.py"})
