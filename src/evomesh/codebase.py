@@ -1667,3 +1667,147 @@ def scout_task(root: Path, objective: str, module: str) -> str:
             SCOUT_RULES,
         )
     )
+
+
+# -- Work orders for the maintenance and repair jobs ---------------------------
+# Found 2026-09-24 across the last 250 harness sessions: test-writing jobs were
+# 107 of them (53% changed nothing, 40 capped) and repairs 55 -- both still on
+# the full prompt (package map, skills catalog, HARNESS_RULES: 6.5-6.9K of a
+# 12000-char transcript) and both left to find the code they were about.
+def _file_tail(root: Path, path: str, count: int = 3) -> str:
+    """The last ``count`` non-empty lines of ``path``, numbered: an append anchor."""
+    lines = (root / path).read_text(encoding="utf-8", errors="replace").splitlines()
+    last = max((number for number, line in enumerate(lines, 1) if line.strip()), default=0)
+    return "\n".join(_numbered(lines, max(1, last - count + 1), last)) if last else "(empty)"
+
+
+def _file_head(root: Path, path: str, budget: int = 900) -> str:
+    """``path`` from its top down to its first definition: its imports."""
+    parsed = _parse(root, path)
+    if parsed is None:
+        return "(unreadable)"
+    lines, tree = parsed
+    first = next((node.lineno for node in tree.body if isinstance(node, _DEFS)), len(lines) + 1)
+    return "\n".join(_take(_numbered(lines, 1, min(first - 1, len(lines))), budget))
+
+
+def _test_rules(tests: str) -> str:
+    return "\n".join(
+        (
+            "Rules for this test -- your working memory is small, and the code under "
+            "test is already above:",
+            f"- Add ONE small test to {tests}: call it with the simplest real "
+            "arguments and assert the one obvious thing CODE UNDER TEST shows it "
+            "does -- not what its name suggests it might do.",
+            "- If the test fails, the test is what is wrong: fix the test. Never "
+            "change anything under src/evomesh/ -- a candidate that does is discarded.",
+            "- Do not invent a mock or stub class. If it needs a stand-in, reuse one "
+            "an existing test already has (grep tests/ for it).",
+            "- To append: edit, with `old` = the file's last line as shown, without "
+            "the `NNNNN| ` prefix (number, bar, ONE space). Put any import you need "
+            "with the others at the top. A file that does not exist yet: write it.",
+            "- Do not run pytest: validation runs it once you stop. `shell` is a bare "
+            "python with none of the project installed.",
+            "- End with one line starting exactly with 'RATIONALE:'.",
+        )
+    )
+
+
+def write_test_task(root: Path, objective: str, path: str, symbol: str, tests: str) -> str:
+    """The whole harness task for one test of ``symbol``: its code, and where
+    in the test file the new test goes."""
+    excerpt = symbol_excerpt(root, path, symbol) or f"(`{symbol}` is not in {path} -- grep for it)"
+    parts = [objective, f"CODE UNDER TEST -- {path}, `{symbol}`:\n{excerpt}"]
+    if (root / tests).is_file():
+        outline = module_outline(root, tests, budget=900) or ""
+        parts.append(
+            f"THE TEST FILE -- {tests}. Its imports:\n{_file_head(root, tests)}\n"
+            f"Its tests (line| definition):\n{outline}\n"
+            f"It ENDS WITH:\n{_file_tail(root, tests)}"
+        )
+    else:
+        parts.append(f"{tests} does not exist yet: create it with write.")
+    parts.append(_test_rules(tests))
+    return "\n\n".join(parts)
+
+
+# `tests/test_x.py:19`, `src/evomesh/x.py:107:5` -- anywhere in a ruff, pyright
+# or pytest output, after backslashes are made forward (pyright and pytest
+# print absolute Windows paths, with spaces in them).
+_LOCATION = re.compile(r"((?:src|tests)/[\w./-]+?\.py):(\d+)")
+FAILURE_WINDOW = 12
+
+
+def failure_locations(root: Path, output: str) -> list[tuple[str, int]]:
+    """``(path, line)`` for every location in ``output`` that is a real file
+    under ``root``, first mention first."""
+    found: list[tuple[str, int]] = []
+    for match in _LOCATION.finditer(output.replace("\\", "/")):
+        parts = match.group(1).split("/")
+        relative = next(
+            (
+                "/".join(parts[index:])
+                for index in range(len(parts))
+                if parts[index] in ("src", "tests") and (root.joinpath(*parts[index:])).is_file()
+            ),
+            None,
+        )
+        location = (relative, int(match.group(2))) if relative else None
+        if location is not None and location not in found:
+            found.append(location)
+    return found
+
+
+def failure_excerpts(root: Path, output: str, budget: int = EXCERPT_CHARS) -> str:
+    """The code around the (at most two) files a failing command points at,
+    numbered like a read: what a repair would otherwise go looking for."""
+    blocks: list[str] = []
+    seen: set[str] = set()
+    room = budget
+    for path, line in failure_locations(root, output):
+        if path in seen or len(seen) == 2:
+            continue
+        seen.add(path)
+        lines = (root / path).read_text(encoding="utf-8", errors="replace").splitlines()
+        start, end = max(1, line - FAILURE_WINDOW), min(len(lines), line + FAILURE_WINDOW)
+        header = f"CODE AT THE FAILURE -- {path}, around line {line}:"
+        rows = _take(_numbered(lines, start, end), room - len(header))
+        if not rows:
+            break
+        block = "\n".join((header, *rows))
+        blocks.append(block)
+        room -= len(block) + 2
+    return "\n\n".join(blocks)
+
+
+def named_code(root: Path, text: str, budget: int = EXCERPT_CHARS) -> str:
+    """The first ``src/evomesh/<module>.py`` + backticked name pair in ``text``
+    that is real code, as an excerpt -- where a reviewer said the work is."""
+    names = [
+        part
+        for quoted in re.findall(r"`([^`]+)`", text)
+        if re.fullmatch(r"[A-Za-z_][\w.]*", part := quoted.removesuffix("()"))
+    ]
+    for match in _SOURCE_PATH.finditer(text):
+        for name in names:
+            excerpt = symbol_excerpt(root, match.group(0), name, budget)
+            if excerpt is not None:
+                return f"CODE THE REVIEW NAMES -- {match.group(0)}, `{name}`:\n{excerpt}"
+    return ""
+
+
+REPAIR_RULES = "\n".join(
+    (
+        "Rules for this repair -- your working memory is small, so start from the "
+        "code shown above:",
+        "- Fix what the OUTPUT reports and nothing else. Read more only for a line "
+        "you were not shown, with offset and limit, never a whole file.",
+        "- Copy `old` character-for-character from what you were shown, without the "
+        "`NNNNN| ` prefix (number, bar, ONE space).",
+        "- A module nothing imports is fixed by importing and using it from a module "
+        "that already runs, or by deleting the new file -- never by rewriting it.",
+        "- Do not run ruff, pyright or pytest: validation runs them again once you "
+        "stop. `shell` is a bare python with none of them installed.",
+        "- End with one line starting exactly with 'RATIONALE:'.",
+    )
+)

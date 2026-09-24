@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from evomesh.codebase import (
     IMPROVEMENTS_FILE,
+    REPAIR_RULES,
     SCOUT_NEEDLE,
     Improvement,
     Module,
@@ -26,8 +27,10 @@ from evomesh.codebase import (
     backlog_target,
     drop_improvements,
     fabricated_references,
+    failure_excerpts,
     improvement_needle,
     improvement_objective,
+    named_code,
     new_orphans,
     open_improvements,
     plan_needle,
@@ -52,6 +55,7 @@ from evomesh.codebase import (
     vet_new_improvements,
     vet_plan,
     warning_leads,
+    write_test_task,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -151,14 +155,21 @@ def harness_objective(objective: str, project: str, context: str = "") -> str:
 
 
 def harness_repair_objective(
-    failure: dict[str, object], project: str, touched: Iterable[str] = ()
+    failure: dict[str, object],
+    project: str,
+    touched: Iterable[str] = (),
+    *,
+    code: str = "",
+    rules: str = HARNESS_RULES,
 ) -> str:
     """Fix what validation reported, with the file it happened in reachable.
 
     The old repair prompt carried the error text and one whole file, and the
     model had to rewrite that file from whatever it could infer. This one names
     the command, its real output and what this generation has already touched;
-    the model reads the rest for itself.
+    the model reads the rest for itself -- or, as a work order (``code`` and
+    ``rules`` from ``EnvironmentEvolver.repair_objective``), starts from the
+    code the output points at, under rules short enough to leave room to work.
     """
     changed = ", ".join(touched)
     if failure.get("command") == REVIEW_COMMAND:
@@ -175,9 +186,10 @@ def harness_repair_objective(
                 clip(str(failure.get("output", "")), 1500),
                 f"Files this generation has already changed: {changed}" if changed else "",
                 f"The objective it has to finish:\n{failure.get('objective', '')}",
+                code,
                 "Finish the objective -- add what the reviewer says is missing, in "
                 "the file and function it names. Keep what is already right.",
-                HARNESS_RULES,
+                rules,
             )
             if part
         )
@@ -187,6 +199,7 @@ def harness_repair_objective(
         f"The validation command `{failure.get('command')}` failed with exit "
         f"code {failure.get('exit_code')}.",
         f"OUTPUT:\n{clip(str(failure.get('output', '')), 1500)}",
+        code,
         f"Files this generation has already changed: {changed}" if changed else "",
         (
             "The file(s) named above in the OUTPUT are litter this generation "
@@ -199,7 +212,7 @@ def harness_repair_objective(
             "module that already runs so that it imports and uses it -- never "
             "to rewrite the unreachable file again."
         ),
-        HARNESS_RULES,
+        rules,
     )
     return "\n".join(part for part in parts if part)
 
@@ -1488,6 +1501,10 @@ class EnvironmentEvolver:
             return plan_task(root, objective, str(work["title"]))
         if pick == PICK_SCOUT and work.get("module"):
             return scout_task(root, objective, str(work["module"]))
+        if pick == PICK_TEST and work.get("path") and work.get("symbol"):
+            return write_test_task(
+                root, objective, str(work["path"]), str(work["symbol"]), str(work["tests"])
+            )
         return None
 
     def vet_scouted_items(
@@ -1665,10 +1682,30 @@ class EnvironmentEvolver:
         return harness_objective(objective, self.project_map(), context)
 
     def repair_objective(
-        self, failure: dict[str, object], touched: Iterable[str] = ()
+        self,
+        failure: dict[str, object],
+        touched: Iterable[str] = (),
+        root: Path | None = None,
     ) -> str:
-        """The harness job that fixes what validation reported."""
-        return harness_repair_objective(failure, self.project_map(), touched)
+        """The harness job that fixes what validation reported.
+
+        With the candidate's ``root``, a work order: the code the failing
+        command points at (or, after an INCOMPLETE review, the function the
+        reviewer names) instead of the package map, and REPAIR_RULES instead
+        of HARNESS_RULES.
+        """
+        if root is None:
+            return harness_repair_objective(failure, self.project_map(), touched)
+        # The same tail the prompt shows as OUTPUT: pyright lists every error,
+        # and code around the first one -- clipped out of what the model sees
+        # -- would be an excerpt of a failure it was never shown.
+        output = clip(str(failure.get("output", "")), 1500)
+        code = (
+            named_code(root, output)
+            if failure.get("command") == REVIEW_COMMAND
+            else failure_excerpts(root, output)
+        )
+        return harness_repair_objective(failure, "", touched, code=code, rules=REPAIR_RULES)
 
     def leaf_objective(self, node: PlanNode, context: str = "") -> str:
         """The harness job that authors one minimal item from the plan tree."""

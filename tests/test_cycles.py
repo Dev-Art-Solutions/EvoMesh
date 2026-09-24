@@ -3146,16 +3146,26 @@ async def test_a_test_objective_that_changes_the_code_under_test_lands_nothing(
     code to match it. Asked for a test, a candidate may not touch src/evomesh/."""
     _untested_package(project)
     validator = ScriptedValidator([passing()])
-    evolver, context, _ = await evolving(tmp_path, project, [[A_TEST, BENT]], validator)
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[A_TEST, BENT]], validator
+    )
     behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
 
     await behavior.cycle(context)
     state = await evolver.pipeline_state()
     assert state["pick"] == "test"
     assert "helper" in state["objective"]
+    assert state["work"] == {
+        "path": "src/evomesh/busy.py",
+        "symbol": "helper",
+        "tests": "tests/test_busy.py",
+    }
 
     await behavior.cycle(context)
 
+    # A work order: the code under test up front, no skills catalog.
+    assert "CODE UNDER TEST -- src/evomesh/busy.py, `helper`:" in harness.objectives[0]
+    assert harness.catalogs == [False]
     assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
     assert validator.calls == 0
 
@@ -3165,7 +3175,7 @@ async def test_a_test_objectives_repair_is_told_to_fix_the_test_and_may_not_touc
 ) -> None:
     _untested_package(project)
     validator = ScriptedValidator(
-        [failing("uv run pytest", "E   assert 1 == 2\n1 failed"), passing()]
+        [failing("uv run pytest", "tests/test_busy.py:5: AssertionError\n1 failed"), passing()]
     )
     evolver, context, harness = await evolving(
         tmp_path, project, [[A_TEST], [BENT]], validator, StubRepairer()
@@ -3176,6 +3186,11 @@ async def test_a_test_objectives_repair_is_told_to_fix_the_test_and_may_not_touc
         await behavior.cycle(context)
 
     assert len(harness.objectives) == 2
-    assert "the test is what is wrong" in harness.objectives[1]
+    repair = harness.objectives[1]
+    assert "the test is what is wrong" in repair
+    # A work order too: the failing line's surroundings, short rules, no map.
+    assert "CODE AT THE FAILURE -- tests/test_busy.py, around line 5:" in repair
+    assert "THE PACKAGE AS IT STANDS" not in repair
+    assert harness.catalogs == [False, False]
     assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
     assert validator.calls == 1

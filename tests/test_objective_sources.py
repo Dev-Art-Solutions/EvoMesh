@@ -19,9 +19,12 @@ from evomesh.codebase import (
     Step,
     done_improvements,
     drop_improvements,
+    failure_excerpts,
+    failure_locations,
     find_symbol,
     improvement_objective,
     module_outline,
+    named_code,
     open_improvements,
     outline_focus,
     plan_task,
@@ -40,6 +43,7 @@ from evomesh.codebase import (
     vet_new_improvements,
     vet_plan,
     warning_leads,
+    write_test_task,
 )
 
 
@@ -618,3 +622,72 @@ def test_warning_leads_point_at_the_module_and_forget_what_it_fixed(tmp_path: Pa
     new = datetime(2026, 9, 24, 11, 0).timestamp()
     os.utime(busy, (new, new))
     assert warning_leads(tmp_path) == {}
+
+
+# -- work orders for test-writing and repair jobs -------------------------------
+
+
+def test_failure_locations_read_ruff_pyright_and_pytest_output(tmp_path: Path) -> None:
+    """The three shapes validation prints, pyright's and pytest's as absolute
+    Windows paths with spaces in them. Only files really under the root count."""
+    _busy_package(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_busy.py").write_text("def test_x():\n    assert 1\n", encoding="utf-8")
+    output = (
+        "F821 Undefined name `os`\n  --> src\\evomesh\\busy.py:7:5\n"
+        "  d:\\Projects\\Dev-art solutions\\EvoMesh\\generations\\001348-candidate\\tests\\"
+        "test_busy.py:2:17 - error: nope\n"
+        "D:\\Projects\\Dev-art solutions\\x\\tests\\test_busy.py:2: AssertionError\n"
+        "src/evomesh/nowhere.py:3: gone\n"
+    )
+
+    assert failure_locations(tmp_path, output) == [
+        ("src/evomesh/busy.py", 7),
+        ("tests/test_busy.py", 2),
+    ]
+
+
+def test_failure_excerpts_show_the_code_around_each_location(tmp_path: Path) -> None:
+    _busy_package(tmp_path)
+
+    code = failure_excerpts(tmp_path, "--> src/evomesh/busy.py:14:9")
+
+    assert code.startswith("CODE AT THE FAILURE -- src/evomesh/busy.py, around line 14:")
+    assert "   13|     def bump(self):" in code
+    assert "    2| " in code  # FAILURE_WINDOW lines either side, clamped to the file
+
+
+def test_named_code_finds_what_a_review_points_at(tmp_path: Path) -> None:
+    _busy_package(tmp_path)
+    review = "the change never calls it -- see `Counter.bump` in src/evomesh/busy.py"
+
+    code = named_code(tmp_path, review)
+
+    assert code.startswith("CODE THE REVIEW NAMES -- src/evomesh/busy.py, `Counter.bump`:")
+    assert "   14|         return 1" in code
+    assert named_code(tmp_path, "nothing named here") == ""
+
+
+def test_a_test_work_order_carries_the_code_and_the_test_files_edges(tmp_path: Path) -> None:
+    _busy_package(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_busy.py").write_text(
+        "from evomesh.busy import LIMIT\n\n\ndef test_limit():\n    assert LIMIT == 10\n",
+        encoding="utf-8",
+    )
+
+    task = write_test_task(
+        tmp_path, "Write ONE small test", "src/evomesh/busy.py", "helper", "tests/test_busy.py"
+    )
+    fresh = write_test_task(
+        tmp_path, "Write ONE small test", "src/evomesh/busy.py", "helper", "tests/test_new.py"
+    )
+
+    assert "CODE UNDER TEST -- src/evomesh/busy.py, `helper`:\n    6| def helper(value):" in task
+    assert "Its imports:\n    1| from evomesh.busy import LIMIT" in task
+    assert "It ENDS WITH:\n    3| \n    4| def test_limit():\n    5|     assert LIMIT == 10" in task
+    assert "Never change anything under src/evomesh/" in task
+    assert "tests/test_new.py does not exist yet: create it with write." in fresh
+    assert len(task) < 3000

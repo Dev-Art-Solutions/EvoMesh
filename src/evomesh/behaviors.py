@@ -690,6 +690,11 @@ class EvolverBehavior(BDIBehavior):
                     pair = evolver.untested_target(seed)
                     if pair is not None:
                         module, name = pair
+                        substantive["work"] = {
+                            "path": f"src/evomesh/{module.name}.py",
+                            "symbol": name.removesuffix("()"),
+                            "tests": f"tests/test_{module.name}.py",
+                        }
                         needle = (
                             f"Write ONE small, mechanical test for `{name}` in "
                             f"`src/evomesh/{module.name}.py`."
@@ -1314,7 +1319,9 @@ class EvolverBehavior(BDIBehavior):
             test_only = state.get("pick") == PICK_TEST
 
             def build() -> str:
-                objective = evolver.repair_objective(failure, touched)
+                # A work order: the code the failure points at, short rules, no
+                # package map and no skills catalog (see repair_objective).
+                objective = evolver.repair_objective(failure, touched, generation.path)
                 return f"{objective}\n\n{TEST_ONLY_NOTE}" if test_only else objective
 
             def accept(changed: list[str]) -> str | None:
@@ -1335,6 +1342,7 @@ class EvolverBehavior(BDIBehavior):
                     {"repairs": attempt, "review_failure": None},
                 ),
                 accept=accept,
+                catalog=False,
             )
         # The linter's own fixer does not spend the budget. The budget exists to
         # bound how often a *model* is allowed to rewrite the candidate; a
@@ -1412,6 +1420,9 @@ class EvolverBehavior(BDIBehavior):
                 max_steps=self.review_max_steps,
                 max_seconds=self.review_max_seconds,
                 notify=False,
+                # The diff and the objective are the whole of a review; the
+                # news and trading skills are not.
+                catalog=False,
             )
             await evolver.set_pipeline_state({**state, "review_job": job.number})
             if job.open:
