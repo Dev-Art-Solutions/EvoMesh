@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import logging.handlers
+import re
 from pathlib import Path
 
 from evomesh.config import load_settings
@@ -37,6 +38,25 @@ ALREADY_RUNNING_EXIT_CODE = 2
 # rotation does -- so this needed no matching change on that side.
 MESH_LOG_MAX_BYTES = 20 * 1024 * 1024
 MESH_LOG_BACKUP_COUNT = 5
+
+
+# A Telegram bot token is part of every Bot API URL (/bot<id>:<secret>/...),
+# and httpx logs each request's URL at INFO -- found 2026-09-25: 13643 lines
+# of mesh.log carried the live token in clear text.
+SECRET_PATTERN = re.compile(r"bot\d+:[\w-]{20,}")
+# Loggers whose INFO lines are per-request noise (and carry those URLs).
+QUIET_LOGGERS = ("httpx", "httpcore")
+
+
+class RedactSecrets(logging.Filter):
+    """Mask bot tokens in any record, whichever logger or exception carries one."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if SECRET_PATTERN.search(message):
+            record.msg = SECRET_PATTERN.sub("bot<redacted>", message)
+            record.args = None
+        return True
 
 
 async def _restart_when_asked(environment: Environment, shutdown: asyncio.Event) -> None:
@@ -89,6 +109,10 @@ async def application(
         handlers=handlers,
         force=True,
     )
+    for handler in handlers:
+        handler.addFilter(RedactSecrets())
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     lock = SingletonLock(settings.lock_path) if settings.single_instance else None
     if lock is not None:
         try:

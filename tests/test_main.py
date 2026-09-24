@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import logging.handlers
 from pathlib import Path
 
-from evomesh.__main__ import MESH_LOG_BACKUP_COUNT, MESH_LOG_MAX_BYTES
+from evomesh.__main__ import MESH_LOG_BACKUP_COUNT, MESH_LOG_MAX_BYTES, RedactSecrets
 
 
 def test_the_mesh_log_rotates_instead_of_growing_forever(tmp_path: Path) -> None:
@@ -36,3 +37,21 @@ def test_the_configured_retention_is_sane() -> None:
     """A cap that is zero or unset would silently be no cap at all."""
     assert MESH_LOG_MAX_BYTES > 0
     assert MESH_LOG_BACKUP_COUNT > 0
+
+
+def test_a_bot_token_never_reaches_the_log() -> None:
+    record = logging.LogRecord(
+        "httpx",
+        logging.WARNING,
+        __file__,
+        1,
+        'HTTP Request: POST https://api.telegram.org/bot%s/getUpdates "%s"',
+        ("123456789:FAKEtokenFAKEtokenFAKEtoken-_x", "HTTP/1.1 200 OK"),
+        None,
+    )
+
+    assert RedactSecrets().filter(record)
+
+    assert record.getMessage() == (
+        'HTTP Request: POST https://api.telegram.org/bot<redacted>/getUpdates "HTTP/1.1 200 OK"'
+    )
