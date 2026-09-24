@@ -82,6 +82,18 @@ while ($true) {
         continue
     }
 
+    if ($code -eq 0) {
+        # A clean exit is a stop somebody asked for: /exit from the Control
+        # Center's Stop button, the console, Telegram. Rule 13 -- exit code 86
+        # is "start me again", deliberately not 0, so a plain /exit is never
+        # mistaken for one. Found live 2026-09-24: this loop restarted every
+        # one of them ("exited with code 0; restarting in 5s", ten times in
+        # supervisor.log), so the Control Center's Stop never stopped anything.
+        # A crash is still a non-zero code, and still comes back below.
+        Write-Log '[supervisor] EvoMesh stopped on request (exit code 0); not restarting'
+        break
+    }
+
     $consecutiveFailures++
     $backoff = [Math]::Min($maxBackoffSeconds, 5 * [Math]::Pow(2, $consecutiveFailures - 1))
     Write-Log "[supervisor] EvoMesh exited with code $code; restarting in ${backoff}s (failure #$consecutiveFailures)"
