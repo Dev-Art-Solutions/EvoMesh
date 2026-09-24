@@ -11,9 +11,10 @@ thread is actually running it, so there is nothing left to leak.
 
 from __future__ import annotations
 
+import os
 import time
 
-from evomesh.processes import run_command
+from evomesh.processes import run_command, without_virtual_env
 
 
 async def test_a_timeout_reports_itself_and_does_not_hang() -> None:
@@ -34,3 +35,10 @@ async def test_a_command_that_finishes_in_time_is_not_marked_as_timed_out() -> N
     assert result.timed_out is False
     assert result.exit_code == 0
     assert "hi" in result.output
+
+
+def test_without_virtual_env_returns_the_environment_without_VIRTUAL_ENV() -> None:
+    result = without_virtual_env()
+
+    assert "VIRTUAL_ENV" not in result
+    assert result == {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
