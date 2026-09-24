@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1494](001494.md) — Standard cron uses both `0` and `7` for Sunday, the code advertises `7` as valid via `_FIELD_RANGES[4] = (0, 7)`, yet `_day_matches`/`next_after` never fire it — folding `7`→`0` in `parse` is a one-function change that makes accepted `7` expressions actually match.
 - [Generation 1486](001486.md) — The test constructs `CycleReply` like the existing `AgentCycleTrace` test (both are dataclasses), calls its constructor, and asserts the obvious default (`done is False`) directly from the code under test's field definitions.
 - [Generation 1482](001482.md) — The watcher is deterministic and runs on a short fixed interval, so its timeout must be tunable per watcher via settings; the current hard-coded `DEFAULT_TIMEOUT_SECONDS = 20.0` with no override path makes long-running commands like the news-watcher (which `sleep(60)` in its loop) time out on every cycle.
 - [Generation 1481](001481.md) — The test mirrors the Evolver's construction of a ValidationRun (a held asyncio.Task of ValidationResult) and asserts the code-under-test's observable behavior — running is False once the task is done, and describe() reports the generation and finished state.
