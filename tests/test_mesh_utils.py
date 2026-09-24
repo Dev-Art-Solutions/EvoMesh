@@ -1,4 +1,9 @@
-from evomesh.mesh_utils import edge_snapshot, merge_attributes, undirected_edges
+from evomesh.mesh_utils import (
+    directed_pair_count,
+    edge_snapshot,
+    merge_attributes,
+    undirected_edges,
+)
 
 
 def test_undirected_edges_dedupes_reversed_pair_keeps_first_direction():
@@ -19,3 +24,9 @@ def test_merge_attributes_combines_base_and_override():
     # override keys.
     result = merge_attributes({"a": 1}, {"b": 2})
     assert result == {"a": 1, "b": 2}
+
+
+def test_directed_pair_count_counts_each_ordered_pair():
+    # directed_pair_count tallies how many times each *ordered* (src, dst) edge
+    # appears, so a repeated pair yields a count greater than one.
+    assert directed_pair_count([(0, 1), (0, 1), (0, 2)]) == {(0, 1): 2, (0, 2): 1}
