@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,43 @@ def test_used_as_a_context_manager(tmp_path: Path) -> None:
     again = SingletonLock(lock_path)
     again.acquire()
     again.release()
+
+
+def test_acquire_waits_then_succeeds_once_released(tmp_path):
+    # A real lock is held and then released by a background thread; acquire()
+    # with a timeout must retry instead of refusing immediately and succeed
+    # once the holder lets go.
+    holder = SingletonLock(tmp_path / "singleton.lock")
+    holder.acquire()
+
+    import threading
+
+    release = threading.Event()
+
+    def releaser():
+        time.sleep(0.1)
+        holder.release()
+        release.set()
+
+    thread = threading.Thread(target=releaser)
+    thread.start()
+
+    waiter = SingletonLock(tmp_path / "singleton.lock")
+    waiter.acquire(wait_seconds=5)  # must not raise, must not hang
+    waiter.release()
+    thread.join()
+    assert release.is_set()
+
+
+def test_acquire_gives_up_after_timeout(tmp_path):
+    # Held for the whole window: acquire() must give up with
+    # AlreadyRunningError once wait_seconds has elapsed.
+    holder = SingletonLock(tmp_path / "singleton.lock")
+    holder.acquire()
+
+    try:
+        waiter = SingletonLock(tmp_path / "singleton.lock")
+        with pytest.raises(AlreadyRunningError):
+            waiter.acquire(wait_seconds=0.5)
+    finally:
+        holder.release()

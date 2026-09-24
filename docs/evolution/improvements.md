@@ -19,7 +19,7 @@ implemented it; do not tick one by hand unless you did the work yourself.
     so dozens of lines read just `retrying: ` with no cause; and a network outage retries every
     5s forever. Log `type(exc).__name__` alongside the message, and double the delay on each
     consecutive failure (5s, 10s, 20s ... capped at 120s), resetting to 5s after one success.
-- [ ] Let a restarted mesh wait briefly for the previous process to release its lock
+- [x] Let a restarted mesh wait briefly for the previous process to release its lock
     `SingletonLock.acquire` in src/evomesh/singleton.py fails immediately when the lock is held.
     After a promotion the process exits with code 86 and the launcher starts it again at once --
     mesh.log shows 25 `another EvoMesh process already holds the lock` refusals, the new process

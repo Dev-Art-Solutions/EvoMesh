@@ -92,7 +92,7 @@ async def application(
     lock = SingletonLock(settings.lock_path) if settings.single_instance else None
     if lock is not None:
         try:
-            lock.acquire()
+            lock.acquire(wait_seconds=5)
         except AlreadyRunningError as exc:
             logger.error(str(exc))
             return ALREADY_RUNNING_EXIT_CODE

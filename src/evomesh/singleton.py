@@ -16,6 +16,7 @@ unlike a PID file, which a crash leaves behind looking like it's still held.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import BinaryIO
 
@@ -29,7 +30,7 @@ class SingletonLock:
         self._path = path
         self._handle: BinaryIO | None = None
 
-    def acquire(self) -> None:
+    def acquire(self, wait_seconds: float = 0.0) -> None:
         if self._handle is not None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,14 +38,19 @@ class SingletonLock:
             self._path.write_bytes(b"\0")
         handle = open(self._path, "r+b")
         handle.seek(0)
-        try:
-            _lock_exclusive_nonblocking(handle)
-        except OSError as exc:
-            handle.close()
-            raise AlreadyRunningError(
-                f"another EvoMesh process already holds the lock at {self._path} "
-                "-- refusing to start a second instance against the same data"
-            ) from exc
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                _lock_exclusive_nonblocking(handle)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    handle.close()
+                    raise AlreadyRunningError(
+                        f"another EvoMesh process already holds the lock at {self._path} "
+                        "-- refusing to start a second instance against the same data"
+                    ) from exc
+                time.sleep(min(0.25, deadline - time.monotonic()))
         self._handle = handle
 
     def release(self) -> None:
