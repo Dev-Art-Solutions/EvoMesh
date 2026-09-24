@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from evomesh.agent_templates import (
+    AgentTemplateDefinition,
     AgentTemplateRegistry,
     InvalidAgentTemplateError,
     MissingAgentTemplateError,
@@ -46,6 +47,24 @@ def write_template(root: Path, name: str, text: str) -> Path:
     target = directory / "AGENT.md"
     target.write_text(text, encoding="utf-8")
     return target
+
+
+def test_agent_template_definition_dump_fields() -> None:
+    """AgentTemplateDefinition carries the fields a template bundles: identity,
+    purpose, the skills/tools it names, and a path it lives at on disk."""
+    definition = AgentTemplateDefinition(
+        name="trader",
+        description="A stock trader agent.",
+        purpose="Buy and sell.",
+        skills=["stock-analysis"],
+        tools=["quote"],
+        path=Path("agent-templates/trader"),
+    )
+    dumped = definition.model_dump()
+    assert dumped["name"] == "trader"
+    assert dumped["skills"] == ["stock-analysis"]
+    assert dumped["tools"] == ["quote"]
+    assert dumped["autonomy"].name == "CYCLIC"
 
 
 def test_parse_agent_template_reads_frontmatter() -> None:

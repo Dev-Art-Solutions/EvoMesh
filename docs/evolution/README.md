@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1476](001476.md) — AgentTemplateDefinition has only field declarations (no class methods), so model_dump() is the real instance method available on an instance; the test builds the object with the simplest real required args like the existing parse_agent_template tests do and asserts the obvious thing model_dump() shows — that it reflects the passed name/skills/tools and the CYCLIC autonomy default.
 - [Generation 1475](001475.md) — The test uses `WorldContext(tmp_path)`, calls the real `write`/`read`, and asserts the written section body round-trips — matching existing tmp_path + async test conventions without touching the production code.
 - [Generation 1474](001474.md) — The test exercises `Node.connect` and `Node.is_connected` with the simplest real arguments (two string-identified nodes), asserting the bidirectional edge behavior that the code under test actually demonstrates, without mocking or touching source.
 - [Generation 1473](001473.md) — The test matches the existing test's real-argument style, exercises `describe()` for real, and asserts the goal-inclusion behavior shown in the code rather than assuming a name-based behavior.
