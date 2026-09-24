@@ -1,10 +1,12 @@
 from evomesh.codebase import (
+    IMPROVEMENTS_FILE,
     PACKAGE,
     Improvement,
     fabricated_references,
     known_dead,
     package_root,
     plan_needle,
+    plan_objective,
     stray_root_files,
     survey,
 )
@@ -47,4 +49,16 @@ def test_stray_root_files_lists_a_file_left_at_the_project_root(tmp_path):
 def test_plan_needle_prefixed_with_the_objective_prefix():
     assert plan_needle(Improvement("Wire up `known_dead", "In codebase.")) == (
         "Plan this improvement to EvoMesh: Wire up `known_dead"
+    )
+
+
+def test_plan_objective_uses_the_item_title_on_its_own_line():
+    assert plan_objective(Improvement("Split the DB module")) == "\n".join(
+        [
+            "Plan this improvement to EvoMesh: Split the DB module",
+            f"Split this backlog item into 1 to 3 small steps and write them under it "
+            f"in {IMPROVEMENTS_FILE.as_posix()}. Do not change any code: each step "
+            "becomes one later generation's whole objective.",
+            "THE ITEM: Split the DB module",
+        ]
     )
