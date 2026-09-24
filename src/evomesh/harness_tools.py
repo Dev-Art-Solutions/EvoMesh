@@ -245,6 +245,20 @@ def _inside(root: Path, path: Path) -> tuple[str, ...]:
         return path.parts
 
 
+def _shown(context: ToolContext, target: Path) -> str:
+    """``target`` the way the job names it: relative to its root, ``/``-joined.
+
+    Found live 2026-09-24, twice in one day: a "no match" naming
+    `D:\\...\\generations\\001382-candidate\\tests\\test_evolution.py` read to a
+    small model as "the tool resolved to some nested generation", and it spent
+    its next steps on pwd/ls working out where it was -- the candidate is the
+    root, but its absolute path ends in a directory called `generations`.
+    """
+    if target.is_relative_to(context.root):
+        return "/".join(target.relative_to(context.root).parts) or "."
+    return str(target)
+
+
 async def _permit(context: ToolContext, target: Path, operation: str) -> None:
     if context.policy is None or not context.agent_id:
         return
@@ -308,9 +322,9 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
     target = _resolve_readable(context, str(args.get("path", "")))
     await _permit(context, target, "read")
     if target.is_dir():
-        raise ToolDenied(f"DENIED: {target} is a directory, use ls")
+        raise ToolDenied(f"DENIED: {_shown(context, target)} is a directory, use ls")
     if not target.is_file():
-        raise ToolDenied(f"DENIED: {target} does not exist")
+        raise ToolDenied(f"DENIED: {_shown(context, target)} does not exist")
     context.tally.reads += 1
     offset = max(1, int(args.get("offset", 1) or 1))
     limit = int(args.get("limit", 0) or 0)
@@ -320,7 +334,8 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
         window = window[:limit]
     numbered = "\n".join(f"{number:>5}| {line}" for number, line in enumerate(window, offset))
     if not numbered:
-        return f"{target} has no lines at offset {offset} ({len(lines)} lines total)"
+        shown = _shown(context, target)
+        return f"{shown} has no lines at offset {offset} ({len(lines)} lines total)"
     # The bar is not decoration. With two spaces, a 27B model copied the number
     # and the indentation into its edit anchor and lost two attempts to a target
     # that was never in the file; a delimiter makes the prefix unmistakable.
@@ -377,7 +392,7 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
                 found = "\n".join(matches)
                 return f"{found}\n[... more matches withheld, narrow the pattern ...]"
     if not matches:
-        return f"no match for {pattern} in {target} ({glob})"
+        return f"no match for {pattern} in {_shown(context, target)} ({glob})"
     return _clip("\n".join(matches), context.limits, unit="matches")
 
 
@@ -385,7 +400,7 @@ async def tool_ls(context: ToolContext, args: dict[str, Any]) -> str:
     target = _resolve_readable(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
     if not target.exists():
-        raise ToolDenied(f"DENIED: {target} does not exist")
+        raise ToolDenied(f"DENIED: {_shown(context, target)} does not exist")
     context.tally.reads += 1
     if target.is_file():
         return f"{target.name} ({target.stat().st_size} bytes)"
@@ -615,7 +630,9 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     if not old:
         raise ToolDenied("DENIED: edit needs 'old', the exact text to replace")
     if not target.is_file():
-        raise ToolDenied(f"DENIED: {target} does not exist. Use write to create a file.")
+        raise ToolDenied(
+            f"DENIED: {_shown(context, target)} does not exist. Use write to create a file."
+        )
     if old == new:
         raise ToolDenied("DENIED: 'old' and 'new' are identical, so this edit changes nothing")
     content = target.read_text(encoding="utf-8")

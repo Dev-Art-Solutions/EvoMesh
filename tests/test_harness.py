@@ -285,6 +285,27 @@ async def test_a_truncated_read_says_what_it_withheld_and_how_to_ask(project: Pa
     assert "use offset=11" in result
 
 
+async def test_refusals_name_paths_the_way_the_job_does(tmp_path: Path) -> None:
+    """Found live 2026-09-24: a "no match" naming the candidate's absolute path
+    -- which ends in generations/001382-candidate -- read to a small model as
+    "the tool resolved to a nested generation", and it spent steps on pwd/ls."""
+    root = tmp_path / "generations" / "001382-candidate"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    context = ToolContext(root=root)
+    registry = ToolRegistry()
+
+    missed = await registry.invoke(
+        context, "grep", {"pattern": "promote", "path": "tests/test_x.py"}
+    )
+    absent = await registry.invoke(context, "read", {"path": "tests/test_y.py"})
+    past = await registry.invoke(context, "read", {"path": "tests/test_x.py", "offset": 9})
+
+    assert missed == "no match for promote in tests/test_x.py (*.py)"
+    assert absent == "DENIED: tests/test_y.py does not exist"
+    assert past == "tests/test_x.py has no lines at offset 9 (2 lines total)"
+
+
 async def test_a_read_cut_by_characters_says_where_it_really_stopped(project: Path) -> None:
     """Found live 2026-09-24: a read at offset=481 cut by the character budget
     said "1 more lines withheld, use offset=201" whatever it had shown, and a
