@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1345](001345.md) — I read the real `parse_plan` definition in `src/evomesh/bdi.py`, confirmed `tests/test_bdi.py` already imports it, and appended a single passing test that feeds a numbered plan string and asserts the returned list equals the three extracted steps — exercising the actual extraction behavior with no mock or stub.
 - [Generation 1344](001344.md) — The module's `derive_model()` is exported and load-bearing but had no direct test coverage, so I added one real passing check to the pre-existing (previously placeholder) `tests/test_architect.py` that exercises its actual behavior — asserting the normalized return values — using the function's own documented contract without inventing mocks.
 - [Generation 1342](001342.md) — I added a single mechanical test for `next_id()` to the existing `tests/test__agent_ids.py` — reading the real definition, calling it twice with the simplest realistic arguments (no args), and asserting the zero-padded, incrementing result matches the documented `%04d` format (`"0001"`, `"0002"`, ascending).
 - [Generation 1341](001341.md) — I read the real `make_id` definition, then added a single test to the existing `tests/test__agent_ids.py` asserting `make_id("root", "child") == "root.child"` — the one obvious behavior from the actual implementation, covering the dot-join and validation logic.

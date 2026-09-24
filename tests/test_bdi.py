@@ -1462,3 +1462,11 @@ async def test_a_reactive_question_answers_from_memory_when_a_job_is_already_ope
     )
 
     assert answer == "Answering from memory instead."
+
+
+def test_parse_plan_extracts_numbered_steps() -> None:
+    plan = parse_plan(
+        "1. Check the account\n2. Place a market order\n3. Set a stop loss\n"
+    )
+
+    assert plan == ["Check the account", "Place a market order", "Set a stop loss"]
