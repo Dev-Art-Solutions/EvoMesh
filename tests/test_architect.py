@@ -1,4 +1,10 @@
-from evomesh.architect import derive_access, derive_model, plausible_constraints, plausible_name
+from evomesh.architect import (
+    derive_access,
+    derive_model,
+    plausible_constraints,
+    plausible_name,
+    plausible_purpose,
+)
 
 
 def test_derive_model_returns_the_default_provider_and_model_when_no_need_pattern_matches():
@@ -28,3 +34,11 @@ def test_plausible_name_accepts_a_single_real_word_name():
     # A short, alphabetic, single-word name has no path/sentence/empty issues,
     # so plausible_name treats it as a genuine name.
     assert plausible_name("Trade") is True
+
+
+def test_plausible_purpose_rejects_a_purpose_that_is_shorter_than_the_need():
+    # It is not a pure word-count gate: the returned value must be at least as
+    # long (in characters) as the human's need, so a one-word purpose can't
+    # survive when the need was a full sentence.
+    need = "Explain the risk and expected return of this position"
+    assert plausible_purpose("trading", need) is False
