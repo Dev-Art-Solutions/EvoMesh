@@ -13,6 +13,7 @@ from evomesh.bdi import (
     BDIBehavior,
     BDIReasoner,
     Desire,
+    DeterministicBehavior,
     PlanLibrary,
     PlanRecipe,
     ReflectiveBehavior,
@@ -1613,3 +1614,15 @@ async def test_a_cycle_that_asks_again_is_followed_at_once_but_never_in_a_spin(
     # Asking every time still leaves WAKE_MIN_GAP between two cycles.
     assert runtime.state.cycles <= 2 + int(8.0 / WAKE_MIN_GAP)
     await environment.stop()
+
+
+def test_deterministic_behavior_builds_a_plan_library_from_its_plans() -> None:
+    """DeterministicBehavior::library wraps the plans it was given, not prompts."""
+    recipe = PlanRecipe(name="noop", steps=())
+    behavior = DeterministicBehavior(plans=(recipe,))
+
+    # Its name is a convenience base for "code, not prompts": it exposes the
+    # plans it was constructed with through a PlanLibrary, exactly as given.
+    library = behavior.library()
+    assert library.recipes == (recipe,)
+    assert library.select(Goal(description="noop"), MindState()) is recipe
