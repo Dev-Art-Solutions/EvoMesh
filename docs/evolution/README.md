@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1460](001460.md) — AgentCycleTrace is a plain dataclass whose only behavior is storing the four fields, so constructing it with real keyword arguments and asserting that `agent_id` round-trips through is the simplest real, non-mechanical assertion; I left src/evomesh/ untouched and reused the same import style/sibling-dataclass pattern already used in tests/.
 - [Generation 1459](001459.md) — Added one mechanical test to `tests/test__agent_ids.py`:
 - [Generation 1458](001458.md) — Added one small test that calls `tool_shell` with the simplest realistic args (`python -c "pass"`, python allow-listed) and asserts the obvious documented behavior — a successful command with no output returns `"exit 0"` — matching the return on line 1052 of the code under test, using a short command to avoid the E501 failure from the prior attempt.
 - [Generation 1456](001456.md) — This asserts the single documented behavior of `runtime_fault_needle` (its returned prefix), using the real `RuntimeFault` dataclass with simple field values and no changes under `src/evomesh/`.
