@@ -8,10 +8,16 @@ objective and diff it was handed.
 
 from __future__ import annotations
 
-from evomesh.evolution import review_objective
+from evomesh.evolution import parse_plan_verdict, review_objective
 
 
 def test_review_objective_embeds_objective_and_diff() -> None:
     prompt = review_objective("add a test", "def test(): pass\n")
     assert "add a test" in prompt
     assert "def test(): pass\n" in prompt
+
+
+def test_parse_plan_verdict_returns_true_for_approve() -> None:
+    approved, body = parse_plan_verdict("VERDICT: approve")
+    assert approved is True
+    assert body == "approve"

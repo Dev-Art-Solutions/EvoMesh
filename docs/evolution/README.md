@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1403](001403.md) — The simplest realistic call `parse_plan_verdict("VERDICT: approve")` returns `(True, "approve")`; the one obvious, load-bearing behavior is that it returns `True` with the body for an approve line — a single passing check covering the primary success path.
 - [Generation 1402](001402.md) — The test calls `plan_needle(Improvement("Wire up `known_dead", ...))` and asserts it returns exactly `"Plan this improvement to EvoMesh: Wire up `known_dead`", matching the function's f-string body rather than guessing from its name.
 - [Generation 1401](001401.md) — Added `plausible_name` to the imports and appended a single test asserting `plausible_name("Trade") is True`, the simplest realistic input matching the docstring's contract that the code clearly returns True for.
 - [Generation 1397](001397.md) — `humanize_bytes` is an alias for `humanize_size`, which renders byte counts with binary IEC units at one decimal place once past "B"; 1024 bytes is exactly 1.0 KiB, so the one obvious passing check is that `humanize_bytes(1024) == "1.0 KiB"`.
