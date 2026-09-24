@@ -14,6 +14,7 @@ from evomesh.evolution import (
     decompose_objective,
     evaluate_plan_objective,
     harness_objective,
+    parse_plan_children,
     parse_plan_verdict,
     review_objective,
 )
@@ -51,3 +52,9 @@ def test_evaluate_plan_objective_embeds_plan_and_project() -> None:
     prompt = evaluate_plan_objective("add a new module", "evomesh")
     assert "add a new module" in prompt
     assert "evomesh" in prompt
+
+
+def test_parse_plan_children_returns_the_first_child_title() -> None:
+    result = parse_plan_children("- title one :: reason one")
+    assert result is not None
+    assert result[0]["title"] == "title one"
