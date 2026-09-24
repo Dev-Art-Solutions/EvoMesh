@@ -19,7 +19,7 @@ import shlex
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from evomesh.processes import run_command
+from evomesh.processes import CommandResult, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +73,14 @@ class AgentWatcher:
                 logger.exception("Watcher command failed: %s", self._argv)
             await asyncio.sleep(self.interval_seconds)
 
-    async def _tick(self) -> None:
-        result = await run_command(self._argv[0], *self._argv[1:], cwd=self.cwd)
+    async def _tick(self) -> CommandResult:
+        result = await run_command(
+            self._argv[0], *self._argv[1:], cwd=self.cwd, timeout_seconds=self.timeout_seconds
+        )
         message = result.output.strip()
         if result.exit_code != 0:
             logger.warning("Watcher command exited %s: %s", result.exit_code, message[:500])
-            return
+            return result
         if message:
             await self.notify(message)
+        return result

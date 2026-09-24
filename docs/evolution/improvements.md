@@ -84,8 +84,8 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     >             return 124, exc.output or b"", True
     1. [x] src/evomesh/processes.py `run_command` -- add `start_new_session=True` to the `subprocess.run(...)` call so the child leads its own process group/session, separate from the worker thread.
     2. [ ] src/evomesh/processes.py `run_command` -- in the `except subprocess.TimeoutExpired` handler, terminate that whole process group (via `os.killpg`) before returning the timeout result, so children/grandchildren don't outlive the parent.
-- [ ] Make the watcher's timeout actually kill the command, not just stop awaiting it
+- [x] Make the watcher's timeout actually kill the command, not just stop awaiting it
     `AgentWatcher._tick` calls `run_command` with no `timeout_seconds`, and `_loop` relies solely on `asyncio.wait_for` to enforce `self.timeout_seconds`. Per the `run_command` docstring (processes.py:58-67), cancelling the await on the worker thread does not stop the blocking `subprocess.run` running inside that thread, so a timed-out child keeps running for real — the watcher's own timeout never actually terminates the leaked process.
     > `await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)`
     > `result = await run_command(self._argv[0], *self._argv[1:], cwd=self.cwd)`
-    1. [ ] src/evomesh/watchers.py `AgentWatcher._tick` -- pass `timeout_seconds=self.timeout_seconds` into the `run_command` call so `subprocess.run` terminates the child itself on timeout (via its `timeout=`), turning the child into a real stop rather than a leaked waiter; the `wait_for` in `_loop` then serves only as a safety net.
+    1. [x] src/evomesh/watchers.py `AgentWatcher._tick` -- pass `timeout_seconds=self.timeout_seconds` into the `run_command` call so `subprocess.run` terminates the child itself on timeout (via its `timeout=`), turning the child into a real stop rather than a leaked waiter; the `wait_for` in `_loop` then serves only as a safety net.
