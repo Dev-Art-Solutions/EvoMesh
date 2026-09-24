@@ -454,6 +454,29 @@ async def test_candidate_numbers_keep_climbing_across_discards(tmp_path: Path) -
     assert second.number == first.number + 1
 
 
+async def test_promote_appends_to_the_last_20_outcome_history(tmp_path: Path) -> None:
+    """promote() records its outcome in a capped list so something survives to
+    show a human how evolution is actually doing (the step this backs up). The
+    list keeps only the last 20 entries and is created on first use."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("ACTIVE = True", encoding="utf-8")
+    workspace = CandidateWorkspace(source, tmp_path / "runtime")
+    supervisor = GenerationSupervisor(tmp_path / "runtime")
+
+    # The key should not exist until something is promoted/discarded.
+    assert "recent_outcomes" not in supervisor.metadata()
+
+    for _ in range(25):
+        candidate = await workspace.create("nudge")
+        (candidate.path / "app.py").write_text("ACTIVE = False", encoding="utf-8")
+        supervisor.promote(candidate.number)
+
+    outcomes = supervisor.metadata()["recent_outcomes"]
+    assert len(outcomes) == 20  # capped at the last 20
+    assert all(o == "promoted" for o in outcomes)
+
+
 async def test_next_candidate_number_bootstraps_from_an_older_supervisor_json(
     tmp_path: Path,
 ) -> None:

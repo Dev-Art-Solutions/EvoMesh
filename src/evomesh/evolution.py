@@ -730,6 +730,9 @@ class GenerationSupervisor:
         metadata["active"] = number
         candidates.pop(str(number), None)
         metadata["candidates"] = candidates
+        history = list(metadata.get("recent_outcomes", []))
+        history.append("promoted")
+        metadata["recent_outcomes"] = history[-20:]
         self._write(metadata)
 
     def sweep_applied(self) -> list[int]:
