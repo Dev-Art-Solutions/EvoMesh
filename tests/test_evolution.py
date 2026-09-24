@@ -8,10 +8,14 @@ objective and diff it was handed.
 
 from __future__ import annotations
 
+import asyncio
+
 from evomesh.evolution import (
     GenerationChange,
     ObjectivePick,
     PlanNode,
+    ValidationResult,
+    ValidationRun,
     clip,
     decompose_objective,
     draft_plan_objective,
@@ -95,3 +99,18 @@ def test_generation_change_defaults_kind_to_mutation() -> None:
     change = GenerationChange(path="src/evomesh/evolution.py", rationale="add test")
     assert change.kind == "mutation"
     assert change.path == "src/evomesh/evolution.py"
+
+
+async def test_validation_run_describes_itself_as_running_then_finished() -> None:
+    # Build the task the way the Evolver does -- run the suite off-cycle and hold
+    # the Task -- but here we simply let a finished task stand in for one that ran
+    # a real validation suite.
+    task: asyncio.Task[ValidationResult] = asyncio.create_task(
+        asyncio.sleep(0, result=ValidationResult(passed=True, commands=[]))
+    )
+    run = ValidationRun(generation=1, task=task)
+    await task
+
+    assert run.running is False
+    assert "finished" in run.describe()
+    assert "validating generation 1" in run.describe()
