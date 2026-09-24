@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1478](001478.md) — `SkillDefinition` is exported and used by 17 modules but has no direct coverage; a single constructor + two trivial round-trip assertions on its real fields gives it minimal, honest coverage that matches the existing test's style.
 - [Generation 1477](001477.md) — The test constructs `Output()` (matching how `console.py` uses it), calls the real `write` method with a plain string, and asserts via `capsys` that the text was printed — the observable behavior of `print(text)`, which is what the method actually does rather than what its name implies.
 - [Generation 1476](001476.md) — AgentTemplateDefinition has only field declarations (no class methods), so model_dump() is the real instance method available on an instance; the test builds the object with the simplest real required args like the existing parse_agent_template tests do and asserts the obvious thing model_dump() shows — that it reflects the passed name/skills/tools and the CYCLIC autonomy default.
 - [Generation 1475](001475.md) — The test uses `WorldContext(tmp_path)`, calls the real `write`/`read`, and asserts the written section body round-trips — matching existing tmp_path + async test conventions without touching the production code.
