@@ -38,6 +38,22 @@ def test_sunday_can_be_written_as_0_or_7() -> None:
     assert next_after("0 0 * * 0", now) == next_after("0 0 * * 7", now)
 
 
+def test_parse_folds_sunday_7_into_0() -> None:
+    # The weekday field range (0, 7) accepts 7, but parse must fold it into
+    # 0 so that 0 and 7 are treated identically and the set is canonical.
+    _, _, _, _, weekday = parse("0 0 * * 7")
+    assert weekday == {0}
+    _, _, _, _, weekday = parse("0 0 * * 1,7")
+    assert weekday == {0, 1}
+
+
+def test_next_after_fires_on_sunday_when_weekday_is_solely_7() -> None:
+    # 2026-09-06 is a Sunday; a cron that fires only on weekday 7 must fire then
+    # rather than giving up with "never matches within four years".
+    now = datetime(2026, 9, 3, 14, 20, tzinfo=UTC)
+    assert next_after("0 0 * * 7", now) == datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
+
+
 def test_day_of_month_and_weekday_are_ored_not_anded_when_both_are_restricted() -> None:
     """The standard, surprising cron rule: with both fields restricted, a day
     matching either one is enough -- the closer of the two wins."""

@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1495](001495.md) — `_FIELD_RANGES` makes `7` a valid Sunday weekday that `parse()` accepts, but `_day_matches` maps Sunday to `0` (never `7`), so a set containing only `7` never matched and `next_after` gave up with "never matches within four years"; folding `7` into `0` makes `0`/`7` identical and canonical so Sunday-cron expressions fire correctly.
 - [Generation 1494](001494.md) — Standard cron uses both `0` and `7` for Sunday, the code advertises `7` as valid via `_FIELD_RANGES[4] = (0, 7)`, yet `_day_matches`/`next_after` never fire it — folding `7`→`0` in `parse` is a one-function change that makes accepted `7` expressions actually match.
 - [Generation 1486](001486.md) — The test constructs `CycleReply` like the existing `AgentCycleTrace` test (both are dataclasses), calls its constructor, and asserts the obvious default (`done is False`) directly from the code under test's field definitions.
 - [Generation 1482](001482.md) — The watcher is deterministic and runs on a short fixed interval, so its timeout must be tunable per watcher via settings; the current hard-coded `DEFAULT_TIMEOUT_SECONDS = 20.0` with no override path makes long-running commands like the news-watcher (which `sleep(60)` in its loop) time out on every cycle.
