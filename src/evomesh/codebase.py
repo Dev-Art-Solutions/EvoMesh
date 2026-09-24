@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 PACKAGE = "evomesh"
@@ -553,11 +554,20 @@ def untested_target(root: Path, seed: int) -> tuple[Module, str] | None:
         return None
     test_text = _test_source_text(root)
 
+    def mentioned(bare: str) -> bool:
+        # The bare name as a whole word, never the prompt-formatted
+        # ``"parse()"`` -- found live 2026-09-24: a test calls ``parse("* *")``,
+        # so the literal ``parse()`` appeared nowhere under tests/ and every
+        # exported function stayed "untested" forever. The backlog never
+        # drained, and ~30 generations straight landed yet another small test
+        # for a function that already had several.
+        return re.search(rf"\b{re.escape(bare)}\b", test_text) is not None
+
     def eligible(module: Module) -> list[str]:
         return [
             name
             for name in module.exports
-            if name not in test_text and name.rstrip("()") not in module.protocols
+            if not mentioned(name.rstrip("()")) and name.rstrip("()") not in module.protocols
         ]
 
     functions = [
@@ -630,3 +640,214 @@ def untested_objective(root: Path, seed: int) -> str | None:
     if module.summary:
         lines.append(f"The module's own docstring says what it is for: {module.summary}")
     return "\n".join(lines)
+
+
+# The improvement backlog: real changes to how EvoMesh behaves, written as a
+# plain Markdown checklist a human (or the mesh itself) can append to. Found
+# 2026-09-24: every objective source before this one was maintenance -- wire a
+# dead module, then write one small test for an untested export -- so the best
+# a generation could ever do was add a test. ~30 generations straight landed
+# exactly that and nothing else: the pipeline worked and the system never got
+# any better.
+IMPROVEMENTS_FILE = Path("docs") / "evolution" / "improvements.md"
+_OPEN_ITEM = re.compile(r"^- \[ \] (?P<title>\S.*?)\s*$")
+
+
+@dataclass(frozen=True)
+class Improvement:
+    title: str
+    detail: str = ""
+
+
+def open_improvements(root: Path) -> list[Improvement]:
+    """Every unticked ``- [ ]`` item in the improvement backlog, in file order.
+
+    An item's detail is whatever indented lines follow it, dedented -- the
+    concrete where/why that turns a wish into something a small model can act
+    on in one harness job.
+    """
+    path = root / IMPROVEMENTS_FILE
+    if not path.is_file():
+        return []
+    items: list[Improvement] = []
+    title: str | None = None
+    detail: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _OPEN_ITEM.match(line)
+        if match is not None:
+            if title is not None:
+                items.append(Improvement(title, "\n".join(detail).strip()))
+            title, detail = match.group("title"), []
+        elif title is not None and (line.startswith((" ", "\t")) or not line.strip()):
+            detail.append(line.strip())
+        elif title is not None:
+            items.append(Improvement(title, "\n".join(detail).strip()))
+            title, detail = None, []
+    if title is not None:
+        items.append(Improvement(title, "\n".join(detail).strip()))
+    return items
+
+
+def improvement_needle(item: Improvement) -> str:
+    """The prefix every objective built from ``item`` starts with."""
+    return f"Implement this improvement to EvoMesh: {item.title}"
+
+
+def improvement_objective(item: Improvement) -> str:
+    lines = [
+        improvement_needle(item),
+        *([item.detail] if item.detail else []),
+        "It comes from the project's own improvement backlog "
+        f"({IMPROVEMENTS_FILE.as_posix()}). This is a change to how EvoMesh "
+        "behaves, so it must change at least one file under src/evomesh/ -- "
+        "a test alone is not an answer, and a candidate that only touches "
+        "tests or docs is discarded unvalidated. A test covering the new "
+        "behavior is welcome alongside the source change.",
+        f"Do not edit {IMPROVEMENTS_FILE.as_posix()} yourself: the pipeline "
+        "ticks this item off once your change is in.",
+    ]
+    return "\n".join(lines)
+
+
+def tick_improvement(root: Path, title: str) -> bool:
+    """Mark ``title`` done in ``root``'s backlog; ``False`` if it is not open there."""
+    path = root / IMPROVEMENTS_FILE
+    if not path.is_file():
+        return False
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        match = _OPEN_ITEM.match(line.rstrip("\r\n"))
+        if match is not None and match.group("title") == title:
+            lines[index] = line.replace("- [ ] ", "- [x] ", 1)
+            path.write_text("".join(lines), encoding="utf-8")
+            return True
+    return False
+
+
+# Where the running mesh logs (``--log-file``, as every launcher this project
+# ships sets it). A traceback in here is a failure the system actually
+# suffered while running -- the most concrete objective there is, and one no
+# amount of test-writing against exports would ever find.
+RUNTIME_LOG = Path(".runtime") / "logs" / "mesh.log"
+RUNTIME_LOG_TAIL_BYTES = 4 * 1024 * 1024
+# A one-off traceback is as often the host (a dropped socket, a sleeping
+# machine) as the code; twice is a pattern worth a generation.
+MIN_FAULT_OCCURRENCES = 2
+_LOG_ENTRY = re.compile(r'^\{"time":"(?P<time>[^"]+)","level":"(?P<level>\w+)"')
+_FRAME = re.compile(
+    r'File "[^"]*[\\/]src[\\/]evomesh[\\/](?P<module>\w+)\.py", '
+    r"line (?P<line>\d+), in (?P<function>[\w<>]+)"
+)
+_EXCEPTION_LINE = re.compile(r"^(?P<type>[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b")
+
+
+@dataclass(frozen=True)
+class RuntimeFault:
+    module: str
+    function: str
+    line: int
+    exception: str
+    count: int
+    last_seen: str
+    traceback: str
+
+
+def _log_time(text: str) -> float:
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S,%f").timestamp()
+    except ValueError:
+        return 0.0
+
+
+def runtime_faults(root: Path, log: Path = RUNTIME_LOG) -> list[RuntimeFault]:
+    """Tracebacks from the mesh's own log whose innermost EvoMesh frame's
+    file has not changed since, most frequent first.
+
+    "Not changed since" is the whole notion of fixed here: a promoted
+    generation rewrites the file, so its mtime moves past every earlier
+    occurrence and the fault drops out until it happens again. Deliberately
+    generous -- an unrelated edit to the same file retires a fault too --
+    because a fault that is really still there comes straight back the next
+    time the mesh hits it.
+    """
+    path = root / log
+    if not path.is_file():
+        return []
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        handle.seek(max(0, size - RUNTIME_LOG_TAIL_BYTES))
+        text = handle.read().decode("utf-8", errors="replace")
+    grouped: dict[tuple[str, str, str], list[tuple[str, int, str]]] = {}
+
+    def close(time: str, block: list[str]) -> None:
+        frames = [match for line in block if (match := _FRAME.search(line))]
+        exceptions = [
+            match.group("type")
+            for line in block
+            if (match := _EXCEPTION_LINE.match(line.strip()))
+        ]
+        if not frames or not exceptions:
+            return
+        frame = frames[-1]
+        key = (frame.group("module"), frame.group("function"), exceptions[-1])
+        grouped.setdefault(key, []).append(
+            (time, int(frame.group("line")), "\n".join(block[-24:]))
+        )
+
+    time: str | None = None
+    block: list[str] = []
+    for line in text.splitlines():
+        entry = _LOG_ENTRY.match(line)
+        if entry is not None:
+            if time is not None:
+                close(time, block)
+            if entry.group("level") in ("ERROR", "CRITICAL"):
+                time, block = entry.group("time"), [line]
+            else:
+                time, block = None, []
+        elif time is not None:
+            block.append(line)
+    if time is not None:
+        close(time, block)
+
+    faults: list[RuntimeFault] = []
+    for (module, function, exception), hits in grouped.items():
+        source = root / "src" / PACKAGE / f"{module}.py"
+        if not source.is_file():
+            continue
+        modified = source.stat().st_mtime
+        recent = [hit for hit in hits if _log_time(hit[0]) > modified]
+        if len(recent) < MIN_FAULT_OCCURRENCES:
+            continue
+        last_time, last_line, last_trace = recent[-1]
+        faults.append(
+            RuntimeFault(
+                module, function, last_line, exception, len(recent), last_time, last_trace
+            )
+        )
+    return sorted(faults, key=lambda fault: (-fault.count, fault.module, fault.function))
+
+
+def runtime_fault_needle(fault: RuntimeFault) -> str:
+    """The prefix every objective built from ``fault`` starts with."""
+    return (
+        f"Fix a real bug the running mesh hit: `{fault.exception}` escaping "
+        f"`{fault.function}` in `src/evomesh/{fault.module}.py`"
+    )
+
+
+def runtime_fault_objective(fault: RuntimeFault) -> str:
+    return "\n".join(
+        (
+            f"{runtime_fault_needle(fault)} (line {fault.line}). The mesh's own "
+            f"log recorded it {fault.count} times since that file last changed, "
+            f"most recently at {fault.last_seen}. This is a failure the system "
+            "actually suffered while running, not a hypothetical.",
+            f"The last occurrence, verbatim:\n{fault.traceback}",
+            f"Read `{fault.function}` first and work out why this happens. Fix the "
+            "cause where it originates -- handle the condition, or guard the call "
+            "-- rather than hiding it behind a bare `except Exception: pass`. The "
+            "fix must change src/evomesh/; add a test that reproduces the "
+            "condition if you can write one in the steps you have.",
+        )
+    )

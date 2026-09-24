@@ -22,9 +22,16 @@ from evomesh.codebase import (
     backlog_objective,
     backlog_target,
     fabricated_references,
+    improvement_needle,
+    improvement_objective,
     new_orphans,
+    open_improvements,
     project_map,
+    runtime_fault_needle,
+    runtime_fault_objective,
+    runtime_faults,
     stray_root_files,
+    tick_improvement,
     untested_objective,
     untested_target,
 )
@@ -1119,6 +1126,28 @@ class ValidationRun:
         return f"validating generation {self.generation} ({state}, {self.seconds:.0f}s)"
 
 
+PICK_RUNTIME_FAULT = "runtime-fault"
+PICK_IMPROVEMENT = "improvement"
+# How many of the recent generations may aim at one substantive target before
+# it is set aside for the others -- see `substantive_objective`.
+MAX_TARGET_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class ObjectivePick:
+    """One substantive objective, with what the pipeline needs to follow it.
+
+    ``needle`` is the prefix the objective starts with (what the look-back
+    helpers match a generation's MUTATION_OBJECTIVE.md on); ``key`` is what a
+    later stage acts on -- the improvement's title, for ticking it off.
+    """
+
+    kind: str
+    objective: str
+    needle: str
+    key: str
+
+
 class EnvironmentEvolver:
     """Owns the candidate lifecycle. Driven one stage per cycle by EvolverBehavior."""
 
@@ -1209,6 +1238,68 @@ class EnvironmentEvolver:
         """The (module, exported name) pair an untested objective would
         target right now."""
         return untested_target(self.workspace.repository_root, seed)
+
+    def substantive_objective(self, seed: int) -> ObjectivePick | None:
+        """A real behavioral change to make, or ``None`` if there is none.
+
+        Checked before either maintenance backlog: first a traceback the
+        running mesh actually logged, then an open item from
+        ``docs/evolution/improvements.md``. A target already attempted
+        ``MAX_TARGET_ATTEMPTS`` times in the recent window is skipped rather
+        than handed out again -- success removes a target by itself (the
+        file's mtime moves past the fault, the item gets ticked), so one that
+        is still here after that many tries is one the current model cannot
+        do, and the next target deserves the budget instead.
+        """
+        root = self.workspace.repository_root
+        recent = self._recent_objectives()
+
+        def fresh(needle: str) -> bool:
+            return sum(text.startswith(needle) for text in recent) < MAX_TARGET_ATTEMPTS
+
+        faults = [fault for fault in runtime_faults(root) if fresh(runtime_fault_needle(fault))]
+        if faults:
+            fault = faults[seed % len(faults)]
+            return ObjectivePick(
+                kind=PICK_RUNTIME_FAULT,
+                objective=runtime_fault_objective(fault),
+                needle=runtime_fault_needle(fault),
+                key=f"{fault.module}.{fault.function}:{fault.exception}",
+            )
+        items = [item for item in open_improvements(root) if fresh(improvement_needle(item))]
+        if items:
+            item = items[seed % len(items)]
+            return ObjectivePick(
+                kind=PICK_IMPROVEMENT,
+                objective=improvement_objective(item),
+                needle=improvement_needle(item),
+                key=item.title,
+            )
+        return None
+
+    def tick_improvement(self, generation: Generation, title: str) -> bool:
+        """Tick ``title`` off inside the candidate, so it lands in the same
+        commit as the change that implemented it -- and disappears with the
+        candidate if that change is discarded."""
+        return tick_improvement(generation.path, title)
+
+    def _recent_objectives(self, lookback: int = 20) -> list[str]:
+        """The MUTATION_OBJECTIVE.md text of the newest ``lookback``
+        generation directories, newest first."""
+        numbered = sorted(
+            (
+                (int(entry.name.split("-", 1)[0]), entry)
+                for entry in self.workspace.supervisor.root.glob("*-candidate")
+                if entry.name.split("-", 1)[0].isdigit()
+            ),
+            key=lambda pair: -pair[0],
+        )
+        texts: list[str] = []
+        for _, entry in numbered[:lookback]:
+            path = entry / "MUTATION_OBJECTIVE.md"
+            if path.is_file():
+                texts.append(path.read_text(encoding="utf-8", errors="replace"))
+        return texts
 
     def record_no_op(self) -> int:
         """Forwarded to :meth:`GenerationSupervisor.record_no_op`."""
@@ -1579,19 +1670,43 @@ class EnvironmentEvolver:
         "no" rather than short-circuiting a repair that may have real work
         left to validate.
         """
-        candidate = GitRepository(generation.path, self.identity)
-        try:
-            top_level = (await candidate.run("rev-parse", "--show-toplevel")).strip()
-        except GitError:
-            return False
-        resolved_top_level = await asyncio.to_thread(lambda: Path(top_level).resolve())
-        resolved_candidate = await asyncio.to_thread(generation.path.resolve)
-        if resolved_top_level != resolved_candidate:
+        candidate = await self._own_repository(generation)
+        if candidate is None:
             return False
         try:
             return await candidate.is_clean()
         except GitError:
             return False
+
+    async def candidate_changed_source(self, generation: Generation) -> bool | None:
+        """Whether the candidate still differs from its parent under
+        ``src/evomesh/``, or ``None`` when git cannot say (same fallback as
+        :meth:`candidate_changed_nothing`).
+
+        Asked at promotion, not at propose: a repair can undo the source edit
+        a substantive objective was answered with and leave only a test
+        behind, which validates just as well.
+        """
+        candidate = await self._own_repository(generation)
+        if candidate is None:
+            return None
+        try:
+            status = await candidate.run("status", "--porcelain", "--", "src/evomesh")
+        except GitError:
+            return None
+        return bool(status.strip())
+
+    async def _own_repository(self, generation: Generation) -> GitRepository | None:
+        """The candidate as a repository, or ``None`` when its top level is
+        not the candidate itself -- see :meth:`candidate_changed_nothing`."""
+        candidate = GitRepository(generation.path, self.identity)
+        try:
+            top_level = (await candidate.run("rev-parse", "--show-toplevel")).strip()
+        except GitError:
+            return None
+        resolved_top_level = await asyncio.to_thread(lambda: Path(top_level).resolve())
+        resolved_candidate = await asyncio.to_thread(generation.path.resolve)
+        return candidate if resolved_top_level == resolved_candidate else None
 
     async def record_harness_changes(
         self,

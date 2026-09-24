@@ -603,6 +603,61 @@ async def test_opening_falls_back_to_the_untested_export_backlog_when_the_dead_m
     assert "busy.py" in state["objective"]
 
 
+async def test_opening_prefers_an_improvement_over_another_test(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-24: with only the maintenance backlogs to draw on,
+    ~30 generations straight landed one more small test each and the system
+    itself never changed. An open item in docs/evolution/improvements.md is
+    checked first, and the pipeline remembers which one it is so the item can
+    be ticked off when the change lands."""
+    from evomesh.storage import SQLiteRepository
+
+    package = project / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\ndef helper():\n    pass\n', encoding="utf-8"
+    )
+    (project / "tests").mkdir(exist_ok=True)
+    backlog = project / "docs" / "evolution" / "improvements.md"
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text("- [ ] Make helper useful\n    It does nothing.\n", encoding="utf-8")
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(
+        CandidateWorkspace(project, tmp_path / "generations"),
+        repository,
+        MockProvider(),
+        StubValidator(),  # type: ignore[arg-type]
+    )
+    definition = AgentDefinition(name="Environment Evolver", purpose="Evolve")
+    definition.mind.add_goal(
+        "Improve EvoMesh by one validated candidate generation at a time.", recurring=True
+    )
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"evolver": evolver},
+    )
+    behavior = EvolverBehavior(auto_validate=True)
+
+    await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert state["objective"].startswith(
+        "Implement this improvement to EvoMesh: Make helper useful"
+    )
+    assert state["pick"] == "improvement"
+    assert state["pick_key"] == "Make helper useful"
+
+
 async def test_a_human_objective_is_never_overridden_by_the_backlog(
     tmp_path: Path, project: Path
 ) -> None:

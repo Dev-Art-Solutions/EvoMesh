@@ -182,6 +182,15 @@ regresses.
     [docs/evolution/known-dead-modules.txt](docs/evolution/known-dead-modules.txt) and tolerated;
     anything new is not. That file is also the Evolver's backlog — wiring one of those into a
     running module just makes its line stale. **Do not "clean up" by deleting the list.**
+
+    It is not the *first* backlog, though. Under the standing goal, `_open` asks
+    `EnvironmentEvolver.substantive_objective` first — a traceback the running mesh logged twice
+    since its file last changed (`codebase.runtime_faults`), then an open item in
+    [docs/evolution/improvements.md](docs/evolution/improvements.md) — and only then the dead
+    modules and the untested exports. A substantive pick must change `src/evomesh/`, checked at
+    propose and again at promotion. Without this, the best any generation could do was add one
+    test, and ~30 straight did exactly that. **Keep improvements.md stocked**; it is how a human
+    steers what the mesh works on.
 15. **status and phase are different things.** `status` is the persisted desired lifecycle
     (`candidate`/`active`/`stopped`); `phase` is what the agent is doing right now, rebuilt on every
     boot and never read from disk. An agent that cannot start reports `offline` with a reason

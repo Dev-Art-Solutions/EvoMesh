@@ -31,6 +31,7 @@ from evomesh.bdi import (
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
 from evomesh.evolution import (
+    PICK_IMPROVEMENT,
     PLAN_DIR,
     CandidateValidator,
     EnvironmentEvolver,
@@ -584,6 +585,7 @@ class EvolverBehavior(BDIBehavior):
         self, context: CycleContext, evolver: EnvironmentEvolver, objective: str
     ) -> StepResult:
         goal = context.goal
+        substantive: dict[str, str] = {}
         if goal is not None and goal.recurring:
             # The standing goal names no file and no change -- concrete beats
             # vague for a small model with a step budget, and the dead-module
@@ -599,13 +601,26 @@ class EvolverBehavior(BDIBehavior):
             # ten-module backlog had already been wired in, handed to five
             # generations straight.
             seed = evolver.workspace.supervisor.total_created()
-            target = evolver.backlog_target(seed)
+            # Substantive work first -- a traceback the mesh actually logged,
+            # then docs/evolution/improvements.md. Both backlogs below are
+            # maintenance: with only them, the best any generation could do
+            # was add one test, and ~30 straight did exactly that
+            # (2026-09-24) while the system itself never changed.
+            pick = evolver.substantive_objective(seed)
+            target = evolver.backlog_target(seed) if pick is None else None
             nudge_delete = (
                 target is not None
                 and evolver.recent_backlog_streak(target.name) >= 3
             )
-            backlog = evolver.backlog_objective(seed, nudge_delete=nudge_delete)
-            if backlog is not None:
+            backlog = (
+                evolver.backlog_objective(seed, nudge_delete=nudge_delete)
+                if pick is None
+                else None
+            )
+            if pick is not None:
+                objective = _with_recent_failure(evolver, pick.objective, (pick.needle,))
+                substantive = {"pick": pick.kind, "pick_key": pick.key}
+            elif backlog is not None:
                 objective = backlog
                 if target is not None:
                     objective = _with_recent_failure(
@@ -656,6 +671,7 @@ class EvolverBehavior(BDIBehavior):
                 "generation": generation.number,
                 "objective": objective,
                 "path": str(generation.path),
+                **substantive,
             }
         )
         return StepResult(
@@ -885,6 +901,7 @@ class EvolverBehavior(BDIBehavior):
                 },
             ),
             on_no_op=on_no_op,
+            require_source=bool(state.get("pick")),
             # Only a decomposed leaf gets the tight budget: it was already
             # split down to "one small change to one module that already
             # runs" (PLAN_DECOMPOSE_RULES), so it should not need more room
@@ -913,6 +930,7 @@ class EvolverBehavior(BDIBehavior):
         write_prefix: str | None = None,
         max_steps: int | None = None,
         max_seconds: float | None = None,
+        require_source: bool = False,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -950,6 +968,12 @@ class EvolverBehavior(BDIBehavior):
         node a leaf and carries on with the rest of the queue; `_propose`
         skips to the next work item, or -- once the queue is empty -- reports
         what already validated instead of discarding it.
+
+        ``require_source`` treats a job that changed nothing under
+        ``src/evomesh/`` as a no-op. A substantive objective (a runtime fault,
+        an improvement) is a change to behavior by definition; a candidate
+        that answers one with only a test or a doc would validate trivially
+        and land as the very test-only generation it exists to replace.
         """
         harness = context.service("harness")
         if not isinstance(harness, HarnessGateway):
@@ -1008,6 +1032,16 @@ class EvolverBehavior(BDIBehavior):
         # same D5 failure this stage already catches for a job that wrote
         # nothing at all, just reached from the other side.
         if touched and await evolver.candidate_changed_nothing(generation):
+            touched = []
+        if touched and require_source and not any(
+            "src/evomesh/" in path.replace("\\", "/") for path in touched
+        ):
+            logger.info(
+                "generation %s answered a substantive objective without touching "
+                "src/evomesh/ (only %s); treating it as a no-op",
+                generation.number,
+                ", ".join(touched),
+            )
             touched = []
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
@@ -1283,6 +1317,23 @@ class EvolverBehavior(BDIBehavior):
     async def _decide(
         self, evolver: EnvironmentEvolver, number: int, *, passed: bool, state: dict[str, Any]
     ) -> StepResult:
+        if passed and state.get("pick"):
+            generation = evolver.candidate(number)
+            if await evolver.candidate_changed_source(generation) is False:
+                # Validated, but only because what is left is a test or a doc:
+                # a repair undid the source edit this substantive objective
+                # was answered with. Landing it would be the test-only
+                # generation this objective exists to replace.
+                logger.info(
+                    "generation %s validated without any change left under "
+                    "src/evomesh/; discarding instead of promoting",
+                    number,
+                )
+                passed = False
+            elif state.get("pick") == PICK_IMPROVEMENT:
+                # Ticked inside the candidate, so it lands in the very commit
+                # that implemented it.
+                evolver.tick_improvement(generation, str(state.get("pick_key", "")))
         try:
             commit = await evolver.decide_candidate(
                 number, promote=passed, objective=str(state.get("objective", ""))
