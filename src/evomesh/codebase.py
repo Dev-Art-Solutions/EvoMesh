@@ -1572,6 +1572,12 @@ SCOUT_RULES = "\n".join(
         "trusting it.",
         "- It must change behavior in src/evomesh/: no item that only adds tests, "
         "docs, comments, type hints or renames.",
+        # Found live 2026-09-25: a scout quoted a real line and reported weekday
+        # 7 never matching Sunday; the line right above already did `% 7` and a
+        # test covered it. The "fix" landed as five lines doing the same thing.
+        "- Before you write it down, read the lines around your quote and grep "
+        "tests/ for the function: if the code or a test already handles the "
+        "case, it is not a problem -- look for another.",
         "- This job cannot edit anything and does not need to: END YOUR ANSWER with "
         "the item, exactly in this shape, with 1 to 3 steps:",
         "[ ] <short imperative title>",

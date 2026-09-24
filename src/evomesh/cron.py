@@ -56,13 +56,8 @@ def parse(expression: str) -> tuple[set[int], set[int], set[int], set[int], set[
         _parse_field(field, name, low, high)
         for field, name, (low, high) in zip(fields, FIELD_NAMES, _FIELD_RANGES, strict=True)
     )
-    # Fold the Sunday value 7 into 0 so that 0 and 7 are treated identically.
-    # This keeps the set canonical (no stray 7) for _day_matches/next_after.
-    weekday_set = weekday
-    if 7 in weekday_set:
-        weekday_set.discard(7)
-        weekday_set.add(0)
-    weekday = weekday_set
+    # 7 is Sunday, same as 0, in the day-of-week field.
+    weekday = {value % 7 for value in weekday}
     return minute, hour, day, month, weekday
 
 
