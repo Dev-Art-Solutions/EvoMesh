@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -256,15 +257,24 @@ def fetch_and_cache(feeds: list[str], config: dict) -> list[dict[str, str]]:
     the result into the durable cache before returning it. Shared with
     watch_news.py so the deterministic watcher's own polls also build up the
     same history a model can later query."""
-    collected: list[dict[str, str]] = []
-    for url in feeds:
+    # In parallel, not one after another: sequentially, three feeds at
+    # FETCH_TIMEOUT_SECONDS each could take 30s, and the watcher running this
+    # kills its command at 20s -- found live 2026-09-25, a slow feed turned
+    # whole ticks into "Watcher command timed out" with nothing reported.
+    def fetch(url: str) -> bytes | None:
         try:
-            raw = _fetch(url)
+            return _fetch(url)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-            continue
-        for item in _parse_source(url, raw):
-            item["source"] = url
-            collected.append(item)
+            return None
+
+    collected: list[dict[str, str]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(feeds)))) as pool:
+        for url, raw in zip(feeds, pool.map(fetch, feeds), strict=True):
+            if raw is None:
+                continue
+            for item in _parse_source(url, raw):
+                item["source"] = url
+                collected.append(item)
     _append_cache(collected, config)
     return collected
 

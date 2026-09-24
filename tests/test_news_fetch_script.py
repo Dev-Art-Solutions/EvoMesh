@@ -166,3 +166,35 @@ def test_parse_feed_still_handles_plain_rss() -> None:
     items = news_fetch._parse_source("https://example.com/feed.rss", rss)
 
     assert items == [{"title": "RSS Headline", "link": "https://example.com/a", "published": ""}]
+
+
+def test_feeds_are_fetched_in_parallel_and_a_dead_one_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sequentially, three slow feeds outlast the watcher's 20s kill; in
+    parallel the whole poll takes about as long as the slowest one."""
+    import time
+    import urllib.error
+
+    rss = (
+        "<rss><channel><item><title>{0}</title><link>https://x/{0}</link></item>"
+        "</channel></rss>"
+    )
+
+    def slow_fetch(url: str) -> bytes:
+        time.sleep(0.5)
+        if url.endswith("dead"):
+            raise urllib.error.URLError("down")
+        return rss.format(url.rsplit("/", 1)[-1]).encode()
+
+    monkeypatch.setattr(news_fetch, "_fetch", slow_fetch)
+    monkeypatch.setattr(news_fetch, "_append_cache", lambda items, config: None)
+
+    started = time.monotonic()
+    items = news_fetch.fetch_and_cache(
+        ["https://a/one", "https://b/dead", "https://c/three"], {}
+    )
+
+    assert time.monotonic() - started < 1.2
+    assert [item["title"] for item in items] == ["one", "three"]
+    assert items[0]["source"] == "https://a/one"
