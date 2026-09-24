@@ -89,3 +89,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     > `await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)`
     > `result = await run_command(self._argv[0], *self._argv[1:], cwd=self.cwd)`
     1. [x] src/evomesh/watchers.py `AgentWatcher._tick` -- pass `timeout_seconds=self.timeout_seconds` into the `run_command` call so `subprocess.run` terminates the child itself on timeout (via its `timeout=`), turning the child into a real stop rather than a leaked waiter; the `wait_for` in `_loop` then serves only as a safety net.
+- [ ] Set the watcher's command timeout from settings instead of the hardcoded 20s default
+    The `AgentWatcher.__init__` accepts an optional `timeout_seconds` but defaults it to `DEFAULT_TIMEOUT_SECONDS = 20.0`, and no caller in `mesh.py` ever passes it — so a watcher with no settings-backed timeout override is stuck at 20s. The running mesh logged two `timed_out` results for the exact command `['python', '...\\agent-templates\\news-watcher\\scripts\\watch_news.py']`; that script cycles on `while True:` with `time.sleep(60)`, so it can never finish within 20s and will always time out.
+    > timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    1. [ ] src/evomesh/watchers.py `AgentWatcher.__init__` -- read `timeout_seconds` out of the watcher settings (defaulting to `DEFAULT_TIMEOUT_SECONDS` only when unset) instead of hard-coding the module constant, and pass it through from `Mesh.ensure_watcher` so the per-watcher command timeout comes from config, not a fixed number.
