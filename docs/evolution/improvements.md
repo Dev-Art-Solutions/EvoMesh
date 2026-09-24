@@ -82,5 +82,5 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     >             )
     >         except subprocess.TimeoutExpired as exc:
     >             return 124, exc.output or b"", True
-    1. [ ] src/evomesh/processes.py `run_command` -- add `start_new_session=True` to the `subprocess.run(...)` call so the child leads its own process group/session, separate from the worker thread.
+    1. [x] src/evomesh/processes.py `run_command` -- add `start_new_session=True` to the `subprocess.run(...)` call so the child leads its own process group/session, separate from the worker thread.
     2. [ ] src/evomesh/processes.py `run_command` -- in the `except subprocess.TimeoutExpired` handler, terminate that whole process group (via `os.killpg`) before returning the timeout result, so children/grandchildren don't outlive the parent.

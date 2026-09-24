@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1420](001420.md) — Added `start_new_session=True` to the `subprocess.run(...)` call in `run_command` so the child process is placed in its own new session/process group (via setsid), separate from the worker thread — the single change requested for this step, setting up later steps to target the group with `os.killpg`.
 - [Generation 1419](001419.md) — the module's own purpose is to not leave a process behind, but `subprocess.run` here has no `start_new_session` and its timeout handler only short-circuits with exit code 124 while `Popen.kill()` kills just the direct child — leaving any spawned grandchildren orphaned and running.
 - [Generation 1418](001418.md) — Added one mechanical test for `edge_snapshot` that passes the simplest realistic argument and asserts the single obvious result — that it returns the edges with the same contents — without touching anything under src/.
 - [Generation 1417](001417.md) — The implementation is a pure string-builder that returns a join of the inputs; asserting the plan text and project strings are embedded is the single real, passing check of what the code does, matching the style of the neighboring mechanical tests.

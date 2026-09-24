@@ -77,6 +77,7 @@ async def run_command(
                 timeout=timeout_seconds,
                 check=False,
                 env=env,
+                start_new_session=True,
             )
             return completed.returncode, completed.stdout or b"", False
         except subprocess.TimeoutExpired as exc:
