@@ -19,3 +19,10 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run_dir.mkdir()
     monkeypatch.chdir(run_dir)
     return run_dir
+
+
+@pytest.fixture(scope="session")
+def project_root() -> Path:
+    from evomesh.codebase import project_root as _project_root
+
+    return _project_root()

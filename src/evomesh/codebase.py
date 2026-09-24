@@ -66,6 +66,16 @@ def package_root(root: Path) -> Path:
     return root / "src" / PACKAGE
 
 
+def project_root() -> Path:
+    """The repository root, resolved from this package's location.
+
+    The package lives at ``<root>/src/evomesh``, so the root is two levels up
+    from here. A caller can pass this to :func:`package_root` to locate the
+    package without hard-coding the layout.
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
 def _summary(tree: ast.Module) -> str:
     """The first line of the module docstring -- what the file is for."""
     doc = ast.get_docstring(tree) or ""
