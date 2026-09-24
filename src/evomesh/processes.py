@@ -26,7 +26,9 @@ import asyncio
 import os
 import signal
 import subprocess
+import sys
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,42 +65,35 @@ async def run_command(
     process from a job's hung ``<<'EOF'`` heredoc read (see harness_tools.py)
     still alive more than two days after its supposed 60s ``shell_seconds``
     budget, holding no lock and doing nothing anyone could see from the
-    mesh log. ``subprocess.run(timeout=...)`` kills the child itself (via
-    ``Popen.kill()``) before raising, on whichever thread is actually
-    running it, so the process is really gone either way.
+    mesh log. ``communicate(timeout=...)`` raises on whichever thread is
+    actually running the child, and `_kill_tree` then kills it together with
+    everything it started, so the processes are really gone either way.
     """
 
     def call() -> tuple[int, bytes, bool]:
-        try:
-            completed = subprocess.run(  # noqa: S603 - the caller supplies the program
-                [program, *arguments],
-                cwd=str(cwd) if cwd else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout_seconds,
-                check=False,
-                env=env,
-                start_new_session=True,
-            )
-            return completed.returncode, completed.stdout or b"", False
-        except subprocess.TimeoutExpired as exc:
-            # ``subprocess.run`` killed only the direct child. That leaves any
-            # grandchild the child spawned (a backgrounded process, a process
-            # group) orphaned with the worker thread -- still alive, still
-            # holding whatever it was holding, long after we have returned.
-            # ``start_new_session=True`` above made the child its own group
-            # leader, so ``os.killpg`` on the child's pid reaches the whole
-            # group; ``SIGKILL`` (not ``SIGTERM``) so a signal-ignoring child
-            # cannot just carry on. ``subprocess.run`` records the child it
-            # spawned on ``exc.process`` (``TimeoutExpired.pid`` is not present
-            # in the bundled type stub, so read it off the ``Popen`` instead).
-            pid = getattr(getattr(exc, "process", None), "pid", None)
-            if pid:
+        with subprocess.Popen(  # noqa: S603 - the caller supplies the program
+            [program, *arguments],
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            # POSIX: the child leads its own process group, so killpg reaches
+            # everything it started. Ignored on Windows, where taskkill /T
+            # walks the tree instead (see _kill_tree).
+            start_new_session=True,
+        ) as process:
+            try:
+                output, _ = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _kill_tree(process)
+                # A grandchild that escaped the tree may still hold the pipe
+                # open; do not wait on it forever for output nobody needs.
                 try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            return 124, exc.output or b"", True
+                    output, _ = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    output = b""
+                return 124, output or b"", True
+            return process.returncode, output or b"", False
 
     exit_code, output, timed_out = await asyncio.to_thread(call)
     return CommandResult(
@@ -106,6 +101,29 @@ async def run_command(
         output=output.decode(errors="replace"),
         timed_out=timed_out,
     )
+
+
+def _kill_tree(process: subprocess.Popen[bytes]) -> None:
+    """Kill a timed-out child *and everything it started*.
+
+    ``subprocess.run``'s own timeout kills only the direct child, so a
+    grandchild (a shell's backgrounded job, a script's own subprocess) was
+    orphaned and kept running. Generation 1463 tried ``os.killpg`` on
+    ``TimeoutExpired.process`` -- an attribute ``subprocess.run`` never sets,
+    and a function Windows does not have -- so it never ran anywhere.
+    """
+    if sys.platform == "win32":
+        subprocess.run(  # noqa: S603 - fixed program, our own child's pid
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],  # noqa: S607
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+    with suppress(OSError):
+        process.kill()
 
 
 def without_virtual_env() -> dict[str, str]:

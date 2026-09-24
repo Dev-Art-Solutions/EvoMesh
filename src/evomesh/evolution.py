@@ -1286,6 +1286,72 @@ MAX_TARGET_ATTEMPTS = 3
 # scouting; this caps scouts of any module in the same window, so a model that
 # cannot scout at all still leaves the maintenance backlogs a turn.
 MAX_SCOUT_ATTEMPTS = 6
+# Red tests on the live tree come before any other objective. Found live
+# 2026-09-25: generation 1463 landed a test that could never pass on this
+# (Windows) host, and from then on every candidate failed validation on it --
+# the mesh then kept writing more small tests on top of a red suite.
+PICK_BASELINE = "baseline-fix"
+BASELINE_NEEDLE = "Make the test suite pass again"
+# All under .runtime/ (gitignored, never copied into a candidate). The venv is
+# its own: the live .venv is in use by the running mesh and has no dev deps.
+BASELINE_FILE = Path(".runtime") / "baseline-tests.json"
+BASELINE_VENV = Path(".runtime") / "baseline-venv"
+BASELINE_TEMP = Path(".runtime") / "baseline-pytest"
+BASELINE_FAILURE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)
+# What of pytest's output goes into the objective: a harness transcript is
+# ~12000 chars and its fixed prompt already takes most of that.
+BASELINE_OUTPUT_CHARS = 1500
+
+
+@dataclass(frozen=True)
+class BaselineResult:
+    """The whole test suite, run on the live tree before any objective is picked.
+
+    ``key`` is the tree it ran on (HEAD plus uncommitted tracked changes), so a
+    verdict is reused until the code changes. ``blocked`` means the machine,
+    not the code, stopped the run (no uv, sync failed, timed out) -- that is no
+    verdict, and evolution is not held up over it.
+    """
+
+    key: str
+    passed: bool
+    failures: tuple[str, ...] = ()
+    output: str = ""
+    blocked: bool = False
+
+    def objective(self) -> str:
+        listed = "\n".join(f"- {name}" for name in self.failures[:10])
+        more = len(self.failures) - 10
+        if more > 0:
+            listed += f"\n- ... and {more} more"
+        return (
+            f"{BASELINE_NEEDLE}: `uv run pytest` fails on the live tree BEFORE any "
+            "change, so every candidate fails validation for something it did "
+            "not do.\n\n"
+            f"Failing:\n{listed}\n\n"
+            "Find the root cause of each failure. If the code under test is "
+            "wrong, fix the code; if the test is wrong, fix the test. This mesh "
+            "runs on Windows: a test that can only work on POSIX (os.killpg, "
+            "/tmp paths, signals) is fixed to work on both or skipped on "
+            "Windows with pytest.mark.skipif and a reason -- not deleted. Never "
+            "weaken an assertion just to go green, and change nothing unrelated "
+            "to these failures.\n\n"
+            f"End of the pytest output:\n```\n{self.output[-BASELINE_OUTPUT_CHARS:]}\n```"
+        )
+
+
+def parse_baseline(key: str, exit_code: int, output: str) -> BaselineResult:
+    """A pytest run's verdict: the failing node ids out of its ``-rfE`` summary."""
+    if exit_code == 0:
+        return BaselineResult(key=key, passed=True)
+    failures = tuple(dict.fromkeys(BASELINE_FAILURE.findall(output)))
+    # A crash or collection error with no summary line is still a red suite.
+    return BaselineResult(
+        key=key,
+        passed=False,
+        failures=failures or (f"pytest exited {exit_code}",),
+        output=output,
+    )
 
 
 @dataclass(frozen=True)
@@ -1342,6 +1408,137 @@ class EnvironmentEvolver:
         # rule 7 means at most one candidate is open, so a second lane would be
         # a lane with nothing in it.
         self.validation: ValidationRun | None = None
+        # The live tree's own suite, while it runs: (tree key, task).
+        self._baseline_run: tuple[str, asyncio.Task[BaselineResult]] | None = None
+
+    # -- baseline -------------------------------------------------------
+
+    async def baseline_key(self) -> str:
+        """HEAD plus a digest of uncommitted tracked changes; "" outside git."""
+        repository = GitRepository(self.workspace.repository_root)
+        try:
+            head = await repository.current_commit()
+            dirty = await repository.run("status", "--porcelain", "--untracked-files=no")
+        except (GitError, OSError):
+            return ""
+        return f"{head}:{hashlib.sha256(dirty.encode()).hexdigest()[:12]}"
+
+    async def baseline(self, timeout_seconds: float = 1800.0) -> BaselineResult | None:
+        """The live tree's test verdict for its current code, or ``None`` while
+        the suite is still running (started here, off the caller's cycle).
+
+        Reused from ``.runtime/baseline-tests.json`` until the tree changes, so
+        the suite runs once per landed change -- not once per generation, and
+        not again just because a promotion restarted the process.
+        """
+        key = await self.baseline_key()
+        if not key:
+            # Not a git checkout (a test's scratch tree): nothing to key a
+            # verdict on, so no verdict -- never a reason to hold evolution.
+            return BaselineResult(key="", passed=True, blocked=True)
+        if self._baseline_run is not None:
+            running_key, task = self._baseline_run
+            if not task.done():
+                return None
+            self._baseline_run = None
+            result = self._finished_baseline(running_key, task)
+            self._save_baseline(result)
+            if running_key == key:
+                return result
+        cached = self._load_baseline()
+        if cached is not None and cached.key == key:
+            return cached
+
+        async def run() -> BaselineResult:
+            return await asyncio.wait_for(self._run_baseline(key), timeout=timeout_seconds)
+
+        task = asyncio.create_task(run(), name="evomesh-baseline-tests")
+        task.add_done_callback(self._lane_finished)
+        self._baseline_run = (key, task)
+        return None
+
+    async def _run_baseline(self, key: str) -> BaselineResult:
+        root = self.workspace.repository_root
+        try:
+            uv = uv_executable(root)
+        except FileNotFoundError as exc:
+            return BaselineResult(key=key, passed=False, output=str(exc), blocked=True)
+        env = {**without_virtual_env(), "UV_PROJECT_ENVIRONMENT": str(root / BASELINE_VENV)}
+        sync = await run_command(uv, "sync", "--frozen", cwd=root, env=env)
+        if sync.exit_code != 0:
+            return BaselineResult(key=key, passed=False, output=sync.output, blocked=True)
+        shutil.rmtree(root / BASELINE_TEMP, ignore_errors=True)
+        suite = await run_command(
+            uv,
+            "run",
+            "--frozen",
+            "pytest",
+            "-q",
+            "-rfE",
+            "-p",
+            "no:cacheprovider",
+            "--basetemp",
+            str(root / BASELINE_TEMP),
+            cwd=root,
+            env=env,
+        )
+        return parse_baseline(key, suite.exit_code, suite.output)
+
+    @staticmethod
+    def _finished_baseline(key: str, task: asyncio.Task[BaselineResult]) -> BaselineResult:
+        try:
+            return task.result()
+        except TimeoutError:
+            output = "the live tree's test suite did not finish in time"
+        except Exception as exc:  # noqa: BLE001 - any crash is "no verdict", not a verdict
+            output = f"the live tree's test suite could not run: {exc}"
+        return BaselineResult(key=key, passed=False, output=output, blocked=True)
+
+    def _load_baseline(self) -> BaselineResult | None:
+        path = self.workspace.repository_root / BASELINE_FILE
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return BaselineResult(
+                key=str(raw["key"]),
+                passed=bool(raw["passed"]),
+                failures=tuple(str(x) for x in raw.get("failures", ())),
+                output=str(raw.get("output", "")),
+                blocked=bool(raw.get("blocked", False)),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _save_baseline(self, result: BaselineResult) -> None:
+        path = self.workspace.repository_root / BASELINE_FILE
+        with suppress(OSError):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "key": result.key,
+                        "passed": result.passed,
+                        "failures": list(result.failures),
+                        "output": result.output[-20000:],
+                        "blocked": result.blocked,
+                        "at": datetime.now(UTC).isoformat(),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+    def baseline_pick(self, result: BaselineResult) -> ObjectivePick | None:
+        """The objective a red baseline makes, or ``None`` once it has been
+        tried ``MAX_TARGET_ATTEMPTS`` times recently -- then it is a human's."""
+        tried = sum(text.startswith(BASELINE_NEEDLE) for text in self._recent_objectives())
+        if tried >= MAX_TARGET_ATTEMPTS:
+            return None
+        return ObjectivePick(
+            kind=PICK_BASELINE,
+            objective=result.objective(),
+            needle=BASELINE_NEEDLE,
+            key=result.key,
+        )
 
     # -- pipeline state -------------------------------------------------
 
@@ -1402,7 +1599,9 @@ class EnvironmentEvolver:
         target right now."""
         return untested_target(self.workspace.repository_root, seed)
 
-    def substantive_objective(self, seed: int) -> ObjectivePick | None:
+    def substantive_objective(
+        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS
+    ) -> ObjectivePick | None:
         """A real behavioral change to make, or ``None`` if there is none.
 
         Checked before either maintenance backlog: first a traceback the
@@ -1440,7 +1639,10 @@ class EnvironmentEvolver:
         # maintenance backlogs whose best outcome is one more test. Only where
         # the backlog file exists -- that is the project opting in to one.
         scouted = sum(text.startswith(SCOUT_NEEDLE) for text in recent)
-        if not (root / IMPROVEMENTS_FILE).is_file() or scouted >= MAX_SCOUT_ATTEMPTS:
+        # ``scout_cap=None``: no test backlog to fall back on, so scouting is
+        # the only way to find work and is never capped.
+        capped = scout_cap is not None and scouted >= scout_cap
+        if not (root / IMPROVEMENTS_FILE).is_file() or capped:
             return None
         leads = warning_leads(root)
         modules = [name for name in scout_modules(root, leads) if fresh(scout_needle(name))]
@@ -2106,7 +2308,7 @@ class EnvironmentEvolver:
         self.validation.task.add_done_callback(self._lane_finished)
         return self.validation
 
-    def _lane_finished(self, _task: asyncio.Task[ValidationResult]) -> None:
+    def _lane_finished(self, _task: asyncio.Task[Any]) -> None:
         if self.on_lane_finished is not None:
             self.on_lane_finished()
 

@@ -191,6 +191,15 @@ class EvolutionSettings(BaseModel):
     review: bool = False
     review_max_steps: int = 40
     review_max_seconds: float = 900.0
+    # On by default. Before any objective is picked, the whole test suite runs
+    # on the live tree (once per landed change, in its own venv under
+    # .runtime/); a red suite becomes the objective, and after
+    # MAX_TARGET_ATTEMPTS failed fixes evolution waits for a human.
+    baseline_tests: bool = True
+    # Off by default. The "write ONE small test for an untested export"
+    # fallback: with it on, ~14 of every 20 generations were a 5-line test
+    # (2026-09-25). Off, an evolver with nothing substantive to do waits.
+    test_backlog: bool = False
     objective: str | None = None
 
 

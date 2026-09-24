@@ -34,6 +34,8 @@ from evomesh.evolution import (
     BACKLOG_MAX_SECONDS,
     BACKLOG_MAX_STEPS,
     BACKLOG_PICKS,
+    MAX_SCOUT_ATTEMPTS,
+    MAX_TARGET_ATTEMPTS,
     PICK_IMPROVEMENT,
     PICK_PLAN,
     PICK_SCOUT,
@@ -46,6 +48,7 @@ from evomesh.evolution import (
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
+    ObjectivePick,
     PlanNode,
     excerpt,
     parse_review,
@@ -400,6 +403,8 @@ class EvolverBehavior(BDIBehavior):
         review: bool = False,
         review_max_steps: int | None = None,
         review_max_seconds: float | None = None,
+        baseline_tests: bool = False,
+        test_backlog: bool = True,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -434,6 +439,17 @@ class EvolverBehavior(BDIBehavior):
         self.review = review and auto_validate
         self.review_max_steps = review_max_steps
         self.review_max_seconds = review_max_seconds
+        # Run the whole suite on the live tree before picking an objective; a
+        # red suite becomes the objective. Off here (a behavior under test has
+        # no real tree), on in settings.
+        self.baseline_tests = baseline_tests
+        # The untested-export fallback: "write ONE small test". With it off,
+        # an evolver with nothing substantive to do waits instead. On here for
+        # the existing pipeline tests, off in settings.
+        self.test_backlog = test_backlog
+        # The tree key a human was last told about, so a stall is announced
+        # once, not every cycle it lasts.
+        self._announced: str = ""
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -659,12 +675,42 @@ class EvolverBehavior(BDIBehavior):
             # ten-module backlog had already been wired in, handed to five
             # generations straight.
             seed = evolver.workspace.supervisor.total_created()
+            baseline_pick: ObjectivePick | None = None
+            if self.baseline_tests:
+                baseline = await evolver.baseline(self.validate_seconds)
+                if baseline is None:
+                    return StepResult(
+                        summary=(
+                            "running the whole test suite on the live tree before "
+                            "choosing what to evolve"
+                        ),
+                        phase=AgentPhase.ACTING,
+                        hold=True,
+                    )
+                if baseline.blocked and baseline.key:
+                    logger.warning(
+                        "Baseline test run gave no verdict, evolving anyway: %s",
+                        baseline.output[-500:],
+                    )
+                elif not baseline.passed:
+                    baseline_pick = evolver.baseline_pick(baseline)
+                    if baseline_pick is None:
+                        return await self._stall(
+                            context,
+                            baseline.key,
+                            f"{len(baseline.failures)} test(s) fail on the live tree "
+                            f"and {MAX_TARGET_ATTEMPTS} generations could not fix them "
+                            "-- evolution is paused until a human does: "
+                            + ", ".join(baseline.failures[:5]),
+                        )
             # Substantive work first -- a traceback the mesh actually logged,
             # then docs/evolution/improvements.md. Both backlogs below are
             # maintenance: with only them, the best any generation could do
             # was add one test, and ~30 straight did exactly that
             # (2026-09-24) while the system itself never changed.
-            pick = evolver.substantive_objective(seed)
+            pick = baseline_pick or evolver.substantive_objective(
+                seed, scout_cap=MAX_SCOUT_ATTEMPTS if self.test_backlog else None
+            )
             target = evolver.backlog_target(seed) if pick is None else None
             nudge_delete = (
                 target is not None
@@ -702,7 +748,15 @@ class EvolverBehavior(BDIBehavior):
                 # markers, never a real edit). The untested-export backlog is the
                 # next concrete source once the first one is empty, not a
                 # replacement for it -- checked second, same rotation scheme.
-                untested = evolver.untested_objective(seed)
+                untested = evolver.untested_objective(seed) if self.test_backlog else None
+                if untested is None and not self.test_backlog:
+                    return await self._stall(
+                        context,
+                        f"idle:{seed}",
+                        "nothing substantive to evolve: no failing tests, no open "
+                        "item in docs/evolution/improvements.md, and no scout "
+                        "target left -- add an item there to steer the mesh",
+                    )
                 if untested is not None:
                     objective = untested
                     substantive = {"pick": PICK_TEST}
@@ -764,6 +818,16 @@ class EvolverBehavior(BDIBehavior):
             fact=f"generation {generation.number} opened for: {objective}",
             phase=AgentPhase.ACTING,
         )
+
+    async def _stall(self, context: CycleContext, key: str, reason: str) -> StepResult:
+        """Wait instead of opening a generation, telling a human once per ``key``."""
+        if key != self._announced:
+            self._announced = key
+            logger.warning("Evolution is waiting: %s", reason)
+            environment = cast("Any", context.service("environment"))
+            if environment is not None:
+                await environment.announce(f"Evolution is waiting: {reason}")
+        return StepResult.waiting(reason)
 
     async def _draft_plan(
         self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
@@ -1761,6 +1825,8 @@ def default_behaviors(
     review: bool = False,
     review_max_steps: int | None = None,
     review_max_seconds: float | None = None,
+    baseline_tests: bool = False,
+    test_backlog: bool = True,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -1778,6 +1844,8 @@ def default_behaviors(
             review=review,
             review_max_steps=review_max_steps,
             review_max_seconds=review_max_seconds,
+            baseline_tests=baseline_tests,
+            test_backlog=test_backlog,
         ),
     }
 

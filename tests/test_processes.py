@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
+import sys
 import time
+from pathlib import Path
 
 from evomesh.processes import run_command, without_virtual_env
 
@@ -39,47 +40,28 @@ async def test_a_command_that_finishes_in_time_is_not_marked_as_timed_out() -> N
     assert "hi" in result.output
 
 
-async def test_a_timeout_kills_the_whole_process_group() -> None:
-    """Grandchildren survive their parent dying -- the group must be killed.
+async def test_a_timeout_kills_the_grandchildren_too(tmp_path: Path) -> None:
+    """A timeout must reach everything the child started, on every platform.
 
-    ``subprocess.run`` only kills the direct child on timeout. If that child
-    spawned a grandchild (here a shell backgrounding a sleeper), the
-    grandchild would otherwise be orphaned and keep going. ``start_new_session``
-    made the child its own group leader, so a timeout must reach the whole
-    group via ``os.killpg``.
+    The grandchild writes a marker after 5s; the child is timed out after 2s.
+    If the marker appears, the grandchild outlived the timeout. No pid probing:
+    on Windows ``os.kill(pid, 0)`` *terminates* the process it was asked about.
     """
-    if shutil.which("sh") is None:  # pragma: no cover - platform guard
-        return
+    marker = tmp_path / "grandchild-survived"
+    grandchild = "import sys, time; time.sleep(5); open(sys.argv[1], 'w').write('x')"
+    child = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, sys.argv[1]]); "
+        "time.sleep(30)"
+    )
 
     result = await run_command(
-        "sh",
-        "-c",
-        "( sleep 30 ) & echo $! > /tmp/evomesh_pg_child.pid",
-        timeout_seconds=1.0,
+        sys.executable, "-c", child, str(marker), timeout_seconds=2.0
     )
 
     assert result.timed_out is True
-
-    def _read_pid() -> int:
-        with open("/tmp/evomesh_pg_child.pid", encoding="utf-8") as handle:
-            return int(handle.read().strip())
-
-    child_pid = await asyncio.to_thread(_read_pid)
-
-    assert not _pid_is_running(child_pid)
-
-
-def _pid_is_running(pid: int) -> bool:
-    """True while a process with ``pid`` exists (best effort, no exceptions)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    await asyncio.sleep(5)
+    assert not marker.exists()
 
 
 def test_without_virtual_env_returns_the_environment_without_VIRTUAL_ENV() -> None:

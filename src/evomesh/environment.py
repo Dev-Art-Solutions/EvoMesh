@@ -100,6 +100,8 @@ class Environment:
             settings.evolution.review,
             settings.evolution.review_max_steps,
             settings.evolution.review_max_seconds,
+            settings.evolution.baseline_tests,
+            settings.evolution.test_backlog,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

@@ -68,6 +68,14 @@ evolution:
   review: false
   review_max_steps: 40
   review_max_seconds: 900
+  # Run the whole test suite on the live tree before picking an objective
+  # (once per landed change, own venv under .runtime/). Red tests become the
+  # objective; after 3 failed fixes evolution waits for a human.
+  baseline_tests: true
+  # The "write ONE small test for an untested export" fallback. Off: with
+  # nothing substantive to do (improvements.md empty, no scout target) the
+  # evolver waits instead of padding the history with tests.
+  test_backlog: false
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 
