@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1415](001415.md) — The function is a pure string-builder that joins `project`, the node path, `title`, `reasoning`, and rules. The single obvious check is that the inputs it was handed appear in the output — the project string and the "ITEM TITLE:" line — rather than testing every branch.
 - [Generation 1414](001414.md) — The test reuses `clip`'s default `keep_end=True` path with minimal args, asserting the concrete output `"...\n" + text[-limit:]` — the real behavior the code shows — without touching anything under `src/evomesh/`, adding only the needed import.
 - [Generation 1413](001413.md) — I added one test that calls `is_valid_cron_expression("0 * * * *")` (the simplest realistic 5-field expression, already used successfully by an existing test) and asserts it returns `True`, matching exactly what the code under test shows — it returns `True` when `parse()` succeeds. The import was extended to include `is_valid_cron_expression`. No changes were made under `src/evomesh/`.
 - [Generation 1412](001412.md) — A single passing assertion against the exact output (verified by reading the source, not a mock) fully covers `plan_objective()` without inventing stubs or changing production code.
