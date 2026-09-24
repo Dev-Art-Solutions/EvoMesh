@@ -1,5 +1,6 @@
 from evomesh.codebase import (
     PACKAGE,
+    fabricated_references,
     known_dead,
     package_root,
     stray_root_files,
@@ -9,6 +10,12 @@ from evomesh.codebase import (
 
 def test_package_root_points_at_the_source_package(project_root):
     assert package_root(project_root) == project_root / "src" / PACKAGE
+
+
+def test_fabricated_references_leaves_a_real_reference_alone(project_root):
+    assert fabricated_references(
+        "use `evomesh.codebase.package_root` from the package", project_root
+    ) == []
 
 
 def test_survey_reports_the_load_bearing_modules(project_root):
