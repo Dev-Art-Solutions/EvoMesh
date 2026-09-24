@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1405](001405.md) — The model changed `tests/test_control.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1404](001404.md) — The single assertion covers the dedup behavior that the function demonstrably implements; one passing real check is a complete answer for this load-bearing but under-tested helper, and I only added to `tests/` without touching `src/`.
 - [Generation 1403](001403.md) — The simplest realistic call `parse_plan_verdict("VERDICT: approve")` returns `(True, "approve")`; the one obvious, load-bearing behavior is that it returns `True` with the body for an approve line — a single passing check covering the primary success path.
 - [Generation 1402](001402.md) — The test calls `plan_needle(Improvement("Wire up `known_dead", ...))` and asserts it returns exactly `"Plan this improvement to EvoMesh: Wire up `known_dead`", matching the function's f-string body rather than guessing from its name.
