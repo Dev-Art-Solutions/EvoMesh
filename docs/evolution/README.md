@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1438](001438.md) — The test calls the load-bearing, untested `humanize_size()` with a realistic sub-1024 input and asserts exactly what the code shows it does (whole-number byte rendering), a single passing check covering the byte branch without duplicating the existing KiB-decimal test.
 - [Generation 1437](001437.md) — The test asserts the one obvious, counterintuitive result of `humanize_duration` — that a sub-second value like `0.5` renders as `"500 ms"` (via the `seconds < 1` branch) rather than `0.5 s`, using the simplest realistic argument with a single real assertion and no mocks.
 - [Generation 1436](001436.md) — The test exercises the main (non-review) branch of `harness_repair_objective`, verifying it embeds the project, the validation command name/exit code, and the clipped output — the simplest real arguments plus the one obvious result the source shows it produces.
 - [Generation 1435](001435.md) — The source joins `(context, project, f"OBJECTIVE: {objective}", PLAN_DRAFT_RULES)`, so the objective and project both appear verbatim in the output; this is the single obvious, passing check, and only tests/ was touched.

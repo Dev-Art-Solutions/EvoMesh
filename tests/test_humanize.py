@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from evomesh.humanize import humanize_bytes, humanize_duration, humanize_timestamp
+from evomesh.humanize import humanize_bytes, humanize_duration, humanize_size, humanize_timestamp
 
 
 def test_humanize_timestamp_for_a_past_timestamp_says_ago():
@@ -20,3 +20,9 @@ def test_humanize_duration_sub_second_renders_as_milliseconds():
     # A sub-second duration renders in whole milliseconds, not fractional seconds.
     result = humanize_duration(0.5)
     assert result == "500 ms"
+
+
+def test_humanize_size_sub_1024_renders_as_whole_bytes():
+    # Below one KiB the value stays in bytes and renders as a whole number, not a decimal.
+    result = humanize_size(512)
+    assert result == "512 B"
