@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from evomesh.models import (
+    ToolsUnsupportedError,
     _extract_thought_signature,
     _parse_arguments,
     _post_with_retry,
@@ -58,3 +59,9 @@ def test_tools_are_unsupported_flags_a_400_mentioning_tool():
     exc = httpx.HTTPStatusError("boom", request=request, response=response)
 
     assert _tools_are_unsupported(exc) is True
+
+
+def test_tools_unsupported_stores_and_returns_its_message():
+    exc = ToolsUnsupportedError("take the text protocol instead")
+
+    assert str(exc) == "take the text protocol instead"
