@@ -5,6 +5,7 @@ import pytest
 from evomesh.harness_tools import (
     ToolContext,
     ToolDenied,
+    tool_edit,
     tool_fetch,
     tool_patch_skill,
     tool_write,
@@ -38,3 +39,11 @@ async def test_tool_fetch_is_denied_without_a_configured_fetcher(tmp_path):
     ctx = ToolContext(root=tmp_path)
     with pytest.raises(ToolDenied):
         await tool_fetch(ctx, {"url": "https://example.com"})
+
+
+async def test_tool_edit_replaces_the_exact_string_it_is_asked_to(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    ctx = ToolContext(root=tmp_path, allow_write=True)
+    await tool_edit(ctx, {"path": "sample.txt", "old": "two", "new": "TWO"})
+    assert target.read_text(encoding="utf-8") == "one\nTWO\nthree\n"
