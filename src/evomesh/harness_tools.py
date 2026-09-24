@@ -494,6 +494,53 @@ def _find_elsewhere(context: ToolContext, target: Path, old: str) -> str | None:
     return None
 
 
+def _whitespace_miss(content: str, old: str) -> str | None:
+    """Say so outright when every line of `old` is in the file, in order, and
+    only its leading or trailing whitespace is wrong -- with the exact text.
+
+    Found live 2026-09-24: a plan job copied a line from a numbered read as
+    `     src/...` -- five spaces, the one after `NNNNN|` kept -- and the hint
+    below answered "this line of 'old' does appear, but not the rest of it"
+    about a one-line `old`. The model could not see what was wrong with it,
+    lost two edits and fell back to printing repr() through the shell.
+    """
+    wanted = old.splitlines()
+    if not any(line.strip() for line in wanted):
+        return None
+    lines = content.splitlines()
+    for start in range(len(lines) - len(wanted) + 1):
+        block = lines[start : start + len(wanted)]
+        if any(have.strip() != want.strip() for have, want in zip(block, wanted, strict=True)):
+            continue
+        differs = next(
+            (
+                (index, have, want)
+                for index, (have, want) in enumerate(zip(block, wanted, strict=True))
+                if have != want
+            ),
+            None,
+        )
+        if differs is None:
+            # Identical line by line: whatever missed was not whitespace.
+            return None
+        offset, have, want = differs
+        spaces = len(have) - len(have.lstrip())
+        given = len(want) - len(want.lstrip())
+        where = f"line {start + offset + 1}"
+        detail = (
+            f"{where} starts with {spaces} spaces and yours with {given}"
+            if spaces != given
+            else f"{where} differs only in trailing whitespace"
+        )
+        return (
+            f"Every line of 'old' is in the file, but spaced differently: {detail}. "
+            "A read's `NNNNN| ` prefix is the number, the bar and exactly ONE space -- "
+            "copy only what comes after it. The exact text to use as 'old':\n"
+            + "\n".join(block)
+        )
+    return None
+
+
 def _not_found_hint(context: ToolContext, target: Path, content: str, old: str) -> str:
     """Give a not-found refusal something real to anchor a retry on.
 
@@ -508,6 +555,8 @@ def _not_found_hint(context: ToolContext, target: Path, content: str, old: str) 
     invented" from "this text is real, but for a different path" -- and only
     the first of those is actually fabrication.
     """
+    if (respaced := _whitespace_miss(content, old)) is not None:
+        return respaced
     candidates: list[tuple[str, list[int]]] = []
     for stripped in _distinctive_lines(old):
         at = _match_lines(content, stripped)

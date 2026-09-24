@@ -538,6 +538,26 @@ async def test_a_not_found_edit_shows_the_real_file_instead_of_just_saying_rerea
     assert "def reconsider() -> bool:" in result
 
 
+async def test_an_edit_off_by_a_space_says_so_and_hands_back_the_exact_text(
+    project: Path,
+) -> None:
+    """Found live 2026-09-24: a line copied from a numbered read with the space
+    after `NNNNN|` kept got "this line does appear, but not the rest of it" --
+    about a one-line `old` -- and the model lost two edits working out why."""
+    (project / "notes.md").write_text("- [ ] Item\n    last line of it.\n", encoding="utf-8")
+
+    result = await ToolRegistry(ALL_TOOLS).invoke(
+        writable(project),
+        "edit",
+        {"path": "notes.md", "old": "     last line of it.", "new": "x"},
+    )
+
+    assert "spaced differently: line 2 starts with 4 spaces and yours with 5" in result
+    assert "exactly ONE space" in result
+    assert result.endswith("The exact text to use as 'old':\n    last line of it.")
+    assert "does appear, but not the rest" not in result
+
+
 async def test_a_wholly_fabricated_edit_shows_the_start_of_the_real_file(
     project: Path,
 ) -> None:

@@ -1503,7 +1503,8 @@ def _step_rules(path: str) -> str:
             "now; read more only for a line it does not show, with offset and limit, "
             "never the whole file.",
             "- Copy `old` character-for-character from CURRENT CODE, without the "
-            "`NNNNN| ` prefix, and keep it to the few lines you change.",
+            "`NNNNN| ` prefix (the number, the bar and exactly ONE space), and keep "
+            "it to the few lines you change.",
             f"- Change {path}. A test for the new behavior under tests/ is welcome; "
             "nothing else. Do this step only -- later steps are other generations' work.",
             "- Never create a new module under src/evomesh/: nothing would import it.",
@@ -1532,7 +1533,8 @@ PLAN_RULES = "\n".join(
         "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
         "in one sentence>",
         "- Use edit on that file: `old` = the item's last line as shown above, "
-        "without the `NNNNN| ` prefix; `new` = that line followed by your steps. "
+        "without the `NNNNN| ` prefix (number, bar, ONE space); `new` = that line "
+        "followed by your steps. "
         "Change nothing else in the file and no code anywhere.",
         "- Read a function (offset and limit from the OUTLINE's line numbers) only "
         "when its name does not tell you enough.",
@@ -1555,7 +1557,8 @@ SCOUT_RULES = "\n".join(
         "in one sentence>",
         _ANCHOR_RULE,
         "- Use edit: `old` = the file's last line as shown above, without the "
-        "`NNNNN| ` prefix; `new` = that line followed by your item. Never tick or "
+        "`NNNNN| ` prefix (number, bar, ONE space); `new` = that line followed by "
+        "your item. Never tick or "
         "remove an item.",
         "- End with one line starting exactly with 'RATIONALE:'.",
     )
