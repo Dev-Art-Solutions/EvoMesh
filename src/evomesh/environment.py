@@ -16,7 +16,7 @@ from uuid import uuid4
 from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import ReflectiveBehavior
-from evomesh.behaviors import default_behaviors
+from evomesh.behaviors import EvolverBehavior, default_behaviors
 from evomesh.cognition import AgentBehavior, CycleOutcome
 from evomesh.config import Settings
 from evomesh.contracts import (
@@ -113,6 +113,7 @@ class Environment:
             publish=settings.git.publish_policy(),
         )
         self.evolver.on_generation_landed = self._on_generation_landed
+        self.evolver.on_lane_finished = self._wake_evolver
         # Set when a generation has landed in the tree this process is not
         # running. Whoever owns the process -- __main__, a test, a script --
         # decides what to do about it; the environment only raises the flag.
@@ -155,6 +156,13 @@ class Environment:
         return self.settings.generation_path.parent
 
     # -- restarting into a landed generation ----------------------------
+
+    def _wake_evolver(self) -> None:
+        """A validation run finished: the agent driving the pipeline should
+        consume the verdict now, not at the end of its cycle interval."""
+        for runtime in self.runtimes.values():
+            if isinstance(runtime.behavior, EvolverBehavior):
+                runtime.wake()
 
     def _on_generation_landed(self, number: int, commit: str) -> None:
         """A generation is now in the tree, and this process is not running it.
@@ -931,7 +939,13 @@ class Environment:
         It lands in the mailbox, gets the audit record every message gets, and
         wakes the loop the agent already has -- so no behavior has to know that
         a worker exists.
+
+        A job a behavior polls for itself (notify=False: a pipeline stage, a
+        plan step) is not delivered, but its agent's cycle is still woken, so
+        the poll that consumes it runs now rather than a cycle_seconds later.
         """
+        if job.agent_id and (runtime := self.runtimes.get(job.agent_id)) is not None:
+            runtime.wake()
         if not job.agent_id or not job.notify:
             return
         if job.result is not None:

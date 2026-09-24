@@ -2634,6 +2634,32 @@ async def test_a_promoted_generation_lands_on_the_checkout(tmp_path: Path) -> No
     assert metadata["restart_required"] is True
 
 
+async def test_a_stage_that_moved_asks_for_the_next_now_and_a_verdict_wakes_it(
+    tmp_path: Path, project: Path
+) -> None:
+    """Stages whose next step waits on nothing ask for it at once (the
+    runtime still leaves WAKE_MIN_GAP), and a finished validation run wakes
+    whoever drives the pipeline -- instead of each waiting out a cycle."""
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], validator, StubRepairer()
+    )
+    lane: list[str] = []
+    evolver.on_lane_finished = lambda: lane.append("validated")
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2)
+
+    opened = await behavior.cycle(context)  # plan -> propose
+    proposed = await behavior.cycle(context)  # propose -> validate (the fake job is done)
+    await behavior.cycle(context)  # validate: runs the suite in its lane
+    for _ in range(20):
+        if lane:
+            break
+        await asyncio.sleep(0.05)
+
+    assert opened.again and proposed.again
+    assert lane == ["validated"]
+
+
 async def test_a_generation_is_never_applied_over_uncommitted_work(tmp_path: Path) -> None:
     project = await git_project(tmp_path / "project")
     validator = ScriptedValidator([passing()])

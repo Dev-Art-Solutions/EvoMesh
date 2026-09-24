@@ -42,6 +42,9 @@ MAX_INBOX_HISTORY = 6
 # minutes with no supervisor any the wiser.
 STUCK_CYCLE_MULTIPLE = 3.0
 STUCK_CYCLE_FLOOR = 600.0
+# The shortest gap between two cycles an early wake (AgentRuntime.wake) may
+# leave: a behavior that asks again every time still cannot spin the loop.
+WAKE_MIN_GAP = 2.0
 
 # `through_harness` in bdi.py substitutes this filler whenever a harness job's
 # own answer was empty, so a human reading a status line never sees a bare
@@ -149,6 +152,7 @@ class AgentRuntime:
     _inbox: list[Message] = field(default_factory=list, init=False)
     _last_cycle_started: float = field(default=0.0, init=False)
     _last_cycle_finished: float = field(default=0.0, init=False)
+    _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
     def __post_init__(self) -> None:
         self.state = AgentRuntimeState(
@@ -263,7 +267,31 @@ class AgentRuntime:
                     logger.exception("Cycle failed for %s", self.definition.name)
                     self.state.last_error = str(exc)
                     self.state.phase = AgentPhase.ERROR
-            await asyncio.sleep(max(0.5, min(self._due_in(), self.cycle_seconds)))
+            await self._nap(max(0.5, min(self._due_in(), self.cycle_seconds)))
+
+    def wake(self) -> None:
+        """Run the next cycle now rather than at the end of this interval.
+
+        For work that just stopped waiting: a harness job or a validation run
+        finishing, or a cycle whose next step waits on nothing. Found
+        2026-09-24: generation 1382's edit took 37 seconds and the generation
+        fourteen minutes, most of it five stages each waiting out a 120-second
+        interval for work that had already finished. Still one cycle at a
+        time, never sooner than WAKE_MIN_GAP after the last one started.
+        """
+        self._wake.set()
+
+    async def _nap(self, seconds: float) -> None:
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=seconds)
+        except TimeoutError:
+            return
+        self._wake.clear()
+        since = time.monotonic() - self._last_cycle_started
+        if since < WAKE_MIN_GAP:
+            await asyncio.sleep(WAKE_MIN_GAP - since)
+        # Due now: the loop's own _due_in() check is what runs the cycle.
+        self._last_cycle_started = time.monotonic() - max(1.0, self.cycle_seconds)
 
     def _due_in(self) -> float:
         return self._last_cycle_started + max(1.0, self.cycle_seconds) - time.monotonic()
@@ -279,6 +307,8 @@ class AgentRuntime:
                 self.state.phase = AgentPhase.THINKING
                 outcome = await self.behavior.cycle(self._context())
                 await self._apply(outcome, goal)
+                if outcome.again:
+                    self.wake()
                 return outcome
         finally:
             # Recorded even on a raised exception: an agent that failed its

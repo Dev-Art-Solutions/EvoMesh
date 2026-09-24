@@ -162,6 +162,9 @@ class CycleOutcome:
     phase: AgentPhase = AgentPhase.IDLE
     error: str | None = None
     worked: bool = False
+    # The next cycle has work that waits on nothing -- run it now instead of a
+    # whole cycle_seconds later (see AgentRuntime.wake).
+    again: bool = False
 
     @classmethod
     def idle(cls, summary: str) -> CycleOutcome:

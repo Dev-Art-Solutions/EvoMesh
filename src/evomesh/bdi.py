@@ -189,6 +189,8 @@ class StepResult:
     hold: bool = False
     impossible: str | None = None
     phase: AgentPhase = AgentPhase.IDLE
+    # See CycleOutcome.again.
+    again: bool = False
 
     @classmethod
     def blocked(cls, reason: str) -> StepResult:
@@ -368,6 +370,7 @@ class BDIReasoner:
                 fact=result.fact,
                 phase=result.phase,
                 worked=True,
+                again=result.again,
             )
 
         intention.advance(result.summary, failed=result.failed)
@@ -384,6 +387,7 @@ class BDIReasoner:
             goal_done=achieved,
             phase=result.phase,
             worked=True,
+            again=result.again,
         )
 
 

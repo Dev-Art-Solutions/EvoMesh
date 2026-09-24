@@ -8,12 +8,14 @@ from typing import Any
 
 import pytest
 
+from evomesh.agents import WAKE_MIN_GAP
 from evomesh.bdi import (
     BDIBehavior,
     BDIReasoner,
     Desire,
     PlanLibrary,
     PlanRecipe,
+    ReflectiveBehavior,
     StepResult,
     parse_plan,
 )
@@ -1506,3 +1508,85 @@ def test_parse_plan_extracts_numbered_steps() -> None:
     )
 
     assert plan == ["Check the account", "Place a market order", "Set a stop loss"]
+
+
+# -- waking a cycle early -------------------------------------------------------
+
+
+async def _cycles_reach(runtime: Any, count: int, within: float) -> bool:
+    for _ in range(int(within / 0.05)):
+        if runtime.state.cycles >= count:
+            return True
+        await asyncio.sleep(0.05)
+    return runtime.state.cycles >= count
+
+
+async def _slow_worker(tmp_path: Path, provider: MockProvider) -> tuple[Environment, Any]:
+    """An agent whose own interval is ten minutes, cycling once at start."""
+    environment = Environment(settings_for(tmp_path), {"ollama": provider})
+    await environment.start()
+    agent = AgentDefinition(
+        name="Worker", purpose="Work", status=AgentStatus.ACTIVE, cycle_seconds=600
+    )
+    agent.mind.add_goal("Summarize the notes")
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=0)
+    runtime = environment.runtimes[agent.id]
+    assert await _cycles_reach(runtime, 1, 5.0)
+    return environment, runtime
+
+
+async def test_a_woken_agent_cycles_now_not_at_the_end_of_its_interval(
+    tmp_path: Path,
+) -> None:
+    """Found 2026-09-24: generation 1382's edit took 37 seconds and the
+    generation fourteen minutes -- five stages each waiting out a 120-second
+    interval for work that had already finished."""
+    environment, runtime = await _slow_worker(tmp_path, ScriptedProvider())
+
+    runtime.wake()
+
+    assert await _cycles_reach(runtime, 2, WAKE_MIN_GAP + 3.0)
+    await environment.stop()
+
+
+async def test_a_finished_background_job_wakes_the_agent_that_polls_for_it(
+    tmp_path: Path,
+) -> None:
+    """notify=False jobs (a pipeline stage, a plan step) are not delivered as
+    messages -- but the agent still has to consume them, so it is woken."""
+    from evomesh.harness_queue import HarnessJob
+
+    environment, runtime = await _slow_worker(tmp_path, ScriptedProvider())
+    job = HarnessJob(
+        number=1, objective="x", root=tmp_path, agent_id=runtime.definition.id, notify=False
+    )
+
+    await environment._deliver_harness(job)  # noqa: SLF001 - the worker's own completion hook
+
+    assert await _cycles_reach(runtime, 2, WAKE_MIN_GAP + 3.0)
+    await environment.stop()
+
+
+async def test_a_cycle_that_asks_again_is_followed_at_once_but_never_in_a_spin(
+    tmp_path: Path,
+) -> None:
+    class Eager(ReflectiveBehavior):
+        async def cycle(self, context: CycleContext) -> CycleOutcome:
+            return CycleOutcome(summary="more to do", again=True)
+
+    environment = Environment(settings_for(tmp_path), {"ollama": ScriptedProvider()})
+    await environment.start()
+    agent = AgentDefinition(
+        name="Eager", purpose="Work", status=AgentStatus.ACTIVE, cycle_seconds=600
+    )
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=0)
+    runtime = environment.runtimes[agent.id]
+    runtime.behavior = Eager()
+
+    runtime.wake()
+    assert await _cycles_reach(runtime, 3, 2 * WAKE_MIN_GAP + 3.0)
+    # Asking every time still leaves WAKE_MIN_GAP between two cycles.
+    assert runtime.state.cycles <= 2 + int(8.0 / WAKE_MIN_GAP)
+    await environment.stop()

@@ -1332,6 +1332,9 @@ class EnvironmentEvolver:
         # restart into it. The evolver never restarts anything itself: it does
         # not own the process, and it must stay usable from a test and a script.
         self.on_generation_landed: Callable[[int, str], None] | None = None
+        # Set by the Environment to wake the agent driving this pipeline when
+        # a validation run finishes, so its verdict is consumed right away.
+        self.on_lane_finished: Callable[[], None] | None = None
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""
@@ -2100,7 +2103,12 @@ class EnvironmentEvolver:
             generation=generation.number,
             task=asyncio.create_task(run(), name=f"evomesh-validate-{generation.number}"),
         )
+        self.validation.task.add_done_callback(self._lane_finished)
         return self.validation
+
+    def _lane_finished(self, _task: asyncio.Task[ValidationResult]) -> None:
+        if self.on_lane_finished is not None:
+            self.on_lane_finished()
 
     def validation_run(self, number: int) -> ValidationRun | None:
         run = self.validation

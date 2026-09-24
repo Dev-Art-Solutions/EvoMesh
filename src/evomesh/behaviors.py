@@ -592,6 +592,11 @@ class EvolverBehavior(BDIBehavior):
             environment = cast("Any", context.service("environment"))
             if environment is not None:
                 await environment.announce(f"Evolution needs you: {result.summary}")
+        elif moved != stage and not result.impossible:
+            # The next stage starts from what this one just finished, and
+            # waits on nothing yet: run it now. A stage still waiting on its
+            # lane does not move, and is woken by the lane (AgentRuntime.wake).
+            result.again = True
         return result
 
     async def _run_stage(
