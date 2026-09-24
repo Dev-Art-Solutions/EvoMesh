@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1436](001436.md) — The test exercises the main (non-review) branch of `harness_repair_objective`, verifying it embeds the project, the validation command name/exit code, and the clipped output — the simplest real arguments plus the one obvious result the source shows it produces.
 - [Generation 1435](001435.md) — The source joins `(context, project, f"OBJECTIVE: {objective}", PLAN_DRAFT_RULES)`, so the objective and project both appear verbatim in the output; this is the single obvious, passing check, and only tests/ was touched.
 - [Generation 1434](001434.md) — The test reuses the existing `_patch_skill` helper and `ToolContext` construction that the other harness_tools tests already use, exercises the real delete path (`_writable`, `_permit`, `_inside`, `unlink`) with a single existing file, and asserts the single observable outcome — the file no longer exists — which is what the code under test demonstrably does.
 - [Generation 1433](001433.md) — The test calls `tool_edit` with the simplest real arguments (a two-line replacement in a pre-written file under a `tmp_path` root with `allow_write=True`) and makes a single, obvious assertion that the file now contains the replaced string and nothing else changed — exactly the behavior the docstring/under-test shows its purpose is to guarantee.

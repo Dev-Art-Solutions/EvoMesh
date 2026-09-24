@@ -15,6 +15,7 @@ from evomesh.evolution import (
     draft_plan_objective,
     evaluate_plan_objective,
     harness_objective,
+    harness_repair_objective,
     parse_plan_children,
     parse_plan_verdict,
     review_objective,
@@ -65,3 +66,11 @@ def test_draft_plan_objective_embeds_objective_and_project() -> None:
     prompt = draft_plan_objective("add a test", "evomesh")
     assert "OBJECTIVE: add a test" in prompt
     assert "evomesh" in prompt
+
+
+def test_harness_repair_objective_embeds_command_and_output() -> None:
+    failure = {"command": "uv run pytest", "exit_code": 1, "output": "assert x == 1"}
+    prompt = harness_repair_objective(failure, "evomesh", ["src/evomesh/evolution.py"])
+    assert "evomesh" in prompt
+    assert "The validation command `uv run pytest` failed with exit code 1." in prompt
+    assert "OUTPUT:\nassert x == 1" in prompt
