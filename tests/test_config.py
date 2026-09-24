@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from evomesh.config import HarnessSettings, RuntimeSettings, load_settings
+from evomesh.config import HarnessSettings, RuntimeSettings, ScrapingSettings, load_settings
 
 
 def test_a_large_num_ctx_keeps_the_configured_defaults() -> None:
@@ -216,3 +216,17 @@ def test_a_literal_api_key_still_works_with_no_ref(tmp_path: Path) -> None:
     settings = load_settings(tmp_path / "evomesh.yaml")
 
     assert settings.models.providers["openai"].api_key == "sk-literal"
+def test_scraping_settings_dump_the_values_it_is_constructed_with() -> None:
+    scraping = ScrapingSettings(
+        enabled=True,
+        executable="/usr/local/bin/scrapling",
+        timeout_seconds=45.0,
+        max_content_chars=15000,
+    )
+
+    assert scraping.model_dump() == {
+        "enabled": True,
+        "executable": "/usr/local/bin/scrapling",
+        "timeout_seconds": 45.0,
+        "max_content_chars": 15000,
+    }

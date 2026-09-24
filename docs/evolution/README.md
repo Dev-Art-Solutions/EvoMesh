@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1470](001470.md) — The test builds the Pydantic v2 `ScrapingSettings` the same way `TelegramSettings` is built in an existing test, calls the real `model_dump()` method, and asserts the dict equals the four constructed field values — the one obvious behaviour the code under test exhibits — without importing any project code that `shell` can't reach or touching anything under `src/`.
 - [Generation 1468](001468.md) — I added ONE small test to `tests/test_skills.py` for `PendingSkillWrite` (which previously had no direct coverage under `tests/`).
 - [Generation 1465](001465.md) — The new test constructs `GenerationChange` with keyword args like the existing `ObjectivePick` test, calls the constructor (a real method), and asserts the one obvious thing the code under test shows — the `kind` field defaults to `"mutation"` and `path` is stored verbatim. No source changes were made.
 - [Generation 1464](001464.md) — `ObjectivePick` is a frozen dataclass with no custom methods, so its one mechanical behavior is a field-based `__repr__`; constructing it with keyword args (like the existing `PlanNode` construction) and asserting the repr contains its fields is the simplest real call-and-assert that gives the load-bearing-but-untapped export direct coverage without mocking anything.
