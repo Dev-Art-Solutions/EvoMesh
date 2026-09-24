@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1401](001401.md) — Added `plausible_name` to the imports and appended a single test asserting `plausible_name("Trade") is True`, the simplest realistic input matching the docstring's contract that the code clearly returns True for.
 - [Generation 1397](001397.md) — `humanize_bytes` is an alias for `humanize_size`, which renders byte counts with binary IEC units at one decimal place once past "B"; 1024 bytes is exactly 1.0 KiB, so the one obvious passing check is that `humanize_bytes(1024) == "1.0 KiB"`.
 - [Generation 1396](001396.md) — The test now calls `tool_fetch(ctx, args)` with the correct positional signature (fixing the prior "missing args / no url param" pyright errors), adds the missing `tool_fetch` import, and asserts the one clear behavior the code exhibits without any network or Scrapling dependency — a `ToolDenied` when no fetcher is configured — reusing only `tmp_path`/`ToolContext` that already exist in the module, with no mocks.
 - [Generation 1392](001392.md) — The docstring defines `valid_id` as the harness's view of whether an id is in the well-formed `<namespace>:<name>` / `<namespace>/<name>` space. I passed the simplest realistic valid id, `"model"`, and asserted the one obvious thing its body shows — that it returns `True`. No mock needed (pure function reusing no stand-ins), and I only edited `tests/`, never `src/`.

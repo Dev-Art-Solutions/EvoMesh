@@ -1,4 +1,4 @@
-from evomesh.architect import derive_access, derive_model, plausible_constraints
+from evomesh.architect import derive_access, derive_model, plausible_constraints, plausible_name
 
 
 def test_derive_model_returns_the_default_provider_and_model_when_no_need_pattern_matches():
@@ -22,3 +22,9 @@ def test_derive_access_returns_none_when_no_path_is_present():
 def test_plausible_constraints_accepts_a_multi_field_constraints_string():
     # Two non-empty fields separated by ';' -> a genuine constraints block.
     assert plausible_constraints("No trading on Friday; no trading on Saturdays") is True
+
+
+def test_plausible_name_accepts_a_single_real_word_name():
+    # A short, alphabetic, single-word name has no path/sentence/empty issues,
+    # so plausible_name treats it as a genuine name.
+    assert plausible_name("Trade") is True
