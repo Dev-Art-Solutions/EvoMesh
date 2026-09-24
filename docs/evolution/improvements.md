@@ -69,3 +69,18 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     `CandidateRepairer.autofix` (`run_command(uv, *self.AUTOFIX[1:], cwd=generation.path)`)
     -- should pass `env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}`.
     Put that dict behind one small helper so both call sites share it.
+- [ ] Kill the whole process group when run_command's timeout fires
+    `run_command` is meant to run an external command "without leaving a transport behind," but on timeout it kills only the direct child; any grandchild the child spawned (a backgrounded process, a process group) becomes orphaned and keeps running. The `subprocess.run(...)` call has no `start_new_session`/`preexec_fn`, and the `except subprocess.TimeoutExpired` handler returns a fixed result without touching the group.
+    >             completed = subprocess.run(  # noqa: S603 - the caller supplies the program
+    >                 [program, *arguments],
+    >                 cwd=str(cwd) if cwd else None,
+    >                 stdout=subprocess.PIPE,
+    >                 stderr=subprocess.STDOUT,
+    >                 timeout=timeout_seconds,
+    >                 check=False,
+    >                 env=env,
+    >             )
+    >         except subprocess.TimeoutExpired as exc:
+    >             return 124, exc.output or b"", True
+    1. [ ] src/evomesh/processes.py `run_command` -- add `start_new_session=True` to the `subprocess.run(...)` call so the child leads its own process group/session, separate from the worker thread.
+    2. [ ] src/evomesh/processes.py `run_command` -- in the `except subprocess.TimeoutExpired` handler, terminate that whole process group (via `os.killpg`) before returning the timeout result, so children/grandchildren don't outlive the parent.
