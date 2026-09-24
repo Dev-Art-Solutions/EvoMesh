@@ -35,9 +35,11 @@ from evomesh.evolution import (
     PICK_IMPROVEMENT,
     PICK_PLAN,
     PICK_SCOUT,
+    PICK_TEST,
     PLAN_DIR,
     REVIEW_COMMAND,
     SOURCE_PICKS,
+    TEST_ONLY_NOTE,
     CandidateValidator,
     EnvironmentEvolver,
     Generation,
@@ -178,6 +180,11 @@ def _extract_rationale(answer: str) -> str:
         if stripped.upper().startswith(RATIONALE_MARKER):
             return stripped[len(RATIONALE_MARKER) :].strip()
     return answer
+
+
+def _source_paths(touched: list[str]) -> str:
+    """The touched paths under src/evomesh/, comma-joined ('' for none)."""
+    return ", ".join(path for path in touched if "src/evomesh/" in path.replace("\\", "/"))
 
 
 def _with_recent_failure(
@@ -679,6 +686,7 @@ class EvolverBehavior(BDIBehavior):
                 untested = evolver.untested_objective(seed)
                 if untested is not None:
                     objective = untested
+                    substantive = {"pick": PICK_TEST}
                     pair = evolver.untested_target(seed)
                     if pair is not None:
                         module, name = pair
@@ -917,6 +925,8 @@ class EvolverBehavior(BDIBehavior):
         label = item.title if item is not None else objective
 
         def accept(touched: list[str]) -> str | None:
+            if pick == PICK_TEST and (bent := _source_paths(touched)):
+                return f"it was asked for a test and changed the code under test ({bent})"
             if pick in SOURCE_PICKS and not any(
                 "src/evomesh/" in path.replace("\\", "/") for path in touched
             ):
@@ -1301,18 +1311,30 @@ class EvolverBehavior(BDIBehavior):
             # it was shown. The attempt is only counted once the job comes back,
             # so waiting for the worker never burns the repair budget.
             touched = [change.path for change in generation.changes]
+            test_only = state.get("pick") == PICK_TEST
+
+            def build() -> str:
+                objective = evolver.repair_objective(failure, touched)
+                return f"{objective}\n\n{TEST_ONLY_NOTE}" if test_only else objective
+
+            def accept(changed: list[str]) -> str | None:
+                if test_only and (bent := _source_paths(changed)):
+                    return f"a repair of a test changed the code under test ({bent})"
+                return None
+
             return await self._through_harness(
                 context,
                 evolver,
                 state,
                 generation,
-                build=lambda: evolver.repair_objective(failure, touched),
+                build=build,
                 label=f"repair {attempt}: `{failure.get('command')}` failed",
                 status="repaired",
                 on_done=lambda changed: (
                     STAGE_VALIDATE,
                     {"repairs": attempt, "review_failure": None},
                 ),
+                accept=accept,
             )
         # The linter's own fixer does not spend the budget. The budget exists to
         # bound how often a *model* is allowed to rewrite the candidate; a
@@ -1533,6 +1555,17 @@ class EvolverBehavior(BDIBehavior):
     async def _decide(
         self, evolver: EnvironmentEvolver, number: int, *, passed: bool, state: dict[str, Any]
     ) -> StepResult:
+        if passed and state.get("pick") == PICK_TEST:
+            generation = evolver.candidate(number)
+            if await evolver.candidate_changed_source(generation):
+                # A repair (or anything else) bent the code under test to fit
+                # the test it was asked to write -- see PICK_TEST.
+                logger.info(
+                    "generation %s was asked for a test and changed src/evomesh/; "
+                    "discarding instead of promoting",
+                    number,
+                )
+                passed = False
         if passed and state.get("pick") in SOURCE_PICKS:
             generation = evolver.candidate(number)
             if await evolver.candidate_changed_source(generation) is False:

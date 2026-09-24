@@ -1239,6 +1239,19 @@ PICK_RUNTIME_FAULT = "runtime-fault"
 PICK_IMPROVEMENT = "improvement"
 PICK_PLAN = "plan-item"
 PICK_SCOUT = "scout"
+# The untested-export backlog: write one test for code that already runs. The
+# mirror image of SOURCE_PICKS -- a candidate answering one must NOT differ
+# under src/evomesh/. Found live 2026-09-24: generation 1388 wrote a test that
+# fed build_adjacency() an undirected frozenset edge and expected both
+# directions back, and its repair "fixed" the directed graph code to accept a
+# set -- whose tuple() order is hash-seeded -- instead of fixing the test.
+PICK_TEST = "test"
+TEST_ONLY_NOTE = (
+    "This generation's objective is a TEST of code that already runs. If the "
+    "test fails, the test is what is wrong: fix it or delete it. Never change "
+    "anything under src/evomesh/ -- the code under test is not this objective's "
+    "to change, and a candidate that changes it is discarded."
+)
 # The picks that are, by definition, a change to how EvoMesh behaves -- a
 # candidate answering one must still differ under src/evomesh/ when it lands.
 SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT})

@@ -3116,3 +3116,66 @@ async def test_a_scout_looks_at_one_module_and_keeps_an_anchored_item(
     assert "ENDS WITH:" in task and "    3| - [x] Old item" in task
     assert harness.catalogs == [False]
     assert (await evolver.pipeline_state())["stage"] == "validate"
+
+
+# -- a test objective never changes the code under test --------------------------
+
+
+def _untested_package(root: Path) -> None:
+    package = root / "src" / "evomesh"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import helper\n', encoding="utf-8"
+    )
+    (package / "busy.py").write_text(BUSY_SOURCE, encoding="utf-8")
+    (root / "tests").mkdir(exist_ok=True)
+
+
+A_TEST = (
+    "tests/test_busy.py",
+    "from evomesh.busy import helper\n\n\ndef test_helper():\n    assert helper(1) == 1\n",
+)
+BENT = ("src/evomesh/busy.py", BUSY_SOURCE.replace("return value", "return value or 0"))
+
+
+async def test_a_test_objective_that_changes_the_code_under_test_lands_nothing(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-24: generation 1388, asked for one test of
+    build_adjacency(), wrote a wrong one and then changed the directed-graph
+    code to match it. Asked for a test, a candidate may not touch src/evomesh/."""
+    _untested_package(project)
+    validator = ScriptedValidator([passing()])
+    evolver, context, _ = await evolving(tmp_path, project, [[A_TEST, BENT]], validator)
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "test"
+    assert "helper" in state["objective"]
+
+    await behavior.cycle(context)
+
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+    assert validator.calls == 0
+
+
+async def test_a_test_objectives_repair_is_told_to_fix_the_test_and_may_not_touch_src(
+    tmp_path: Path, project: Path
+) -> None:
+    _untested_package(project)
+    validator = ScriptedValidator(
+        [failing("uv run pytest", "E   assert 1 == 2\n1 failed"), passing()]
+    )
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[A_TEST], [BENT]], validator, StubRepairer()
+    )
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(4):  # plan, propose, validate (fails), repair
+        await behavior.cycle(context)
+
+    assert len(harness.objectives) == 2
+    assert "the test is what is wrong" in harness.objectives[1]
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+    assert validator.calls == 1
