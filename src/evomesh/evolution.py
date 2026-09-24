@@ -23,6 +23,7 @@ from evomesh.codebase import (
     SCOUT_NEEDLE,
     Improvement,
     Module,
+    append_item,
     backlog_objective,
     backlog_target,
     drop_improvements,
@@ -30,6 +31,7 @@ from evomesh.codebase import (
     failure_excerpts,
     improvement_needle,
     improvement_objective,
+    item_from_answer,
     named_code,
     new_orphans,
     open_improvements,
@@ -47,6 +49,7 @@ from evomesh.codebase import (
     step_needle,
     step_objective,
     step_task,
+    steps_from_answer,
     stray_root_files,
     tick_improvement,
     tick_step,
@@ -55,6 +58,7 @@ from evomesh.codebase import (
     vet_new_improvements,
     vet_plan,
     warning_leads,
+    write_planned_steps,
     write_test_task,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
@@ -1517,6 +1521,24 @@ class EnvironmentEvolver:
         kept, dropped = vet_new_improvements(before, generation.path)
         drop_improvements(generation.path, {item.title for item, _ in dropped})
         return kept, dropped
+
+    def apply_backlog_answer(
+        self, generation: Generation, pick: str, title: str, answer: str
+    ) -> list[dict[str, Any]]:
+        """Write what a read-only plan or scout job answered into the
+        candidate's backlog, as the change entries a recorder expects -- none
+        when the answer held no step (plan) or no item (scout). What is
+        written is vetted by the same `accept` either way."""
+        root = generation.path
+        written: str | None = None
+        if pick == PICK_PLAN:
+            written = write_planned_steps(root, title, steps_from_answer(answer))
+        elif pick == PICK_SCOUT and (item := item_from_answer(answer)) is not None:
+            written = append_item(root, item)
+        if not written:
+            return []
+        diff = "\n".join(f"+{line}" for line in written.splitlines())
+        return [{"kind": "edit", "path": IMPROVEMENTS_FILE.as_posix(), "diff": diff}]
 
     def vet_plan(self, generation: Generation, title: str) -> str | None:
         """Why the steps a plan generation wrote under ``title`` cannot be

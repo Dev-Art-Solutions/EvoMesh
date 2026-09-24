@@ -17,12 +17,14 @@ from evomesh.codebase import (
     RUNTIME_LOG,
     Improvement,
     Step,
+    append_item,
     done_improvements,
     drop_improvements,
     failure_excerpts,
     failure_locations,
     find_symbol,
     improvement_objective,
+    item_from_answer,
     module_outline,
     named_code,
     open_improvements,
@@ -36,6 +38,7 @@ from evomesh.codebase import (
     scout_task,
     step_objective,
     step_task,
+    steps_from_answer,
     symbol_excerpt,
     tick_improvement,
     tick_step,
@@ -43,6 +46,7 @@ from evomesh.codebase import (
     vet_new_improvements,
     vet_plan,
     warning_leads,
+    write_planned_steps,
     write_test_task,
 )
 
@@ -556,7 +560,9 @@ def test_a_step_task_carries_the_code_and_not_the_whole_project(tmp_path: Path) 
     assert len(task) < 3000
 
 
-def test_a_plan_task_carries_the_outline_and_the_item(tmp_path: Path) -> None:
+def test_a_plan_task_carries_the_outline_and_asks_for_steps_in_the_answer(
+    tmp_path: Path,
+) -> None:
     _busy_package(tmp_path)
     _write_backlog(tmp_path, "- [ ] Count\n    In src/evomesh/busy.py nothing counts.\n")
 
@@ -564,19 +570,86 @@ def test_a_plan_task_carries_the_outline_and_the_item(tmp_path: Path) -> None:
 
     assert "OUTLINE -- src/evomesh/busy.py" in task
     assert "   13|     def bump(self):" in task
-    assert "    1| - [ ] Count\n    2|     In src/evomesh/busy.py nothing counts." in task
-    assert "1. [ ] src/evomesh/<module>.py" in task
+    assert "END YOUR ANSWER with the steps" in task
+    assert "1. src/evomesh/<module>.py `<Name or Class.method>`" in task
+    assert "edit" not in task.replace("edit anything", "")
 
 
-def test_a_scout_task_carries_the_outline_and_the_backlog_tail(tmp_path: Path) -> None:
+def test_a_scout_task_carries_the_outline_and_asks_for_the_item_in_the_answer(
+    tmp_path: Path,
+) -> None:
     _busy_package(tmp_path)
-    _write_backlog(tmp_path, "# B\n\n- [x] Old\n    why\n\n\n")
+    _write_backlog(tmp_path, "# B\n\n- [x] Old\n    why\n")
 
     task = scout_task(tmp_path, scout_objective(tmp_path, "busy"), "busy")
 
     assert "OUTLINE -- src/evomesh/busy.py" in task
-    # Ends on the last line with something on it -- the edit's anchor.
-    assert "ENDS WITH:\n    2| \n    3| - [x] Old\n    4|     why\n\n" in task
+    assert "END YOUR ANSWER with the item" in task
+    assert "ENDS WITH" not in task
+
+
+def test_steps_are_read_out_of_an_answer_however_they_are_dressed() -> None:
+    answer = (
+        "I looked at both.\n"
+        "```\n"
+        "1. src/evomesh/busy.py `Counter.bump` -- count discards too\n"
+        "- 2. [ ] `src/evomesh/busy.py` `LIMIT`: raise it to 20\n"
+        "3) src/evomesh/busy.py `helper` — double it\n"
+        "```\n"
+        "RATIONALE: 1. src/evomesh/busy.py `helper` -- not a step\n"
+    )
+
+    steps = steps_from_answer(answer)
+
+    assert [(s.number, s.symbol, s.change) for s in steps] == [
+        (1, "Counter.bump", "count discards too"),
+        (2, "LIMIT", "raise it to 20"),
+        (3, "helper", "double it"),
+    ]
+
+
+def test_an_item_is_read_out_of_a_scouts_answer() -> None:
+    answer = (
+        "Found one.\n"
+        "- [ ] **Stop swallowing the cause**\n"
+        "`helper` hides the error.\n"
+        "> return value\n"
+        "1. src/evomesh/busy.py `helper` -- raise instead\n"
+        "Some closing remark.\n"
+        "- [ ] A second item nobody asked for\n"
+    )
+
+    item = item_from_answer(answer)
+
+    assert item is not None
+    assert item.title == "Stop swallowing the cause"
+    assert item.detail == "`helper` hides the error.\n> return value"
+    assert [step.symbol for step in item.steps] == ["helper"]
+    assert item_from_answer("no item here") is None
+
+
+def test_written_steps_and_items_read_back_as_the_same_backlog(tmp_path: Path) -> None:
+    _write_backlog(tmp_path, "# B\n\n- [ ] Count\n    why it matters\n- [x] Old\n    done\n")
+
+    written = write_planned_steps(
+        tmp_path, "Count", steps_from_answer("1. src/evomesh/busy.py `helper` -- count")
+    )
+    appended = append_item(
+        tmp_path,
+        Improvement(
+            "New one", "> return value", (Step(1, "src/evomesh/busy.py", "LIMIT", "raise"),)
+        ),
+    )
+
+    assert written == "    1. [ ] src/evomesh/busy.py `helper` -- count\n"
+    assert appended.startswith("- [ ] New one\n    > return value\n")
+    count, new = open_improvements(tmp_path)
+    assert count.detail == "why it matters"
+    assert [step.symbol for step in count.steps] == ["helper"]
+    assert new.detail == "> return value"
+    assert [step.symbol for step in new.steps] == ["LIMIT"]
+    assert done_improvements(tmp_path) == ["Old"]
+    assert write_planned_steps(tmp_path, "Missing", list(count.steps)) is None
 
 
 def test_vet_plan_wants_real_anchors_and_nothing_else_touched(tmp_path: Path) -> None:

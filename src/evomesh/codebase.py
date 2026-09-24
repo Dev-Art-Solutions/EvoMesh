@@ -1524,27 +1524,6 @@ def module_outline(
     )
 
 
-def _backlog_rows(root: Path, title: str | None) -> list[str]:
-    """Numbered backlog lines: item ``title``'s own block, or with ``None``,
-    the file's last three lines."""
-    path = root / IMPROVEMENTS_FILE
-    if not path.is_file():
-        return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    if title is None:
-        # Up to the last line with something on it: that is the edit anchor.
-        last = max((number for number, line in enumerate(lines, 1) if line.strip()), default=0)
-        return _numbered(lines, max(1, last - 2), last)
-    for index, line in enumerate(lines):
-        match = _OPEN_ITEM.match(line)
-        if match is not None and match.group("title") == title:
-            end = index + 1
-            while end < len(lines) and lines[end].strip() and _continues(lines[end]):
-                end += 1
-            return _numbered(lines, index + 1, end)
-    return []
-
-
 def _step_rules(path: str) -> str:
     return "\n".join(
         (
@@ -1575,47 +1554,39 @@ _ANCHOR_RULE = (
 )
 PLAN_RULES = "\n".join(
     (
-        "Rules -- the steps are the plan, and nothing else is:",
+        "Rules -- the steps are the plan, and your answer is where they go:",
+        "- This job cannot edit anything and does not need to: END YOUR ANSWER with "
+        "the steps, one per line, exactly:",
+        "1. src/evomesh/<module>.py `<Name or Class.method>` -- <the change, in one "
+        "sentence>",
         "- Write 1 to 3 steps. Order them so each works on its own once the ones "
         "before it have landed: validation runs after every step.",
         _ANCHOR_RULE,
-        f"- Put them right after the item's last line in {IMPROVEMENTS_FILE.as_posix()}, "
-        "indented four spaces, one per line, exactly:",
-        "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
-        "in one sentence>",
-        "- Use edit on that file: `old` = the item's last line as shown above, "
-        "without the `NNNNN| ` prefix (number, bar, ONE space); `new` = that line "
-        "followed by your steps. "
-        "Change nothing else in the file and no code anywhere.",
         "- Read a function (offset and limit from the OUTLINE's line numbers) only "
         "when its name does not tell you enough.",
-        "- End with one line starting exactly with 'RATIONALE:'.",
+        "- Then one last line starting exactly with 'RATIONALE:'.",
     )
 )
 SCOUT_RULES = "\n".join(
     (
         "Rules -- one well-anchored item beats five vague ones:",
         "- Read two or three functions from the OUTLINE (offset and limit, never "
-        "the whole file), then write. A log line may predate a fix: read the code "
-        "before trusting it.",
+        "the whole file). A log line may predate a fix: read the code before "
+        "trusting it.",
         "- It must change behavior in src/evomesh/: no item that only adds tests, "
         "docs, comments, type hints or renames.",
-        f"- Append it after the last line of {IMPROVEMENTS_FILE.as_posix()} (shown "
-        "above), exactly in this shape, with 1 to 3 steps:",
-        "- [ ] <short imperative title>",
-        "    <what is wrong today and how you know: the code you read, or the log line>",
-        "    > <a line of code that shows it, copied exactly from the file>",
-        "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
-        "in one sentence>",
+        "- This job cannot edit anything and does not need to: END YOUR ANSWER with "
+        "the item, exactly in this shape, with 1 to 3 steps:",
+        "[ ] <short imperative title>",
+        "<what is wrong today and how you know: the code you read, or the log line>",
+        "> <a line of code that shows it, copied exactly from the file>",
+        "1. src/evomesh/<module>.py `<Name or Class.method>` -- <the change, in one "
+        "sentence>",
         "- Say only what the code you READ does, and prove it: at least one `> ` line "
         "copied character-for-character from the file (without the `NNNNN| ` "
         "prefix). An item whose quote is in none of its files is thrown away.",
         _ANCHOR_RULE,
-        "- Use edit: `old` = the file's last line as shown above, without the "
-        "`NNNNN| ` prefix (number, bar, ONE space); `new` = that line followed by "
-        "your item. Never tick or "
-        "remove an item.",
-        "- End with one line starting exactly with 'RATIONALE:'.",
+        "- Then one last line starting exactly with 'RATIONALE:'.",
     )
 )
 
@@ -1633,7 +1604,8 @@ def step_task(root: Path, objective: str, path: str, symbol: str) -> str:
 
 def plan_task(root: Path, objective: str, title: str) -> str:
     """The whole harness task that splits item ``title`` into steps: the
-    outlines of the (at most two) files it names, and the item's own lines."""
+    outlines of the (at most two) files it names. The item itself is already
+    in ``objective``, and the answer, not an edit, is where the steps go."""
     item = next((item for item in open_improvements(root) if item.title == title), None)
     paths = item.source_paths[:2] if item is not None else []
     focus = outline_focus(item) if item is not None else frozenset[str]()
@@ -1647,25 +1619,17 @@ def plan_task(root: Path, objective: str, title: str) -> str:
             "OUTLINE: the item names no src/evomesh/ file -- grep for the function "
             "it is about, and anchor on what you find."
         )
-    rows = "\n".join(_backlog_rows(root, title))
-    parts.append(f"THE ITEM IN {IMPROVEMENTS_FILE.as_posix()}, as it stands:\n{rows}")
     parts.append(PLAN_RULES)
     return "\n\n".join(parts)
 
 
 def scout_task(root: Path, objective: str, module: str) -> str:
-    """The whole harness task for a scout of ``module``: its outline, and the
-    backlog's last lines to append after."""
+    """The whole harness task for a scout of ``module``: its outline, and rules
+    that put the item in the answer rather than in an edit."""
     path = f"src/evomesh/{module}.py"
     outline = module_outline(root, path) or "(the file is missing)"
-    rows = "\n".join(_backlog_rows(root, None))
     return "\n\n".join(
-        (
-            objective,
-            f"OUTLINE -- {path} (line| definition):\n{outline}",
-            f"{IMPROVEMENTS_FILE.as_posix()} ENDS WITH:\n{rows}",
-            SCOUT_RULES,
-        )
+        (objective, f"OUTLINE -- {path} (line| definition):\n{outline}", SCOUT_RULES)
     )
 
 
@@ -1811,3 +1775,117 @@ REPAIR_RULES = "\n".join(
         "- End with one line starting exactly with 'RATIONALE:'.",
     )
 )
+
+
+# -- Plans and scouts answer; the pipeline writes ------------------------------
+# A plan or a scout job is read-only and ends its answer with the steps (or the
+# item); the pipeline writes them into the candidate's backlog and vets them
+# there. Found 2026-09-24: when those jobs wrote improvements.md themselves,
+# every one of the first four lost edits to copying an anchor out of a numbered
+# read (a space too many, the wrong last line), and each was handed eight tools
+# -- four of them for writing -- to produce what is, in the end, a few lines of
+# text. Read-only, it is three tools and no anchor to get wrong.
+_ANSWER_STEP = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\d+[.)]\s*)?(?:\[[ xX]\]\s*)?"
+    r"`?(?P<path>src/evomesh/\w+\.py)`?\s+"
+    r"`(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)`"
+    r"\s*(?:--|:|-|—|–)?\s*(?P<change>\S.*?)\s*$"
+)
+_ANSWER_ITEM = re.compile(r"^\s*(?:[-*]\s*)?\[ \]\s*(?P<title>\S.*?)\s*$")
+
+
+def _answer_lines(answer: str) -> list[str]:
+    return [
+        line.rstrip()
+        for line in answer.splitlines()
+        if not line.strip().startswith("```")
+        and not line.strip().upper().startswith("RATIONALE:")
+    ]
+
+
+def _answer_step(number: int, line: str) -> Step | None:
+    match = _ANSWER_STEP.match(line)
+    if match is None:
+        return None
+    return Step(number, match.group("path"), match.group("symbol"), match.group("change"))
+
+
+def steps_from_answer(answer: str) -> list[Step]:
+    """Every step line in a plan job's answer, numbered in the order given."""
+    steps: list[Step] = []
+    for line in _answer_lines(answer):
+        if (step := _answer_step(len(steps) + 1, line)) is not None:
+            steps.append(step)
+    return steps
+
+
+def item_from_answer(answer: str) -> Improvement | None:
+    """The first ``[ ] title`` in a scout's answer, with the detail and steps
+    under it, or ``None`` when it wrote none."""
+    lines = _answer_lines(answer)
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if _ANSWER_STEP.match(line) is None and _ANSWER_ITEM.match(line)
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    header = _ANSWER_ITEM.match(lines[start])
+    assert header is not None
+    detail: list[str] = []
+    steps: list[Step] = []
+    for line in lines[start + 1 :]:
+        if (step := _answer_step(len(steps) + 1, line)) is not None:
+            steps.append(step)
+        elif _ANSWER_ITEM.match(line) or (steps and line.strip()):
+            break  # the next item, or prose after the steps: not this item's
+        elif line.strip():
+            detail.append(line.strip())
+    title = header.group("title").strip("*_ ")
+    return Improvement(title, "\n".join(detail), tuple(steps))
+
+
+def _step_line(step: Step) -> str:
+    return f"    {step.number}. [ ] {step.path} `{step.symbol}` -- {step.change}"
+
+
+def write_planned_steps(root: Path, title: str, steps: list[Step]) -> str | None:
+    """Put ``steps`` under open item ``title`` in ``root``'s backlog; the
+    lines written, or ``None`` when there is no such item."""
+    path = root / IMPROVEMENTS_FILE
+    if not steps or not path.is_file():
+        return None
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        match = _OPEN_ITEM.match(line.rstrip("\r\n"))
+        if match is None or match.group("title") != title:
+            continue
+        end = index + 1
+        while end < len(lines) and lines[end].strip() and _continues(lines[end]):
+            end += 1
+        if not lines[end - 1].endswith("\n"):
+            lines[end - 1] += "\n"
+        written = "".join(f"{_step_line(step)}\n" for step in steps)
+        lines.insert(end, written)
+        path.write_text("".join(lines), encoding="utf-8")
+        return written
+    return None
+
+
+def append_item(root: Path, item: Improvement) -> str:
+    """Append ``item`` to the end of ``root``'s backlog; the lines written."""
+    path = root / IMPROVEMENTS_FILE
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    block = "\n".join(
+        (
+            f"- [ ] {item.title}",
+            *(f"    {line}" for line in item.detail.splitlines() if line.strip()),
+            *(_step_line(step) for step in item.steps),
+        )
+    )
+    separator = "" if not text or text.endswith("\n") else "\n"
+    path.write_text(f"{text}{separator}{block}\n", encoding="utf-8")
+    return block

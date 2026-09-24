@@ -2920,16 +2920,14 @@ async def test_a_scout_that_names_only_imaginary_code_lands_nothing(
     writing one more test -- but an item naming code that does not exist is
     stripped, and a scout left with none is a no-op, not a landed backlog."""
     _seed_package(project, "# Backlog\n\n- [x] Old item\n")
-    invented = (
-        "# Backlog\n\n- [x] Old item\n"
-        "- [ ] Speed up the imaginary cache\n"
-        "    In src/evomesh/nowhere.py, `warm_cache()` rebuilds everything on every cycle,\n"
-        "    which is slow; cache it between cycles instead.\n"
-        "    1. [ ] src/evomesh/nowhere.py `warm_cache` -- cache it\n"
-    )
     validator = ScriptedValidator([passing()])
-    evolver, context, harness = await evolving(
-        tmp_path, project, [[("docs/evolution/improvements.md", invented)]], validator
+    evolver, context, harness = await evolving(tmp_path, project, [NOTHING], validator)
+    harness.answer = (
+        "- [ ] Speed up the imaginary cache\n"
+        "In src/evomesh/nowhere.py, `warm_cache()` rebuilds everything on every cycle,\n"
+        "which is slow; cache it between cycles instead.\n"
+        "> self._cache = build_everything()\n"
+        "1. src/evomesh/nowhere.py `warm_cache` -- cache it\n"
     )
     behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
 
@@ -3041,14 +3039,16 @@ async def test_a_step_answered_in_another_file_lands_nothing(
 async def test_an_item_without_steps_is_planned_before_anyone_codes_it(
     tmp_path: Path, project: Path
 ) -> None:
-    """The plan is the steps, and the evaluation is code: one job writes them
-    under the item with the file's outline in hand, and they go on to
-    validation only if every anchor exists."""
+    """The plan is the steps, and the evaluation is code. The job only reads --
+    three tools, no anchor to copy -- and answers with the steps; the pipeline
+    writes them under the item and validates only if every anchor exists."""
     _seed_package(project, UNPLANNED_BACKLOG)
-    planned = UNPLANNED_BACKLOG + "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
     validator = ScriptedValidator([passing()])
-    evolver, context, harness = await evolving(
-        tmp_path, project, [[("docs/evolution/improvements.md", planned)]], validator
+    evolver, context, harness = await evolving(tmp_path, project, [NOTHING], validator)
+    harness.answer = (
+        "I read helper.\n"
+        "1. src/evomesh/busy.py `helper` -- return value * 2\n"
+        "RATIONALE: one step, the only function involved."
     )
     behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
 
@@ -3061,20 +3061,26 @@ async def test_an_item_without_steps_is_planned_before_anyone_codes_it(
 
     task = harness.objectives[0]
     assert "OUTLINE -- src/evomesh/busy.py (line| definition):\n    4| def helper(value):" in task
-    assert "    3| - [ ] Double the helper" in task
+    assert "END YOUR ANSWER with the steps" in task
     assert harness.catalogs == [False]
     assert (await evolver.pipeline_state())["stage"] == "validate"
+    generation = evolver.latest_candidate()
+    assert generation is not None
+    backlog = (generation.path / "docs" / "evolution" / "improvements.md").read_text(
+        encoding="utf-8"
+    )
+    assert backlog.endswith(
+        "what it gets.\n    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+    )
 
 
 async def test_a_plan_naming_code_that_is_not_there_lands_nothing(
     tmp_path: Path, project: Path
 ) -> None:
     _seed_package(project, UNPLANNED_BACKLOG)
-    planned = UNPLANNED_BACKLOG + "    1. [ ] src/evomesh/busy.py `double_it` -- add it\n"
     validator = ScriptedValidator([passing()])
-    evolver, context, _ = await evolving(
-        tmp_path, project, [[("docs/evolution/improvements.md", planned)]], validator
-    )
+    evolver, context, harness = await evolving(tmp_path, project, [NOTHING], validator)
+    harness.answer = "1. src/evomesh/busy.py `double_it` -- add it\nRATIONALE: x"
     behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
 
     await behavior.cycle(context)
@@ -3089,18 +3095,19 @@ async def test_a_scout_looks_at_one_module_and_keeps_an_anchored_item(
 ) -> None:
     """The first scout was asked for 2 to 5 problems anywhere in EvoMesh and
     read 31 file windows without writing one. A scout now gets one module's
-    outline and the backlog's last lines, and its item needs steps."""
+    outline, reads, and answers with one item; the pipeline appends it."""
     _seed_package(project, "# Backlog\n\n- [x] Old item\n")
-    scouted = (
-        "# Backlog\n\n- [x] Old item\n"
-        "- [ ] Double the helper\n"
-        "    helper() returns what it gets, and every caller doubles it by hand.\n"
-        "    > return value\n"
-        "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
-    )
     validator = ScriptedValidator([passing()])
-    evolver, context, harness = await evolving(
-        tmp_path, project, [[("docs/evolution/improvements.md", scouted)]], validator
+    evolver, context, harness = await evolving(tmp_path, project, [NOTHING], validator)
+    harness.answer = (
+        "Here is what I found.\n"
+        "```\n"
+        "- [ ] Double the helper\n"
+        "helper() returns what it gets, and every caller doubles it by hand.\n"
+        "> return value\n"
+        "1. src/evomesh/busy.py `helper` -- return value * 2\n"
+        "```\n"
+        "RATIONALE: callers repeat the doubling."
     )
     behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
 
@@ -3113,9 +3120,20 @@ async def test_a_scout_looks_at_one_module_and_keeps_an_anchored_item(
 
     task = harness.objectives[0]
     assert "OUTLINE -- src/evomesh/busy.py (line| definition):\n    4| def helper(value):" in task
-    assert "ENDS WITH:" in task and "    3| - [x] Old item" in task
+    assert "END YOUR ANSWER with the item" in task
     assert harness.catalogs == [False]
     assert (await evolver.pipeline_state())["stage"] == "validate"
+    generation = evolver.latest_candidate()
+    assert generation is not None
+    backlog = (generation.path / "docs" / "evolution" / "improvements.md").read_text(
+        encoding="utf-8"
+    )
+    assert backlog.endswith(
+        "- [x] Old item\n- [ ] Double the helper\n"
+        "    helper() returns what it gets, and every caller doubles it by hand.\n"
+        "    > return value\n"
+        "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+    )
 
 
 # -- a test objective never changes the code under test --------------------------

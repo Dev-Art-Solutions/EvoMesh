@@ -995,9 +995,20 @@ class EvolverBehavior(BDIBehavior):
             ),
             on_no_op=on_no_op,
             accept=accept,
-            # A scout or a plan writes the backlog and nothing else.
+            # A scout or a plan only reads: its answer is the backlog entry,
+            # and the pipeline writes it (see apply_backlog_answer).
             write_prefix="docs/evolution" if pick in BACKLOG_PICKS else None,
             catalog=not anchored,
+            allow_write=pick not in BACKLOG_PICKS,
+            apply_answer=(
+                (
+                    lambda answer: evolver.apply_backlog_answer(
+                        generation, str(pick), str(state.get("pick_key", "")), answer
+                    )
+                )
+                if pick in BACKLOG_PICKS
+                else None
+            ),
             # Only a decomposed leaf gets the tight budget: it was already
             # split down to "one small change to one module that already
             # runs" (PLAN_DECOMPOSE_RULES), so it should not need more room
@@ -1028,6 +1039,8 @@ class EvolverBehavior(BDIBehavior):
         max_seconds: float | None = None,
         accept: Callable[[list[str]], str | None] | None = None,
         catalog: bool = True,
+        allow_write: bool = True,
+        apply_answer: Callable[[str], list[dict[str, Any]]] | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -1091,6 +1104,7 @@ class EvolverBehavior(BDIBehavior):
                 max_steps=max_steps,
                 max_seconds=max_seconds,
                 catalog=catalog,
+                allow_write=allow_write,
                 # This pipeline polls `harness.job(state["job"])` again every
                 # cycle until it finishes (see below) -- an inbox delivery on
                 # top of that would hand the Evolver its own stage result a
@@ -1119,9 +1133,11 @@ class EvolverBehavior(BDIBehavior):
         recorder = record or evolver.record_harness_changes
         standing_objective = str(state.get("objective", ""))
         record_objective = record_key if record_key is not None else standing_objective
-        touched = await recorder(
-            generation, harness.changes(job), record_objective, rationale, status
-        )
+        entries = harness.changes(job)
+        if apply_answer is not None:
+            # A read-only job whose answer is the change: the pipeline writes it.
+            entries = [*entries, *apply_answer(answer)]
+        touched = await recorder(generation, entries, record_objective, rationale, status)
         # `touched` is the session's own log of what it wrote, not what is
         # still there -- a job that edits a file and then edits it back within
         # the same session reports both, non-empty, even though the working
