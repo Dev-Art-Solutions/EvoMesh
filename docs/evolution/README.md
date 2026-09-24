@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1452](001452.md) — `derive_skills` matches a human's sentence against installed skills (name→description), returning each skill whose name or description contains a word from the need (after STOP_WORDS are filtered out); the simplest realistic assertion is that mentioning "markdown" against a single Markdown.Read skill returns exactly `["Markdown.Read"]`.
 - [Generation 1449](001449.md) — The test directly exercises the code under test — `agent_label("trader")` returns `"Trader"` per `_AGENT_LABELS` — which is the simplest realistic call and the one real, observable behavior, matching the style of the analogous `test_phase_label.py`/`test_verdict_label.py` without inventing any mocks.
 - [Generation 1447](001447.md) — Added a single, minimal test calling `directed_pair_count` with realistic edge arguments and asserting the one obvious result it produces, without modifying any source under src/evomesh/.
 - [Generation 1441](001441.md) — The simplest realistic call is a full sentence with an explicit `named "X"` token; the code's first branch (`if explicit: return _title(explicit.group(1).strip())`) deterministically returns that stated name, which is the one obvious, passing check worth asserting.

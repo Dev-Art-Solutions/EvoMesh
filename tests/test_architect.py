@@ -2,6 +2,7 @@ from evomesh.architect import (
     derive_access,
     derive_model,
     derive_name,
+    derive_skills,
     plausible_constraints,
     plausible_name,
     plausible_purpose,
@@ -49,3 +50,13 @@ def test_derive_name_returns_the_explicitly_named_name_when_given_a_sentence():
     # An explicit `named "..."` token wins: the name that was stated is what comes
     # back, title-cased.
     assert derive_name("Please create an agent named Mercury") == "Mercury"
+
+
+def test_derive_skills_returns_the_installed_skill_the_need_mentions():
+    # derive_skills matches the human's sentence against whatever skills the
+    # registry currently holds (name -> description), so a word in the need that
+    # appears in a skill's name or description is the reason that skill is kept.
+    assert derive_skills(
+        "I need an agent that reads markdown files",
+        {"Markdown.Read": "Reads markdown documents"},
+    ) == ["Markdown.Read"]
