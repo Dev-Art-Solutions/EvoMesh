@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from evomesh.harness_tools import ToolContext, tool_patch_skill, tool_write
+from evomesh.harness_tools import ToolContext, tool_patch_skill, tool_write, valid_id
 
 
 async def _patch_skill(name: str, old: str, new: str) -> str:
@@ -19,3 +19,7 @@ async def test_tool_write_creates_the_file_it_is_asked_to(tmp_path):
     ctx = ToolContext(root=tmp_path, patch_skill=_patch_skill, allow_write=True)
     await tool_write(ctx, {"path": "hello.txt", "content": "hi"})
     assert (tmp_path / "hello.txt").read_text(encoding="utf-8") == "hi"
+
+
+def test_valid_id_accepts_a_wellformed_id():
+    assert valid_id("model") is True
