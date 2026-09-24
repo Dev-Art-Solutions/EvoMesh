@@ -58,7 +58,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     the `/evolution status` output (`ConsoleChannel._command_evolution` in
     src/evomesh/console.py), e.g. `recent: 4 promoted, 16 discarded of the last 20`.
     1. [x] src/evomesh/evolution.py `GenerationSupervisor.promote` -- append the outcome `promoted` to a capped list (keep the last 20) stored in the supervisor metadata, creating the key on first use.
-    2. [ ] src/evomesh/evolution.py `GenerationSupervisor.discard` -- append the outcome `discarded` to that same last-20 list in the supervisor metadata, alongside what `promote` writes.
+    2. [x] src/evomesh/evolution.py `GenerationSupervisor.discard` -- append the outcome `discarded` to that same last-20 list in the supervisor metadata, alongside what `promote` writes.
     3. [ ] src/evomesh/console.py `ConsoleChannel._command_evolution` -- add one line summarising the last ~20 outcomes (e.g. `recent: 4 promoted, 16 discarded of the last 20`), built from the list `promote` and `discard` maintain.
 - [x] Actually pass the VIRTUAL_ENV-free environment to the candidate's uv commands
     Generation 1370 added `env: Mapping[str, str] | None = None` to `run_command` in

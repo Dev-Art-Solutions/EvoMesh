@@ -775,6 +775,9 @@ class GenerationSupervisor:
         if candidates.pop(str(number), None) is None:
             raise ValueError(f"Generation {number} is not a known candidate")
         metadata["candidates"] = candidates
+        history = list(metadata.get("recent_outcomes", []))
+        history.append("discarded")
+        metadata["recent_outcomes"] = history[-20:]
         self._write(metadata)
 
     def rollback(self) -> None:
