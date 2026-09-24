@@ -25,6 +25,7 @@ from evomesh.harness import (
     HarnessRunner,
     build_runner,
     compact,
+    message_size,
     parse_text_call,
 )
 from evomesh.harness_queue import (
@@ -1181,6 +1182,69 @@ def test_compaction_drops_the_oldest_output_and_never_the_task() -> None:
     assert kept[2].content.startswith("[dropped 5000 characters of read output")
     assert kept[4].content == "y" * 5000, "the newest result is the one it still needs"
     assert size <= 6000
+
+
+def test_compaction_never_lets_narration_blind_the_model_to_its_newest_result() -> None:
+    """Found live 2026-09-24: narration was never cut, so once the task plus
+    what the model had said outgrew the budget, every new result was dropped
+    unseen -- 20 of 250 jobs ran blind for part of their steps."""
+    messages = [ChatMessage(role="user", content="t" * 5000)]
+    for turn in range(10):
+        messages.append(ChatMessage(role="assistant", content=f"{turn}" + "n" * 799))
+        messages.append(ChatMessage(role="tool", content="r" * 300, name="read"))
+    messages.append(ChatMessage(role="assistant", content="read the next part"))
+    messages.append(ChatMessage(role="tool", content="z" * 3000, name="read"))
+
+    kept, size = compact(messages, 12000)
+
+    assert size <= 12000
+    assert kept[0].content == "t" * 5000
+    assert kept[-1].content == "z" * 3000, "the newest result is never the price"
+    assistant = [message for message in kept if message.role == "assistant"]
+    assert assistant[0].content.endswith("chars elided]")
+    assert [message.content for message in assistant[-3:]] == [
+        message.content for message in messages if message.role == "assistant"
+    ][-3:]
+
+
+def test_compaction_counts_and_elides_old_tool_call_arguments() -> None:
+    """A `write`'s whole file goes back to the server on every turn; it used
+    to count for nothing. A Gemini call with a thought_signature is left whole."""
+    big = {"path": "src/x.py", "content": "c" * 9000}
+    messages = [
+        ChatMessage(role="user", content="task"),
+        ChatMessage(role="assistant", tool_calls=[ToolCall("write", dict(big))]),
+        ChatMessage(role="tool", content="wrote", name="write"),
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall("write", dict(big), thought_signature="sig")],
+        ),
+        ChatMessage(role="tool", content="wrote", name="write"),
+        *[ChatMessage(role="assistant", content="step") for _ in range(3)],
+    ]
+
+    assert message_size(messages[1]) > 9000
+    kept, _ = compact(messages, 12000)
+
+    assert kept[1].tool_calls[0].arguments["path"] == "src/x.py"
+    assert kept[1].tool_calls[0].arguments["content"].endswith("chars elided]")
+    assert kept[1].tool_calls[0].id == messages[1].tool_calls[0].id
+    assert kept[3].tool_calls[0].arguments["content"] == "c" * 9000
+
+
+def test_compaction_cuts_the_newest_result_last_and_never_below_its_floor() -> None:
+    messages = [
+        ChatMessage(role="user", content="t" * 11000),
+        ChatMessage(role="assistant", content="read it"),
+        ChatMessage(role="tool", content="z" * 5000, name="read"),
+    ]
+
+    kept, _ = compact(messages, 12000)
+
+    assert kept[-1].content.startswith("z" * 1500)
+    assert "z" * 1501 not in kept[-1].content
+    assert "more characters cut to fit the transcript" in kept[-1].content
+    assert kept[0].content == "t" * 11000
 
 
 def test_compaction_leaves_a_transcript_that_already_fits_alone() -> None:

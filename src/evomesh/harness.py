@@ -22,8 +22,8 @@ import json
 import logging
 import shlex
 import time
-from collections.abc import Awaitable, Callable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -223,34 +223,118 @@ class HarnessResult:
         )
 
 
-def compact(messages: list[ChatMessage], limit: int) -> tuple[list[ChatMessage], int]:
-    """Drop the oldest tool results until the transcript fits, and say so.
+# Assistant turns kept whole however tight the budget: what the model was just
+# doing. Older ones keep this much of their narration and of each long argument.
+RECENT_TURNS = 3
+ELIDED_KEEP = 160
+# The newest tool result is never cut below this: it is what the model asked
+# for one step ago, and a job that cannot see it cannot do anything with it.
+NEWEST_RESULT_FLOOR = 1500
+_ELIDED = "chars elided]"
 
-    Rule 3 applied to the loop rather than to one tool. The task and every
-    assistant turn survive: a turn is the model's own reasoning about what it is
-    doing and it is small, while a tool result is a file -- large, and something
-    the model can simply read again. What is dropped leaves a marker naming the
-    tool and the size, so the model can tell "I have not read that" from "I read
-    it and it said nothing".
+
+def message_size(message: ChatMessage) -> int:
+    """What a message really costs the model: its text and its tool calls'
+    arguments, which go back to the server on every turn as well."""
+    return len(message.content) + sum(
+        len(json.dumps(call.arguments, default=str)) for call in message.tool_calls
+    )
+
+
+def _elide(text: str) -> str:
+    if len(text) <= ELIDED_KEEP + 40 or text.endswith(_ELIDED):
+        return text
+    return f"{text[:ELIDED_KEEP]} [... {len(text) - ELIDED_KEEP} {_ELIDED}"
+
+
+def _elided_turn(message: ChatMessage) -> ChatMessage:
+    """An old assistant turn, its narration and its long arguments cut short.
+
+    A call carrying a thought_signature is left exactly as it was: Gemini checks
+    that opaque value against the call it was minted for (see ToolCall).
     """
-    total = sum(len(message.content) for message in messages)
+    calls = [
+        call
+        if call.thought_signature
+        else replace(
+            call,
+            arguments={
+                key: _elide(value) if isinstance(value, str) else value
+                for key, value in call.arguments.items()
+            },
+        )
+        for call in message.tool_calls
+    ]
+    return replace(message, content=_elide(message.content), tool_calls=calls)
+
+
+def compact(messages: list[ChatMessage], limit: int) -> tuple[list[ChatMessage], int]:
+    """Cut the transcript down to ``limit``, oldest first, and say so.
+
+    Rule 3 applied to the loop rather than to one tool. In order, until it fits:
+    the oldest tool results (a file can simply be read again); then the
+    narration and long arguments of all but the last few assistant turns; then
+    the results of the newest turn but its last; and only then the newest
+    result itself, never below NEWEST_RESULT_FLOOR. The task is never touched.
+    What is dropped leaves a marker naming the tool and the size, so the model
+    can tell "I have not read that" from "I read it and it said nothing".
+
+    Found live 2026-09-24: this used to cut tool results only, and count only
+    message text. The model's own narration was never cut, so past a point the
+    task plus what the model had said about it outgrew the whole budget and
+    *every* new result was dropped before it was seen -- 20 of 250 recent jobs,
+    6% of all steps, run blind (generation 1375 from step 48 of 60, sure by then
+    that its read tool was returning fabricated content). Tool-call arguments
+    (a `write`'s whole file, a `python -c` script) were sent every turn and never
+    counted at all: 14429 characters of them in that one job.
+    """
+    total = sum(message_size(message) for message in messages)
     if total <= limit:
         return messages, total
     kept = list(messages)
-    for index, message in enumerate(kept):
+    assistants = [index for index, message in enumerate(kept) if message.role == "assistant"]
+    newest_turn = assistants[-1] if assistants else 0
+
+    def swap(index: int, message: ChatMessage) -> None:
+        nonlocal total
+        total += message_size(message) - message_size(kept[index])
+        kept[index] = message
+
+    def drop_results(indices: Iterable[int]) -> None:
+        for index in indices:
+            if total <= limit:
+                return
+            message = kept[index]
+            if index == 0 or message.role != "tool" or message.content.startswith("[dropped"):
+                continue
+            swap(
+                index,
+                replace(
+                    message,
+                    content=f"[dropped {len(message.content)} characters of "
+                    f"{message.name or 'tool'} output; run it again if you still need it]",
+                ),
+            )
+
+    drop_results(range(newest_turn))
+    for index in assistants[:-RECENT_TURNS]:
         if total <= limit:
             break
-        if index == 0 or message.role != "tool" or message.content.startswith("[dropped"):
-            continue
-        dropped = len(message.content)
-        kept[index] = ChatMessage(
-            role=message.role,
-            content=f"[dropped {dropped} characters of {message.name or 'tool'} output;"
-            " run it again if you still need it]",
-            tool_call_id=message.tool_call_id,
-            name=message.name,
-        )
-        total -= dropped - len(kept[index].content)
+        swap(index, _elided_turn(kept[index]))
+    drop_results(range(newest_turn + 1, len(kept) - 1))
+    last = kept[-1]
+    if total > limit and len(kept) > 1 and last.role == "tool":
+        room = max(NEWEST_RESULT_FLOOR, len(last.content) - (total - limit))
+        if room < len(last.content):
+            cut = len(last.content) - room
+            swap(
+                len(kept) - 1,
+                replace(
+                    last,
+                    content=f"{last.content[:room]}\n[... {cut} more characters cut to fit "
+                    "the transcript -- ask for a narrower range ...]",
+                ),
+            )
     return kept, total
 
 
