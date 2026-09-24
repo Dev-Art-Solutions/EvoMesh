@@ -1,4 +1,10 @@
-from evomesh.codebase import PACKAGE, known_dead, package_root, survey
+from evomesh.codebase import (
+    PACKAGE,
+    known_dead,
+    package_root,
+    stray_root_files,
+    survey,
+)
 
 
 def test_package_root_points_at_the_source_package(project_root):
@@ -22,3 +28,8 @@ def test_known_dead_read_and_skips_comments(tmp_path):
     baseline.parent.mkdir(parents=True)
     baseline.write_text("# stale orphans\nreachability\n\n\norchestration.py\n")
     assert known_dead(tmp_path) == frozenset({"reachability", "orchestration.py"})
+
+
+def test_stray_root_files_lists_a_file_left_at_the_project_root(tmp_path):
+    (tmp_path / "orphan.py").write_text("# left behind by accident\n")
+    assert stray_root_files(tmp_path) == ["orphan.py"]
