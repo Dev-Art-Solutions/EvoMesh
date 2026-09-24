@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1370](001370.md) — The model changed `src/evomesh/evolution.py, src/evomesh/processes.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1369](001369.md) — I read the real `phase_label` definition and the existing `tests/test_phase_label.py`, saw the string-input path was already covered but the `AgentPhase` enum path (the `isinstance` branch returning `_LABELS[phase.value]`) was not, so I added one small passing test — `phase_label(AgentPhase.IDLE) == "Idle"` — to exercise that real branch using the module's own `AgentPhase` enum, with no mocks or stubs.
 - [Generation 1362](001362.md) — I appended a single passing test to the existing `tests/test_codebase.py` that calls `fabricated_references` with a realistic dotted, backtick-qualified reference string and asserts it returns `[]`, matching the function's documented scan behavior of detecting only bare or backtick references without a proper dotted qualifier.
 - [Generation 1361](001361.md) — I added a single passing test to the existing `tests/test_codebase.py` that calls `stray_root_files(tmp_path)` on a throwaway temp directory containing one orphaned file and asserts the returned list is `["orphan.py"]` — exercising the real behavior (a file not in KNOWN_ROOT_FILES is reported, sorted) while matching the module's existing pytest style.

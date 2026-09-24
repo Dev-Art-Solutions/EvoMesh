@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,7 @@ async def run_command(
     *arguments: str,
     cwd: Path | None = None,
     timeout_seconds: float | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Run one command to completion, with stderr folded into stdout.
 
@@ -73,6 +75,7 @@ async def run_command(
                 stderr=subprocess.STDOUT,
                 timeout=timeout_seconds,
                 check=False,
+                env=env,
             )
             return completed.returncode, completed.stdout or b"", False
         except subprocess.TimeoutExpired as exc:

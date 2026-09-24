@@ -27,7 +27,7 @@ implemented it; do not tick one by hand unless you did the work yourself.
     `wait_seconds: float = 0.0` that retries the non-blocking lock every 0.25s until that much
     time has passed before raising `AlreadyRunningError`, and pass a few seconds from the
     caller in src/evomesh/__main__.py. The default of 0 keeps today's behavior for everyone else.
-- [ ] Stop uv's VIRTUAL_ENV warning from polluting every validation and repair output
+- [x] Stop uv's VIRTUAL_ENV warning from polluting every validation and repair output
     Validation and the `ruff --fix` autofix run `uv run ...` inside a candidate directory
     (src/evomesh/evolution.py, `CandidateValidator` / `CandidateRepairer.autofix`) while the
     mesh's own `VIRTUAL_ENV` is still set in the environment, so uv prints
