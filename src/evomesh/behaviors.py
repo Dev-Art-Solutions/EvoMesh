@@ -32,13 +32,18 @@ from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
 from evomesh.evolution import (
     PICK_IMPROVEMENT,
+    PICK_SCOUT,
     PLAN_DIR,
+    REVIEW_COMMAND,
+    SOURCE_PICKS,
     CandidateValidator,
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
     PlanNode,
     excerpt,
+    parse_review,
+    review_objective,
 )
 from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
@@ -58,6 +63,7 @@ STAGE_DECOMPOSE = "decompose"
 STAGE_PROPOSE = "propose"
 STAGE_VALIDATE = "validate"
 STAGE_REPAIR = "repair"
+STAGE_REVIEW = "review"
 STAGE_REPORT = "report"
 STAGE_AWAIT_HUMAN = "await-human"
 
@@ -113,6 +119,12 @@ EVOLUTION_STEPS_WITH_PLAN = (
 # nor the repair that only exists to answer it belongs in the checklist.
 SKIP_VALIDATION_STAGES = (STAGE_PLAN, STAGE_PROPOSE, STAGE_REPORT)
 SKIP_VALIDATION_STEPS = (EVOLUTION_STEPS[0], EVOLUTION_STEPS[1], EVOLUTION_STEPS[-1])
+# With `review` on, a candidate that passed validation is read against its
+# objective before it is reported -- see `EvolverBehavior._review`.
+REVIEW_STEP = "review the change against its objective"
+# A reviewer that never says COMPLETE or INCOMPLETE is asked again, up to this
+# many attempts in all, before the candidate is discarded for want of a verdict.
+REVIEW_ATTEMPTS = 2
 # Under a promotion policy the last step is a decision, not a handover.
 AUTO_PROMOTE_STEP = "promote or discard the candidate on its verdict"
 
@@ -374,6 +386,9 @@ class EvolverBehavior(BDIBehavior):
         auto_plan: bool = False,
         plan_max_steps: int | None = None,
         plan_max_seconds: float | None = None,
+        review: bool = False,
+        review_max_steps: int | None = None,
+        review_max_seconds: float | None = None,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -401,11 +416,21 @@ class EvolverBehavior(BDIBehavior):
         # behavior has no config object of its own to reach.
         self.plan_max_steps = plan_max_steps
         self.plan_max_seconds = plan_max_seconds
+        # Off by default: after validation passes, a read-only harness job
+        # reads the diff against the objective, and an INCOMPLETE verdict is
+        # repaired like a failing command (same max_repairs budget) or, once
+        # that is spent, discarded. Slower per generation, on purpose.
+        self.review = review and auto_validate
+        self.review_max_steps = review_max_steps
+        self.review_max_seconds = review_max_seconds
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
             return SKIP_VALIDATION_STAGES
         stages = EVOLUTION_STAGES_WITH_PLAN if self.auto_plan else EVOLUTION_STAGES
+        if self.review:
+            at = stages.index(STAGE_REPAIR)
+            stages = (*stages[:at], STAGE_REVIEW, *stages[at:])
         if not self.max_repairs:
             return tuple(stage for stage in stages if stage != STAGE_REPAIR)
         return stages
@@ -415,6 +440,9 @@ class EvolverBehavior(BDIBehavior):
             steps = SKIP_VALIDATION_STEPS
         else:
             steps = EVOLUTION_STEPS_WITH_PLAN if self.auto_plan else EVOLUTION_STEPS
+            if self.review:
+                at = next(i for i, step in enumerate(steps) if step.startswith("repair"))
+                steps = (*steps[:at], REVIEW_STEP, *steps[at:])
             if not self.max_repairs:
                 steps = tuple(step for step in steps if not step.startswith("repair"))
         if self.auto_promote:
@@ -577,6 +605,8 @@ class EvolverBehavior(BDIBehavior):
             return await self._validate(evolver, state)
         if stage == STAGE_REPAIR:
             return await self._repair(context, evolver, state)
+        if stage == STAGE_REVIEW:
+            return await self._review(context, evolver, state)
         if stage == STAGE_REPORT:
             return await self._report(evolver, state)
         return StepResult.blocked(f"unknown evolution stage '{stage}'")
@@ -868,6 +898,28 @@ class EvolverBehavior(BDIBehavior):
             lambda: evolver.mutation_objective(objective)
         )
         label = item.title if item is not None else objective
+        pick = state.get("pick")
+
+        def accept(touched: list[str]) -> str | None:
+            if pick in SOURCE_PICKS and not any(
+                "src/evomesh/" in path.replace("\\", "/") for path in touched
+            ):
+                return (
+                    "it answered a substantive objective without touching "
+                    f"src/evomesh/ (only {', '.join(touched)})"
+                )
+            if pick == PICK_SCOUT:
+                kept, dropped = evolver.vet_scouted_items(generation)
+                for dropped_item, reason in dropped:
+                    logger.info(
+                        "generation %s: scouted item %r dropped: %s",
+                        generation.number,
+                        dropped_item.title,
+                        reason,
+                    )
+                if not kept:
+                    return "the scout added no backlog item that names real code"
+            return None
 
         async def on_no_op() -> tuple[str, dict[str, Any]] | None:
             # No plan tree behind this generation: the harness job was its
@@ -901,7 +953,9 @@ class EvolverBehavior(BDIBehavior):
                 },
             ),
             on_no_op=on_no_op,
-            require_source=bool(state.get("pick")),
+            accept=accept,
+            # A scout writes the backlog and nothing else.
+            write_prefix="docs/evolution" if pick == PICK_SCOUT else None,
             # Only a decomposed leaf gets the tight budget: it was already
             # split down to "one small change to one module that already
             # runs" (PLAN_DECOMPOSE_RULES), so it should not need more room
@@ -930,7 +984,7 @@ class EvolverBehavior(BDIBehavior):
         write_prefix: str | None = None,
         max_steps: int | None = None,
         max_seconds: float | None = None,
-        require_source: bool = False,
+        accept: Callable[[list[str]], str | None] | None = None,
     ) -> StepResult:
         """Submit a harness job, resume it across cycles, then record it.
 
@@ -969,11 +1023,12 @@ class EvolverBehavior(BDIBehavior):
         skips to the next work item, or -- once the queue is empty -- reports
         what already validated instead of discarding it.
 
-        ``require_source`` treats a job that changed nothing under
-        ``src/evomesh/`` as a no-op. A substantive objective (a runtime fault,
-        an improvement) is a change to behavior by definition; a candidate
-        that answers one with only a test or a doc would validate trivially
-        and land as the very test-only generation it exists to replace.
+        ``accept`` gets the touched paths once a job has really changed
+        something and may return a reason to treat it as a no-op anyway --
+        see `_propose`, where a substantive objective answered with only a
+        test, or a scout whose items all name code that does not exist,
+        would otherwise validate trivially and land as exactly the kind of
+        generation the objective exists to replace.
         """
         harness = context.service("harness")
         if not isinstance(harness, HarnessGateway):
@@ -1033,16 +1088,13 @@ class EvolverBehavior(BDIBehavior):
         # nothing at all, just reached from the other side.
         if touched and await evolver.candidate_changed_nothing(generation):
             touched = []
-        if touched and require_source and not any(
-            "src/evomesh/" in path.replace("\\", "/") for path in touched
-        ):
-            logger.info(
-                "generation %s answered a substantive objective without touching "
-                "src/evomesh/ (only %s); treating it as a no-op",
-                generation.number,
-                ", ".join(touched),
-            )
-            touched = []
+        if touched and accept is not None:
+            rejection = accept(touched)
+            if rejection is not None:
+                logger.info(
+                    "generation %s: %s; treating it as a no-op", generation.number, rejection
+                )
+                touched = []
         moved = {key: value for key, value in state.items() if key != "job"}
         if not touched:
             if on_no_op is not None:
@@ -1140,6 +1192,8 @@ class EvolverBehavior(BDIBehavior):
         # just failed its own verdict.
         more_work = result.passed and bool(state.get("work_items"))
         next_stage = STAGE_REPAIR if repairing else (STAGE_PROPOSE if more_work else STAGE_REPORT)
+        if next_stage == STAGE_REPORT and result.passed and self.review and not blocker:
+            next_stage = STAGE_REVIEW
         await evolver.set_pipeline_state(
             {
                 **state,
@@ -1195,8 +1249,15 @@ class EvolverBehavior(BDIBehavior):
         self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
     ) -> StepResult:
         generation = evolver.candidate(int(state["generation"]))
+        # A review verdict is not on disk the way a validation failure is --
+        # the suite passed -- so it rides in the pipeline state instead.
+        review_failure = state.get("review_failure")
         recorded = evolver.read_validation(generation)
-        failure = recorded.failure() if recorded else None
+        failure: dict[str, object] | None = (
+            review_failure
+            if isinstance(review_failure, dict)
+            else (recorded.failure() if recorded else None)
+        )
         if failure is None:
             # Nothing on record to repair. The candidate still deserves a
             # verdict, so fall through rather than looping on an empty stage.
@@ -1219,7 +1280,10 @@ class EvolverBehavior(BDIBehavior):
                 build=lambda: evolver.repair_objective(failure, touched),
                 label=f"repair {attempt}: `{failure.get('command')}` failed",
                 status="repaired",
-                on_done=lambda changed: (STAGE_VALIDATE, {"repairs": attempt}),
+                on_done=lambda changed: (
+                    STAGE_VALIDATE,
+                    {"repairs": attempt, "review_failure": None},
+                ),
             )
         # The linter's own fixer does not spend the budget. The budget exists to
         # bound how often a *model* is allowed to rewrite the candidate; a
@@ -1252,6 +1316,129 @@ class EvolverBehavior(BDIBehavior):
                 f"generation {generation.number} repaired itself after "
                 f"{failure.get('command')} failed"
             ),
+            phase=AgentPhase.ACTING,
+        )
+
+    async def _review(
+        self, context: CycleContext, evolver: EnvironmentEvolver, state: dict[str, Any]
+    ) -> StepResult:
+        """Read the validated change against its objective before it lands.
+
+        Validation proves the candidate is valid and breaks nothing; only this
+        asks whether it does what it was for. A read-only harness job (no
+        write tools at all) gets the diff inline and may read whatever else it
+        needs, then ends on ``VERDICT: COMPLETE`` or ``VERDICT: INCOMPLETE:
+        <what is missing>``. INCOMPLETE goes to repair with that sentence as
+        the failure, under the same ``max_repairs`` budget a failing command
+        spends; once that is gone, the candidate is discarded rather than
+        landed half-done. Like `_through_harness`, the job runs in the worker
+        and this stage only submits, polls and reads the answer.
+        """
+        generation = evolver.candidate(int(state["generation"]))
+        harness = context.service("harness")
+        if not isinstance(harness, HarnessGateway):
+            # No worker, no reviewer. The gate cannot run, so it must not be
+            # what stops a generation that validated.
+            await evolver.set_pipeline_state({**state, "stage": STAGE_REPORT})
+            return StepResult(
+                summary=(
+                    f"generation {generation.number} validated; the harness is off, so "
+                    "it is reported on validation alone"
+                ),
+                phase=AgentPhase.ACTING,
+            )
+        objective = str(state.get("objective", ""))
+        number = state.get("review_job")
+        job = harness.job(int(number)) if number else None
+        if job is None:
+            diff = await evolver.candidate_diff(generation)
+            job = harness.submit(
+                review_objective(objective, diff),
+                agent_id=context.definition.id,
+                root=generation.path,
+                label=f"review generation {generation.number}",
+                allow_write=False,
+                max_steps=self.review_max_steps,
+                max_seconds=self.review_max_seconds,
+                notify=False,
+            )
+            await evolver.set_pipeline_state({**state, "review_job": job.number})
+            if job.open:
+                return StepResult(
+                    summary=(
+                        f"handed generation {generation.number} to review job {job.number}, "
+                        "which reads the change against its objective"
+                    ),
+                    phase=AgentPhase.AWAITING_HARNESS,
+                )
+        if job.open:
+            return StepResult(
+                summary=f"review job {job.number} is still working: {job.describe()}",
+                phase=AgentPhase.AWAITING_HARNESS,
+            )
+        answer = job.result.answer if job.result else job.detail
+        verdict, reason = parse_review(answer or "")
+        moved = {key: value for key, value in state.items() if key != "review_job"}
+        repairs = int(state.get("repairs", 0))
+        if verdict is True:
+            await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT})
+            return StepResult(
+                summary=f"review of generation {generation.number}: complete",
+                fact=f"generation {generation.number} was reviewed as complete",
+                phase=AgentPhase.ACTING,
+            )
+        if verdict is None:
+            attempts = int(state.get("review_attempts", 0)) + 1
+            if attempts < REVIEW_ATTEMPTS:
+                await evolver.set_pipeline_state({**moved, "review_attempts": attempts})
+                return StepResult(
+                    summary=(
+                        f"review job {job.number} gave no verdict ({job.describe()}); "
+                        "asking again"
+                    ),
+                    phase=AgentPhase.ACTING,
+                )
+            await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT, "passed": False})
+            return StepResult(
+                summary=(
+                    f"generation {generation.number} got no review verdict in "
+                    f"{attempts} attempts; not landing an unreviewed change"
+                ),
+                fact=f"generation {generation.number} could not be reviewed",
+                phase=AgentPhase.ACTING,
+            )
+        logger.info("generation %s reviewed as incomplete: %s", generation.number, reason)
+        if repairs < self.max_repairs:
+            await evolver.set_pipeline_state(
+                {
+                    **moved,
+                    "stage": STAGE_REPAIR,
+                    "review_attempts": 0,
+                    "review_failure": {
+                        "command": REVIEW_COMMAND,
+                        "exit_code": 1,
+                        "output": reason,
+                        "objective": objective,
+                    },
+                }
+            )
+            return StepResult(
+                summary=(
+                    f"review of generation {generation.number}: incomplete -- "
+                    f"{excerpt(reason, 200)}; finishing it (attempt {repairs + 1} of "
+                    f"{self.max_repairs})"
+                ),
+                fact=f"generation {generation.number} was reviewed as incomplete",
+                phase=AgentPhase.ACTING,
+            )
+        await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT, "passed": False})
+        return StepResult(
+            summary=(
+                f"review of generation {generation.number}: still incomplete after "
+                f"{repairs} repair attempt{'s' if repairs != 1 else ''} -- "
+                f"{excerpt(reason, 200)}; discarding rather than landing it half-done"
+            ),
+            fact=f"generation {generation.number} was discarded as incomplete",
             phase=AgentPhase.ACTING,
         )
 
@@ -1317,7 +1504,7 @@ class EvolverBehavior(BDIBehavior):
     async def _decide(
         self, evolver: EnvironmentEvolver, number: int, *, passed: bool, state: dict[str, Any]
     ) -> StepResult:
-        if passed and state.get("pick"):
+        if passed and state.get("pick") in SOURCE_PICKS:
             generation = evolver.candidate(number)
             if await evolver.candidate_changed_source(generation) is False:
                 # Validated, but only because what is left is a test or a doc:
@@ -1430,6 +1617,9 @@ def default_behaviors(
     auto_plan: bool = False,
     plan_max_steps: int | None = None,
     plan_max_seconds: float | None = None,
+    review: bool = False,
+    review_max_steps: int | None = None,
+    review_max_seconds: float | None = None,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -1444,6 +1634,9 @@ def default_behaviors(
             auto_plan=auto_plan,
             plan_max_steps=plan_max_steps,
             plan_max_seconds=plan_max_seconds,
+            review=review,
+            review_max_steps=review_max_steps,
+            review_max_seconds=review_max_seconds,
         ),
     }
 

@@ -2807,3 +2807,140 @@ async def test_every_pipeline_stage_leaves_a_line_in_the_log(
     ]
     # The stall is the thing worth seeing, so the parked cycle is logged too.
     assert any(line.startswith("Evolution is holding") for line in lines)
+
+
+async def test_an_incomplete_review_is_repaired_then_reviewed_again(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-24: generation 1370 added an `env` parameter nobody
+    passes, validated, and landed as the whole improvement. With review on,
+    a validated candidate is read against its objective first, and an
+    INCOMPLETE verdict is repaired with the reviewer's own sentence."""
+    validator = ScriptedValidator([passing(), passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION, NOTHING, MUTATION, NOTHING], validator
+    )
+    harness.answers = [
+        "RATIONALE: added the parameter",
+        "Read it.\nVERDICT: INCOMPLETE: nothing in evolution.py passes env",
+        "RATIONALE: passed env from both call sites",
+        "VERDICT: COMPLETE",
+    ]
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, review=True)
+
+    stages: list[str] = []
+    for _ in range(8):
+        await behavior.cycle(context)
+        stages.append(str((await evolver.pipeline_state()).get("stage")))
+
+    assert stages == [
+        "propose",
+        "validate",
+        "review",
+        "repair",
+        "validate",
+        "review",
+        "report",
+        "await-human",
+    ]
+    assert "VERDICT:" in harness.objectives[1]
+    assert "INCOMPLETE" in harness.objectives[2]
+    assert "nothing in evolution.py passes env" in harness.objectives[2]
+    state = await evolver.pipeline_state()
+    assert state["passed"] is True
+    assert state.get("review_failure") is None
+
+
+async def test_a_review_still_incomplete_with_no_repairs_left_is_not_landed(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION, NOTHING], validator
+    )
+    harness.answers = ["RATIONALE: half of it", "VERDICT: INCOMPLETE: the other half"]
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=0, review=True)
+
+    for _ in range(4):
+        await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "report"
+    assert state["passed"] is False
+
+
+async def test_a_reviewer_that_never_gives_a_verdict_is_asked_twice_then_refused(
+    tmp_path: Path, project: Path
+) -> None:
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION, NOTHING], validator
+    )
+    harness.answers = ["RATIONALE: done", "It looks fine to me."]
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, review=True)
+
+    for _ in range(5):
+        await behavior.cycle(context)
+
+    state = await evolver.pipeline_state()
+    assert state["stage"] == "report"
+    assert state["passed"] is False
+    assert len(harness.objectives) == 3
+
+
+def test_review_adds_its_step_to_the_checklist() -> None:
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, review=True)
+
+    stages = behavior._stages()
+    steps = behavior._steps()
+
+    assert stages.index("review") == stages.index("validate") + 1
+    assert len(stages) == len(steps)
+    assert steps[stages.index("review")].startswith("review")
+
+
+def test_parse_review_reads_the_last_verdict() -> None:
+    from evomesh.evolution import parse_review
+
+    assert parse_review("VERDICT: COMPLETE") == (True, "")
+    assert parse_review("say VERDICT: COMPLETE or...\n**VERDICT: INCOMPLETE** - no caller") == (
+        False,
+        "no caller",
+    )
+    assert parse_review("verdict: incomplete") == (
+        False,
+        "the reviewer found it incomplete but said nothing more",
+    )
+    assert parse_review("looks good") == (None, "")
+
+
+async def test_a_scout_that_names_only_imaginary_code_lands_nothing(
+    tmp_path: Path, project: Path
+) -> None:
+    """With the backlog empty the Evolver scouts for new items instead of
+    writing one more test -- but an item naming code that does not exist is
+    stripped, and a scout left with none is a no-op, not a landed backlog."""
+    backlog = project / "docs" / "evolution" / "improvements.md"
+    backlog.parent.mkdir(parents=True)
+    backlog.write_text("# Backlog\n\n- [x] Old item\n", encoding="utf-8")
+    invented = (
+        "# Backlog\n\n- [x] Old item\n"
+        "- [ ] Speed up the imaginary cache\n"
+        "    In src/evomesh/nowhere.py, `warm_cache()` rebuilds everything on every cycle,\n"
+        "    which is slow; cache it between cycles instead.\n"
+    )
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[("docs/evolution/improvements.md", invented)]], validator
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "scout"
+    assert state["objective"].startswith("Refill the improvement backlog")
+
+    await behavior.cycle(context)
+
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+    assert validator.calls == 0

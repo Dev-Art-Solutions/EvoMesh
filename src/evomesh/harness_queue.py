@@ -321,12 +321,13 @@ class HarnessGateway:
         max_seconds: float | None = None,
         notify: bool = True,
         priority: bool = False,
+        allow_write: bool = True,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
             root,
             agent_id=agent_id,
-            allow_write=True,
+            allow_write=allow_write,
             write_prefix=write_prefix,
             priority=priority,
             label=label,

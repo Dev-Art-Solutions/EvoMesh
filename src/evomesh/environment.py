@@ -97,6 +97,9 @@ class Environment:
             settings.evolution.auto_plan,
             settings.harness.plan_max_steps,
             settings.harness.plan_max_seconds,
+            settings.evolution.review,
+            settings.evolution.review_max_steps,
+            settings.evolution.review_max_seconds,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

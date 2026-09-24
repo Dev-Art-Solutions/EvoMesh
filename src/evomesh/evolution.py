@@ -18,9 +18,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from evomesh.codebase import (
+    IMPROVEMENTS_FILE,
+    SCOUT_NEEDLE,
+    Improvement,
     Module,
     backlog_objective,
     backlog_target,
+    drop_improvements,
     fabricated_references,
     improvement_needle,
     improvement_objective,
@@ -30,10 +34,12 @@ from evomesh.codebase import (
     runtime_fault_needle,
     runtime_fault_objective,
     runtime_faults,
+    scout_objective,
     stray_root_files,
     tick_improvement,
     untested_objective,
     untested_target,
+    vet_new_improvements,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
@@ -143,6 +149,26 @@ def harness_repair_objective(
     the model reads the rest for itself.
     """
     changed = ", ".join(touched)
+    if failure.get("command") == REVIEW_COMMAND:
+        # Not a failing command at all: the suite passed and a reviewer read
+        # the change against its objective and found it unfinished. Framing
+        # this as "the validation command failed" sent the model hunting for
+        # an error message that does not exist.
+        return "\n".join(
+            part
+            for part in (
+                project,
+                "This generation's change passes validation, but a reviewer who "
+                "read it against its objective found it INCOMPLETE:",
+                clip(str(failure.get("output", "")), 1500),
+                f"Files this generation has already changed: {changed}" if changed else "",
+                f"The objective it has to finish:\n{failure.get('objective', '')}",
+                "Finish the objective -- add what the reviewer says is missing, in "
+                "the file and function it names. Keep what is already right.",
+                HARNESS_RULES,
+            )
+            if part
+        )
     is_hygiene = failure.get("command") == "evomesh codebase hygiene check"
     parts = (
         project,
@@ -164,6 +190,61 @@ def harness_repair_objective(
         HARNESS_RULES,
     )
     return "\n".join(part for part in parts if part)
+
+
+# The review gate. Validation proves a candidate is valid Python that breaks
+# no test; it cannot tell a finished change from its scaffolding. Found live
+# 2026-09-24: generation 1370 was asked to stop uv's VIRTUAL_ENV warning,
+# added an `env` parameter to run_command that no caller passes, validated,
+# and landed with its backlog item ticked -- the warning untouched.
+REVIEW_COMMAND = "review against the objective"
+REVIEW_MARKER = "VERDICT:"
+_VERDICT_RE = re.compile(r"VERDICT:\s*\**\s*(INCOMPLETE|COMPLETE)\b\**[\s:.\-]*(.*)", re.IGNORECASE)
+
+
+def review_objective(objective: str, diff: str) -> str:
+    """Ask a read-only harness job whether ``diff`` actually does ``objective``."""
+    return "\n\n".join(
+        (
+            "You are reviewing a change another agent made to this project. You "
+            "cannot edit anything, and do not need to.",
+            f"THE OBJECTIVE IT WAS GIVEN:\n{objective}",
+            f"THE CHANGE (git diff against its parent):\n{diff or '(empty)'}",
+            "\n".join(
+                (
+                    "Decide one thing: does this change accomplish the objective, "
+                    "completely? Read any file you need -- the change may call code "
+                    "the diff does not show, and a new parameter or function is only "
+                    "useful if something that runs actually uses it (grep for it).",
+                    "It is INCOMPLETE if it only adds scaffolding nothing uses, does "
+                    "part of what the objective asks and skips the rest, adds a test "
+                    "in place of the behavior asked for, or changes something other "
+                    "than what the objective names.",
+                    "It already passes ruff, pyright and pytest -- do not judge "
+                    "style, naming or taste, and do not ask for extras the objective "
+                    "never mentioned.",
+                    "End your answer with exactly one line, one of:",
+                    f"{REVIEW_MARKER} COMPLETE",
+                    f"{REVIEW_MARKER} INCOMPLETE: <what is missing, naming the file and "
+                    "the function where it has to happen>",
+                )
+            ),
+        )
+    )
+
+
+def parse_review(answer: str) -> tuple[bool | None, str]:
+    """``(True, "")`` for COMPLETE, ``(False, reason)`` for INCOMPLETE, and
+    ``(None, "")`` when the reviewer never gave a verdict. The last verdict
+    line wins -- a model that quotes the instructions first still means the
+    one it ends on."""
+    matches = _VERDICT_RE.findall(answer)
+    if not matches:
+        return None, ""
+    verdict, reason = matches[-1]
+    if verdict.upper() == "COMPLETE":
+        return True, ""
+    return False, reason.strip() or "the reviewer found it incomplete but said nothing more"
 
 
 # Where a generation's plan lives, before any of it is code. Inside the
@@ -1128,6 +1209,10 @@ class ValidationRun:
 
 PICK_RUNTIME_FAULT = "runtime-fault"
 PICK_IMPROVEMENT = "improvement"
+PICK_SCOUT = "scout"
+# The picks that are, by definition, a change to how EvoMesh behaves -- a
+# candidate answering one must still differ under src/evomesh/ when it lands.
+SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT})
 # How many of the recent generations may aim at one substantive target before
 # it is set aside for the others -- see `substantive_objective`.
 MAX_TARGET_ATTEMPTS = 3
@@ -1275,7 +1360,47 @@ class EnvironmentEvolver:
                 needle=improvement_needle(item),
                 key=item.title,
             )
+        # Nothing left to hand out: find more, rather than fall through to the
+        # maintenance backlogs whose best outcome is one more test. Only where
+        # the backlog file exists -- that is the project opting in to one.
+        if (root / IMPROVEMENTS_FILE).is_file() and fresh(SCOUT_NEEDLE):
+            return ObjectivePick(
+                kind=PICK_SCOUT,
+                objective=scout_objective(root),
+                needle=SCOUT_NEEDLE,
+                key="",
+            )
         return None
+
+    def vet_scouted_items(
+        self, generation: Generation
+    ) -> tuple[list[Improvement], list[tuple[Improvement, str]]]:
+        """Check the items a scout generation added against the live tree's
+        backlog, and strip the ones that fail from the candidate's copy, so
+        only items naming real code can ever become an objective."""
+        before = open_improvements(self.workspace.repository_root)
+        kept, dropped = vet_new_improvements(before, generation.path)
+        drop_improvements(generation.path, {item.title for item, _ in dropped})
+        return kept, dropped
+
+    async def candidate_diff(self, generation: Generation, limit: int = 9000) -> str:
+        """What the candidate changed against its parent, new files included,
+        clipped to ``limit`` -- the evidence a review reads first.
+
+        ``add -A -N`` records untracked files as intent-to-add so ``diff``
+        shows them; the promotion commit's own ``add -A`` supersedes it, so
+        nothing about what lands changes.
+        """
+        candidate = await self._own_repository(generation)
+        if candidate is None:
+            return ""
+        try:
+            await candidate.run("add", "-A", "-N")
+            stat = await candidate.run("diff", "HEAD", "--stat")
+            patch = await candidate.run("diff", "HEAD")
+        except GitError:
+            return ""
+        return clip(f"{stat.strip()}\n\n{patch}", limit, keep_end=False)
 
     def tick_improvement(self, generation: Generation, title: str) -> bool:
         """Tick ``title`` off inside the candidate, so it lands in the same

@@ -60,6 +60,7 @@ class FakeHarness(HarnessGateway):
         max_seconds: float | None = None,
         notify: bool = True,
         priority: bool = False,
+        allow_write: bool = True,
     ) -> HarnessJob:
         self.objectives.append(objective)
         self.labels.append(label)
@@ -68,7 +69,7 @@ class FakeHarness(HarnessGateway):
             objective,
             root,
             agent_id=agent_id,
-            allow_write=True,
+            allow_write=allow_write,
             write_prefix=write_prefix,
             label=label,
             max_steps=max_steps,
@@ -78,7 +79,8 @@ class FakeHarness(HarnessGateway):
         )
         batch = self.batches[min(len(self.objectives) - 1, len(self.batches) - 1)]
         entries: list[dict[str, object]] = []
-        for path, content in batch:
+        # A read-only job (a review) has no write tools, so it writes nothing.
+        for path, content in batch if allow_write else []:
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")

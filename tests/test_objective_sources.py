@@ -15,12 +15,17 @@ from evomesh.codebase import (
     IMPROVEMENTS_FILE,
     RUNTIME_LOG,
     Improvement,
+    done_improvements,
+    drop_improvements,
     improvement_objective,
     open_improvements,
+    recurring_warnings,
     runtime_fault_objective,
     runtime_faults,
+    scout_objective,
     tick_improvement,
     untested_target,
+    vet_new_improvements,
 )
 
 
@@ -181,3 +186,89 @@ def test_a_fault_in_a_file_changed_since_counts_as_fixed(tmp_path: Path) -> None
 
 def test_runtime_faults_without_a_log_is_empty(tmp_path: Path) -> None:
     assert runtime_faults(tmp_path) == []
+
+
+REAL_ITEM = (
+    "- [ ] Cache helper's result\n"
+    "    In src/evomesh/busy.py, `helper()` is recomputed on every call even though its\n"
+    "    input never changes between cycles; memoize it.\n"
+)
+
+
+def test_vet_keeps_an_item_that_names_real_code(tmp_path: Path) -> None:
+    _live_package(tmp_path)
+    _write_backlog(tmp_path, "- [x] Old\n" + REAL_ITEM)
+
+    kept, dropped = vet_new_improvements([], tmp_path)
+
+    assert [item.title for item in kept] == ["Cache helper's result"]
+    assert dropped == []
+
+
+def test_vet_drops_imaginary_files_functions_and_thin_items(tmp_path: Path) -> None:
+    _live_package(tmp_path)
+    _write_backlog(
+        tmp_path,
+        "- [x] Old item\n"
+        "- [ ] Old item\n"
+        "    In src/evomesh/busy.py, `helper()` again, long enough detail to pass the length\n"
+        "    check on its own merits.\n"
+        "- [ ] Imaginary file\n"
+        "    In src/evomesh/nowhere.py, `helper()` does the wrong thing on every single cycle\n"
+        "    of the mesh.\n"
+        "- [ ] Imaginary function\n"
+        "    In src/evomesh/busy.py, `warm_cache()` does the wrong thing on every single cycle\n"
+        "    of the mesh.\n"
+        "- [ ] Thin\n"
+        "    src/evomesh/busy.py is bad.\n"
+        "- [ ] No file at all\n"
+        "    Something somewhere does the wrong thing on every single cycle of the mesh, and\n"
+        "    it should not.\n",
+    )
+
+    kept, dropped = vet_new_improvements([], tmp_path)
+
+    assert kept == []
+    reasons = {item.title: reason for item, reason in dropped}
+    assert "Old item" not in reasons  # a repeat of done work is skipped silently
+    assert "nowhere" in reasons["Imaginary file"]
+    assert "warm_cache" in reasons["Imaginary function"]
+    assert "too short" in reasons["Thin"]
+    assert "names no" in reasons["No file at all"]
+
+
+def test_vet_ignores_items_that_were_already_open(tmp_path: Path) -> None:
+    _live_package(tmp_path)
+    _write_backlog(tmp_path, REAL_ITEM)
+    before = open_improvements(tmp_path)
+
+    kept, dropped = vet_new_improvements(before, tmp_path)
+
+    assert kept == [] and dropped == []
+
+
+def test_drop_improvements_removes_only_the_named_items(tmp_path: Path) -> None:
+    _write_backlog(tmp_path, "# B\n\n- [ ] Keep\n    why\n- [ ] Drop\n    because\n    more\n")
+
+    drop_improvements(tmp_path, {"Drop"})
+
+    text = (tmp_path / IMPROVEMENTS_FILE).read_text(encoding="utf-8")
+    assert text == "# B\n\n- [ ] Keep\n    why\n"
+
+
+def test_scout_objective_carries_the_logs_leads_and_the_done_list(tmp_path: Path) -> None:
+    _write_backlog(tmp_path, "- [x] Back off Telegram polling\n")
+    log = tmp_path / RUNTIME_LOG
+    log.parent.mkdir(parents=True)
+    warning = (
+        '{"time":"2026-09-24 10:00:0%d,000","level":"WARNING",'
+        '"message":"Watcher timed out: %d"}\n'
+    )
+    log.write_text("".join(warning % (i, i) for i in range(3)), encoding="utf-8")
+
+    assert done_improvements(tmp_path) == ["Back off Telegram polling"]
+    assert recurring_warnings(tmp_path) == [(3, "Watcher timed out: N")]
+    text = scout_objective(tmp_path)
+    assert text.startswith("Refill the improvement backlog")
+    assert "3x Watcher timed out: N" in text
+    assert "Back off Telegram polling" in text

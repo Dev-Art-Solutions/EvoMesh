@@ -183,6 +183,14 @@ class EvolutionSettings(BaseModel):
     # into minimal work items before authoring anything, instead of asking the
     # harness for one mutation directly. See EvolverBehavior.auto_plan.
     auto_plan: bool = False
+    # Off by default. Once a candidate validates, a read-only harness job reads
+    # its diff against the objective; INCOMPLETE is repaired under max_repairs
+    # or discarded, never landed. See EvolverBehavior._review. The budget is
+    # its own: a review reads, it does not author, and should not need a
+    # mutation's.
+    review: bool = False
+    review_max_steps: int = 40
+    review_max_seconds: float = 900.0
     objective: str | None = None
 
 

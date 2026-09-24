@@ -189,8 +189,20 @@ regresses.
     [docs/evolution/improvements.md](docs/evolution/improvements.md) — and only then the dead
     modules and the untested exports. A substantive pick must change `src/evomesh/`, checked at
     propose and again at promotion. Without this, the best any generation could do was add one
-    test, and ~30 straight did exactly that. **Keep improvements.md stocked**; it is how a human
-    steers what the mesh works on.
+    test, and ~30 straight did exactly that. improvements.md is how a human steers the mesh, but
+    the mesh keeps it stocked itself: with no fresh item left, `_open` picks a **scout**
+    generation (`codebase.scout_objective`) that may only write under `docs/evolution/` and
+    appends 2-5 new items; `vet_new_improvements` strips any item naming a file or `function()`
+    that does not exist, and a scout left with none is a no-op. The scout only runs where
+    improvements.md exists — the file's presence is the opt-in.
+
+    **Validation cannot tell a finished change from its scaffolding** (generation 1370 landed an
+    `env` parameter nobody passes as "stop the VIRTUAL_ENV warning"). With `evolution.review`
+    on, a validated candidate goes to `STAGE_REVIEW`: a read-only harness job (`allow_write=False`,
+    no write tools at all) reads the diff against the objective and ends on
+    `VERDICT: COMPLETE|INCOMPLETE: <what is missing>`. INCOMPLETE rides into `_repair` as
+    `state["review_failure"]` under the same `max_repairs` budget; spent, the candidate is
+    discarded, never landed half-done. No verdict twice is also a discard.
 15. **status and phase are different things.** `status` is the persisted desired lifecycle
     (`candidate`/`active`/`stopped`); `phase` is what the agent is doing right now, rebuilt on every
     boot and never read from disk. An agent that cannot start reports `offline` with a reason

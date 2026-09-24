@@ -61,6 +61,13 @@ evolution:
   # default rather than assuming a 35B-class model judges plans as reliably as
   # it edits one named file.
   auto_plan: false
+  # Read a validated candidate's diff against its objective (read-only harness
+  # job) before it lands. INCOMPLETE is repaired under max_repairs, or
+  # discarded -- validation alone cannot tell a finished change from its
+  # scaffolding. Off by default; slower per generation.
+  review: false
+  review_max_steps: 40
+  review_max_seconds: 900
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 

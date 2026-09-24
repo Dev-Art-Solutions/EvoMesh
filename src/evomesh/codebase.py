@@ -851,3 +851,179 @@ def runtime_fault_objective(fault: RuntimeFault) -> str:
             "condition if you can write one in the steps you have.",
         )
     )
+
+
+# The scout: when the improvement backlog has nothing left to hand out, the
+# Evolver spends one generation finding new items instead of falling back to
+# test-writing. Found 2026-09-24: a hand-seeded backlog of four items was used
+# up within the hour, and a backlog only a human can refill stops being the
+# mesh's own the moment that human is away.
+SCOUT_NEEDLE = "Refill the improvement backlog"
+SCOUT_MAX_ITEMS = 5
+# Below this, a "detail" is a restated title, not a where-and-why a small model
+# can act on without re-deriving the whole problem itself.
+SCOUT_MIN_DETAIL_CHARS = 80
+_DONE_ITEM = re.compile(r"^- \[[xX]\] (?P<title>\S.*?)\s*$")
+_SOURCE_PATH = re.compile(r"src/evomesh/(?P<module>\w+)\.py")
+_CALLED_NAME = re.compile(r"`(?:[\w.]+\.)?(?P<name>[A-Za-z_]\w*)\(\)`")
+_LEVEL_WARNING = ("WARNING", "ERROR", "CRITICAL")
+
+
+def done_improvements(root: Path) -> list[str]:
+    """Titles of every ticked ``- [x]`` item, in file order."""
+    path = root / IMPROVEMENTS_FILE
+    if not path.is_file():
+        return []
+    return [
+        match.group("title")
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if (match := _DONE_ITEM.match(line))
+    ]
+
+
+def recurring_warnings(root: Path, limit: int = 8) -> list[tuple[int, str]]:
+    """The most frequent WARNING/ERROR messages in the mesh log's tail, with
+    numbers masked so one message in many variants counts as one.
+
+    Not tracebacks (that is :func:`runtime_faults`) -- the handled-but-noisy
+    kind: a poll that keeps failing, a watcher that keeps timing out. Each is
+    a lead for the scout, not an objective by itself.
+    """
+    path = root / RUNTIME_LOG
+    if not path.is_file():
+        return []
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        handle.seek(max(0, size - RUNTIME_LOG_TAIL_BYTES))
+        text = handle.read().decode("utf-8", errors="replace")
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        entry = _LOG_ENTRY.match(line)
+        if entry is None or entry.group("level") not in _LEVEL_WARNING:
+            continue
+        message = line.split('"message":"', 1)[-1].rstrip('"}')
+        key = re.sub(r"\d+", "N", message)[:160]
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    return [(count, message) for message, count in ranked[:limit]]
+
+
+def scout_objective(root: Path) -> str:
+    done = done_improvements(root)
+    warnings = recurring_warnings(root)
+    leads = (
+        "\n".join(f"  - {count}x {message}" for count, message in warnings)
+        if warnings
+        else "  (none in the current log)"
+    )
+    lines = [
+        f"{SCOUT_NEEDLE} in {IMPROVEMENTS_FILE.as_posix()}: every item there is done "
+        "or has been set aside, so the next generation has nothing substantive to "
+        f"work on. Your job this generation is to FIND 2 to {SCOUT_MAX_ITEMS} real "
+        "problems or missing capabilities in EvoMesh and write them down as new "
+        "items -- not to fix any of them.",
+        "Where to look, most valuable first:",
+        "1. What the running mesh keeps logging (WARNING/ERROR, numbers masked). "
+        "The log reaches back further than the code: a line here may come from "
+        "before a done item below fixed it, so read the code before trusting one.",
+        leads,
+        "2. The code itself: a function that does the wrong thing on an input it "
+        "really gets, error handling that swallows the cause, a fixed number that "
+        "should come from settings, a loop with no backoff, work repeated on every "
+        "cycle that could be cached, something README.md or CLAUDE.md promises "
+        "that the code does not actually do.",
+        "Rules for every item:",
+        "- Read the code before writing the item. Name the real file as "
+        "src/evomesh/<module>.py and the real function or class in backticks, "
+        "copied from what you read. An item naming a file or a function that does "
+        "not exist is dropped automatically.",
+        "- Say what is wrong today, how you know (what you read, or the log line), "
+        "and what the change should be -- concretely enough that someone with "
+        "about a hundred tool calls can do it in one or two files.",
+        "- It must change behavior in src/evomesh/. No items that only add tests, "
+        "docs, comments, type hints or renames: those are dropped too.",
+        "- Append the items at the end of the file, in exactly this shape (the "
+        "detail lines indented by four spaces):",
+        "- [ ] <short imperative title>",
+        "    <where: file and function> <what is wrong today and how you know>",
+        "    <what the change should be>",
+        f"- Edit only {IMPROVEMENTS_FILE.as_posix()}. Never tick an item and never "
+        "remove one.",
+    ]
+    if done:
+        lines.append(
+            "Already done -- do not propose any of these again:\n"
+            + "\n".join(f"  - {title}" for title in done[-30:])
+        )
+    return "\n".join(lines)
+
+
+def vet_new_improvements(
+    before: list[Improvement], root: Path
+) -> tuple[list[Improvement], list[tuple[Improvement, str]]]:
+    """Split the open items ``root`` gained over ``before`` into kept and
+    dropped-with-a-reason.
+
+    The scout's output becomes the next generations' objectives verbatim, so
+    anything a model recalled rather than read has to stop here: an item has
+    to name a source file that exists, every backticked ``name()`` in it has
+    to be defined somewhere in the package, and ``module.symbol`` mentions go
+    through the same :func:`fabricated_references` check plans already do.
+    """
+    known = {item.title.casefold() for item in before}
+    known.update(title.casefold() for title in done_improvements(root))
+    defined: set[str] = set()
+    for module in survey(root):
+        defined.update(module.all_names)
+    existing = {module.name for module in survey(root)}
+    kept: list[Improvement] = []
+    dropped: list[tuple[Improvement, str]] = []
+    for item in open_improvements(root):
+        if item.title.casefold() in known:
+            continue
+        known.add(item.title.casefold())
+        text = f"{item.title}\n{item.detail}"
+        modules = {match.group("module") for match in _SOURCE_PATH.finditer(text)}
+        missing = sorted(
+            {
+                match.group("name")
+                for match in _CALLED_NAME.finditer(text)
+                if match.group("name") not in defined
+            }
+        )
+        if len(item.detail) < SCOUT_MIN_DETAIL_CHARS:
+            reason = "its detail is too short to act on"
+        elif not modules:
+            reason = "it names no src/evomesh/<module>.py file"
+        elif not modules <= existing:
+            unknown = ", ".join(sorted(modules - existing))
+            reason = f"it names a file that does not exist ({unknown})"
+        elif missing:
+            reason = f"it names functions that do not exist ({', '.join(missing)})"
+        elif fabricated := fabricated_references(text, root):
+            reason = f"it names symbols that do not exist ({', '.join(fabricated)})"
+        else:
+            kept.append(item)
+            continue
+        dropped.append((item, reason))
+    return kept[:SCOUT_MAX_ITEMS], dropped + [
+        (item, "over the per-refill limit") for item in kept[SCOUT_MAX_ITEMS:]
+    ]
+
+
+def drop_improvements(root: Path, titles: set[str]) -> None:
+    """Remove the open items named in ``titles`` (and their detail lines)."""
+    path = root / IMPROVEMENTS_FILE
+    if not titles or not path.is_file():
+        return
+    kept: list[str] = []
+    skipping = False
+    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        match = _OPEN_ITEM.match(line.rstrip("\r\n"))
+        if match is not None:
+            skipping = match.group("title") in titles
+        elif skipping and not line.startswith((" ", "\t")):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    path.write_text("".join(kept), encoding="utf-8")
