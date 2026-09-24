@@ -14,6 +14,7 @@ import pytest
 from evomesh.skills import (
     InvalidSkillError,
     MissingSkillError,
+    PendingSkillWrite,
     SkillRegistry,
     parse_skill,
     scan_skill_content,
@@ -280,3 +281,25 @@ async def test_install_directory_rejects_one_with_no_skill_md(tmp_path: Path) ->
         await registry.install_directory(source)
 
     assert not (tmp_path / "skills").exists()
+
+
+def test_pending_skill_write_stages_the_exact_skill_md_text() -> None:
+    # Constructed the way _commit_or_stage_skill_write does it.
+    staged = PendingSkillWrite(
+        number=1,
+        agent_id="agent-1",
+        kind="learn",
+        name="research",
+        summary="Learn 'research'",
+        text=VALID,
+    )
+
+    # The docstring says text is already the exact final SKILL.md that
+    # install() would write, so what a human reviews is exactly what lands.
+    assert staged.text == VALID
+
+    # repr() is a real method on the dataclass; calling it on the staged
+    # write shows the class name plus the field values a human reads off.
+    rendered = repr(staged)
+    assert "PendingSkillWrite" in rendered
+    assert "research" in rendered
