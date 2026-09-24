@@ -9,6 +9,7 @@ objective and diff it was handed.
 from __future__ import annotations
 
 from evomesh.evolution import (
+    ObjectivePick,
     PlanNode,
     clip,
     decompose_objective,
@@ -74,3 +75,16 @@ def test_harness_repair_objective_embeds_command_and_output() -> None:
     assert "evomesh" in prompt
     assert "The validation command `uv run pytest` failed with exit code 1." in prompt
     assert "OUTPUT:\nassert x == 1" in prompt
+
+
+def test_objective_pick_repr_names_its_fields() -> None:
+    pick = ObjectivePick(
+        kind="improvement",
+        objective="Make X faster",
+        needle="Improve X:",
+        key="Faster startup",
+    )
+    rendered = repr(pick)
+    assert rendered.startswith("ObjectivePick(")
+    assert "make x faster" in rendered.lower()
+    assert "Faster startup" in rendered
