@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -81,6 +82,22 @@ async def run_command(
             )
             return completed.returncode, completed.stdout or b"", False
         except subprocess.TimeoutExpired as exc:
+            # ``subprocess.run`` killed only the direct child. That leaves any
+            # grandchild the child spawned (a backgrounded process, a process
+            # group) orphaned with the worker thread -- still alive, still
+            # holding whatever it was holding, long after we have returned.
+            # ``start_new_session=True`` above made the child its own group
+            # leader, so ``os.killpg`` on the child's pid reaches the whole
+            # group; ``SIGKILL`` (not ``SIGTERM``) so a signal-ignoring child
+            # cannot just carry on. ``subprocess.run`` records the child it
+            # spawned on ``exc.process`` (``TimeoutExpired.pid`` is not present
+            # in the bundled type stub, so read it off the ``Popen`` instead).
+            pid = getattr(getattr(exc, "process", None), "pid", None)
+            if pid:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             return 124, exc.output or b"", True
 
     exit_code, output, timed_out = await asyncio.to_thread(call)

@@ -69,7 +69,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     `CandidateRepairer.autofix` (`run_command(uv, *self.AUTOFIX[1:], cwd=generation.path)`)
     -- should pass `env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}`.
     Put that dict behind one small helper so both call sites share it.
-- [ ] Kill the whole process group when run_command's timeout fires
+- [x] Kill the whole process group when run_command's timeout fires
     `run_command` is meant to run an external command "without leaving a transport behind," but on timeout it kills only the direct child; any grandchild the child spawned (a backgrounded process, a process group) becomes orphaned and keeps running. The `subprocess.run(...)` call has no `start_new_session`/`preexec_fn`, and the `except subprocess.TimeoutExpired` handler returns a fixed result without touching the group.
     >             completed = subprocess.run(  # noqa: S603 - the caller supplies the program
     >                 [program, *arguments],
@@ -83,7 +83,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     >         except subprocess.TimeoutExpired as exc:
     >             return 124, exc.output or b"", True
     1. [x] src/evomesh/processes.py `run_command` -- add `start_new_session=True` to the `subprocess.run(...)` call so the child leads its own process group/session, separate from the worker thread.
-    2. [ ] src/evomesh/processes.py `run_command` -- in the `except subprocess.TimeoutExpired` handler, terminate that whole process group (via `os.killpg`) before returning the timeout result, so children/grandchildren don't outlive the parent.
+    2. [x] src/evomesh/processes.py `run_command` -- in the `except subprocess.TimeoutExpired` handler, terminate that whole process group (via `os.killpg`) before returning the timeout result, so children/grandchildren don't outlive the parent.
 - [x] Make the watcher's timeout actually kill the command, not just stop awaiting it
     `AgentWatcher._tick` calls `run_command` with no `timeout_seconds`, and `_loop` relies solely on `asyncio.wait_for` to enforce `self.timeout_seconds`. Per the `run_command` docstring (processes.py:58-67), cancelling the await on the worker thread does not stop the blocking `subprocess.run` running inside that thread, so a timed-out child keeps running for real — the watcher's own timeout never actually terminates the leaked process.
     > `await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)`
