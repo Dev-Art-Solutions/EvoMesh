@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1384](001384.md) — In `src/evomesh/console.py` `_command_evolution`, I read the `recent_outcomes` list already maintained by `promote`/`discard` (capped at 20) and appended one summary line to the `/evolution status` output (`recent: N promoted, M discarded of the last K`), plus a matching test in `tests/test_console.py`.
 - [Generation 1383](001383.md) — In `GenerationSupervisor.discard`, appended the outcome `discarded` to the capped `recent_outcomes` list in supervisor metadata (last 20), mirroring what `promote()` writes for `promoted`, so the later `/evolution status` line can summarize the last ~20 outcomes.
 - [Generation 1382](001382.md) — This step implements part 1 of the item — `promote` now records its outcome in a capped last-20 list (`recent_outcomes`) in the supervisor metadata so that a human-facing summary of evolution's success rate can later be built into `/evolution status`; the list is capped at 20 and created on first use per the step's exact instructions.
 - [Generation 1381](001381.md) — The change spans two write methods in `evolution.py` plus one reader in `console.py`, so it is a 3-step job; each step is independently validatable and each names exactly one OUTLINE function.

@@ -1077,6 +1077,12 @@ class ConsoleChannel:
                 if state.get("stage") == "await-human" and state.get("awaiting")
                 else ""
             )
+            outcomes = metadata.get("recent_outcomes") or []
+            recent = (
+                f"recent: {outcomes.count('promoted')} promoted, "
+                f"{outcomes.count('discarded')} discarded "
+                f"of the last {len(outcomes)}"
+            )
             return (
                 f"active generation: {metadata['active']}"
                 f"{f' ({applied[:8]})' if applied else ''}\n"
@@ -1084,7 +1090,7 @@ class ConsoleChannel:
                 f"published: {self._publish_state(metadata)}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
                 f"self-repairs on this candidate: {state.get('repairs', 0)}\n"
-                f"candidates:\n{candidates or '  none'}{restart}{awaiting}"
+                f"candidates:\n{candidates or '  none'}{restart}{awaiting}\n{recent}"
             )
         if action == "start" and len(parts) > 2:
             definition = self.environment.registry.get("evolver")

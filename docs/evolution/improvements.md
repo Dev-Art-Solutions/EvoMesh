@@ -48,7 +48,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     failure". Add an optional `env: Mapping[str, str] | None = None` to `run_command` in
     src/evomesh/processes.py (passed through to `subprocess.run`), and have the candidate
     commands pass a copy of `os.environ` without `VIRTUAL_ENV`.
-- [ ] Show the Evolver's recent success rate in `/evolution status`
+- [x] Show the Evolver's recent success rate in `/evolution status`
     Nothing tells a human whether evolution is actually working: 363 of the last ~550
     generations were discarded "not validated" and that was only found by grepping mesh.log.
     Nothing keeps that count today: `GenerationSupervisor.promote` and
@@ -59,7 +59,7 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     src/evomesh/console.py), e.g. `recent: 4 promoted, 16 discarded of the last 20`.
     1. [x] src/evomesh/evolution.py `GenerationSupervisor.promote` -- append the outcome `promoted` to a capped list (keep the last 20) stored in the supervisor metadata, creating the key on first use.
     2. [x] src/evomesh/evolution.py `GenerationSupervisor.discard` -- append the outcome `discarded` to that same last-20 list in the supervisor metadata, alongside what `promote` writes.
-    3. [ ] src/evomesh/console.py `ConsoleChannel._command_evolution` -- add one line summarising the last ~20 outcomes (e.g. `recent: 4 promoted, 16 discarded of the last 20`), built from the list `promote` and `discard` maintain.
+    3. [x] src/evomesh/console.py `ConsoleChannel._command_evolution` -- add one line summarising the last ~20 outcomes (e.g. `recent: 4 promoted, 16 discarded of the last 20`), built from the list `promote` and `discard` maintain.
 - [x] Actually pass the VIRTUAL_ENV-free environment to the candidate's uv commands
     Generation 1370 added `env: Mapping[str, str] | None = None` to `run_command` in
     src/evomesh/processes.py, but nothing passes it yet, so uv still prints
