@@ -399,6 +399,34 @@ def test_untested_target_never_picks_a_protocol_or_an_abc(tmp_path: Path) -> Non
     assert untested_target(tmp_path, seed=1) is None
 
 
+def test_untested_target_skips_a_private_helper(tmp_path: Path) -> None:
+    """A leading underscore is Python's own "not part of what this module
+    exports" signal, the same line untested_target's docstring already draws.
+    Found live 2026-09-24: `_post_with_retry` and `_with_recent_failure` were
+    both handed to a harness job with the objective claiming "It is exported
+    and load-bearing" -- true of neither, since nothing outside the module is
+    meant to call a name starting with `_`."""
+    package = tmp_path / "src" / "evomesh"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '"""Package."""\n\nfrom evomesh.busy import _private_helper, public_helper\n',
+        encoding="utf-8",
+    )
+    (package / "busy.py").write_text(
+        '"""Does the real work."""\n\n'
+        "def _private_helper():\n    pass\n\n\n"
+        "def public_helper():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+
+    target = untested_target(tmp_path, seed=0)
+
+    assert target is not None
+    _, name = target
+    assert name == "public_helper()"
+
+
 def test_untested_objective_warns_against_inventing_a_mock(tmp_path: Path) -> None:
     """Found live: a job fabricated a `MockPrompt` class wholesale instead of
     reusing what the test file already had. The objective has to say not to

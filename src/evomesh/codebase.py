@@ -106,13 +106,26 @@ def _exported_signatures(tree: ast.Module) -> tuple[str, ...]:
     module in was never a wrong parameter -- it was a name that was never there
     at all (``scc_find_cycles``, ``CycleCounter``, ``live_cycle_number``, none
     of which exist). A verbatim name list closes off guessing at the source.
+
+    A name starting with ``_`` is skipped -- Python's own convention for
+    "internal, not part of what this module exports" is exactly the line
+    ``untested_target``'s docstring already draws ("an export is a name whose
+    test coverage another module could plausibly depend on"). Before this, a
+    private helper like ``_post_with_retry`` or ``_with_recent_failure`` was
+    handed to a harness job with the objective claiming "It is exported and
+    load-bearing" -- true of neither: nothing outside the module is meant to
+    depend on it, and the leading underscore says so.
     """
     names: list[str] = []
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            names.append(f"{node.name}()")
-        elif isinstance(node, ast.ClassDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if node.name.startswith("_"):
+            continue
+        if isinstance(node, ast.ClassDef):
             names.append(node.name)
+        else:
+            names.append(f"{node.name}()")
     return tuple(names)
 
 
