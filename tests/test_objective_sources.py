@@ -206,6 +206,7 @@ REAL_ITEM = (
     "- [ ] Cache helper's result\n"
     "    In src/evomesh/busy.py, `helper()` is recomputed on every call even though its\n"
     "    input never changes between cycles; memoize it.\n"
+    "    > return value\n"
     "    1. [ ] src/evomesh/busy.py `helper` -- memoize it with functools.cache\n"
 )
 
@@ -257,6 +258,55 @@ def test_vet_drops_imaginary_files_functions_and_thin_items(tmp_path: Path) -> N
     assert "`Busy.warm`" in reasons["Imaginary anchor"]
     assert "too short" in reasons["Thin"]
     assert "no steps" in reasons["No steps"]
+
+
+def test_vet_wants_the_code_quoted_and_the_quote_real(tmp_path: Path) -> None:
+    """Found live 2026-09-24: generation 1386 described a "[?]" fallback, a
+    ValueError and role sets in a function that is one `dict.get` -- with an
+    anchor that existed, so only a quote copied from the file could catch it."""
+    _live_package(tmp_path)
+    item = REAL_ITEM.replace("Cache helper's result", "{title}")
+    _write_backlog(
+        tmp_path,
+        item.format(title="Quoted")
+        + item.format(title="Unquoted").replace("    > return value\n", "")
+        + item.format(title="Misquoted").replace(
+            "> return value", "> if role in {'active'}: return '[?]'"
+        )
+        + item.format(title="Too short to count").replace("> return value", "> value"),
+    )
+
+    kept, dropped = vet_new_improvements([], tmp_path)
+
+    assert [entry.title for entry in kept] == ["Quoted"]
+    reasons = {entry.title: reason for entry, reason in dropped}
+    assert "quotes no code" in reasons["Unquoted"]
+    assert "in none of its files" in reasons["Misquoted"]
+    assert "quotes no code" in reasons["Too short to count"]
+
+
+def test_an_item_one_space_in_and_a_backticked_path_still_parse(tmp_path: Path) -> None:
+    """Generation 1385 wrote its item as ` - [ ] ...` and 1386 its steps with
+    the path in backticks; both were lost to the parser, not to the vet."""
+    _write_backlog(
+        tmp_path,
+        "- [x] Old\n"
+        "    why\n"
+        " - [ ] One space in\n"
+        "    why\n"
+        "    1. [ ] `src/evomesh/busy.py` `helper` -- change it\n"
+        " - [x] Done, one space in\n"
+        "    why\n",
+    )
+
+    (item,) = open_improvements(tmp_path)
+
+    assert item.title == "One space in"
+    assert item.detail == "why"
+    assert [(step.path, step.symbol) for step in item.steps] == [("src/evomesh/busy.py", "helper")]
+    assert done_improvements(tmp_path) == ["Old", "Done, one space in"]
+    assert tick_step(tmp_path, "One space in", 1) is True
+    assert open_improvements(tmp_path) == []
 
 
 def test_vet_ignores_items_that_were_already_open(tmp_path: Path) -> None:

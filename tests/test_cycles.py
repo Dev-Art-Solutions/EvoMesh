@@ -3095,6 +3095,7 @@ async def test_a_scout_looks_at_one_module_and_keeps_an_anchored_item(
         "# Backlog\n\n- [x] Old item\n"
         "- [ ] Double the helper\n"
         "    helper() returns what it gets, and every caller doubles it by hand.\n"
+        "    > return value\n"
         "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
     )
     validator = ScriptedValidator([passing()])

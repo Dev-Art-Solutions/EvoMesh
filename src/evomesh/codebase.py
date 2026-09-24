@@ -650,7 +650,10 @@ def untested_objective(root: Path, seed: int) -> str | None:
 # exactly that and nothing else: the pipeline worked and the system never got
 # any better.
 IMPROVEMENTS_FILE = Path("docs") / "evolution" / "improvements.md"
-_OPEN_ITEM = re.compile(r"^- \[ \] (?P<title>\S.*?)\s*$")
+# Up to three leading spaces is still a top-level list item in Markdown. Found
+# live 2026-09-24: generation 1385's scout wrote a good item as " - [ ] ...",
+# one space in, and it silently became detail lines of the item above it.
+_OPEN_ITEM = re.compile(r"^ {0,3}- \[ \] (?P<title>\S.*?)\s*$")
 # One step of an item: one change to one existing function, method or
 # constant in one file, e.g.
 #     1. [ ] src/evomesh/evolution.py `GenerationSupervisor.discard` -- remember it
@@ -664,7 +667,8 @@ _OPEN_ITEM = re.compile(r"^- \[ \] (?P<title>\S.*?)\s*$")
 # function's current source up front, so there is nothing left to navigate.
 _STEP = re.compile(
     r"^\s+(?P<number>\d+)\.\s*\[(?P<done>[ xX])\]\s*"
-    r"(?P<path>src/evomesh/\w+\.py)\s+"
+    # The path may come in backticks too (generation 1386 wrote every step so).
+    r"`?(?P<path>src/evomesh/\w+\.py)`?\s+"
     r"`(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)`"
     r"\s*(?:--|:|-|—|–)?\s*(?P<change>.*?)\s*$"
 )
@@ -704,6 +708,15 @@ class Improvement:
         for match in _SOURCE_PATH.finditer(text):
             seen.setdefault(match.group(0), None)
         return list(seen)
+
+
+def _continues(line: str) -> bool:
+    """Whether ``line`` belongs to the item above it: indented or blank, and
+    not an item of its own -- which may itself be indented up to three spaces."""
+    bare = line.rstrip("\r\n")
+    if _OPEN_ITEM.match(bare) or _DONE_ITEM.match(bare):
+        return False
+    return not bare.strip() or bare.startswith((" ", "\t"))
 
 
 def _parse_item(title: str, block: list[str]) -> Improvement:
@@ -746,7 +759,7 @@ def open_improvements(root: Path) -> list[Improvement]:
             if title is not None:
                 items.append(_parse_item(title, block))
             title, block = match.group("title"), []
-        elif title is not None and (line.startswith((" ", "\t")) or not line.strip()):
+        elif title is not None and _continues(line):
             block.append(line)
         elif title is not None:
             items.append(_parse_item(title, block))
@@ -843,7 +856,7 @@ def tick_step(root: Path, title: str, number: int) -> bool:
         if (match := _OPEN_ITEM.match(bare)) is not None:
             inside = match.group("title") == title
             continue
-        if inside and bare.strip() and not bare.startswith((" ", "\t")):
+        if inside and not _continues(bare):
             inside = False
         step = _STEP.match(bare) if inside else None
         if step is not None and int(step.group("number")) == number and step.group("done") == " ":
@@ -1002,7 +1015,7 @@ SCOUT_MAX_ITEMS = 2
 # act on without re-deriving the whole problem itself. Its steps count: they are
 # the most concrete part of it.
 SCOUT_MIN_DETAIL_CHARS = 80
-_DONE_ITEM = re.compile(r"^- \[[xX]\] (?P<title>\S.*?)\s*$")
+_DONE_ITEM = re.compile(r"^ {0,3}- \[[xX]\] (?P<title>\S.*?)\s*$")
 _SOURCE_PATH = re.compile(r"src/evomesh/(?P<module>\w+)\.py")
 _CALLED_NAME = re.compile(r"`(?:[\w.]+\.)?(?P<name>[A-Za-z_]\w*)\(\)`")
 _LEVEL_WARNING = ("WARNING", "ERROR", "CRITICAL")
@@ -1153,6 +1166,37 @@ def scout_objective(
     return "\n".join(lines)
 
 
+# A scout's evidence: code it quotes, one `> ` detail line each, which has to be
+# in a file the item names -- the same "copied, not recalled" rule an edit's
+# `old` lives by. Found live 2026-09-24: generation 1386 scouted agent_label.py
+# and wrote an item about its "[?]" fallback, its ValueError and its role sets.
+# The real function is one line -- `return _AGENT_LABELS.get(role, "agent")` --
+# and every anchor the item named existed, so nothing else would have caught it.
+_QUOTE = re.compile(r"^>\s?`?(?P<code>.*?)`?\s*$")
+# Shorter than this, a quote (`return`, `pass`) is in every file by luck.
+MIN_QUOTE_CHARS = 8
+
+
+def _quotes(item: Improvement) -> list[str]:
+    return [
+        code
+        for line in item.detail.splitlines()
+        if (match := _QUOTE.match(line))
+        and len(code := match.group("code").strip()) >= MIN_QUOTE_CHARS
+    ]
+
+
+def _misquoted(root: Path, item: Improvement, quotes: list[str]) -> list[str]:
+    """The quotes that appear on no line of any file ``item`` names."""
+    lines: list[str] = []
+    for path in item.source_paths:
+        file = root / path
+        if file.is_file():
+            text = file.read_text(encoding="utf-8", errors="replace")
+            lines.extend(line.strip() for line in text.splitlines())
+    return [code for code in quotes if not any(code in line for line in lines)]
+
+
 def _unanchored(root: Path, item: Improvement) -> list[str]:
     return [
         f"{step.path} `{step.symbol}`"
@@ -1212,6 +1256,13 @@ def vet_new_improvements(
             reason = f"it names functions that do not exist ({', '.join(missing)})"
         elif fabricated := fabricated_references(text, root):
             reason = f"it names symbols that do not exist ({', '.join(fabricated)})"
+        elif not (quotes := _quotes(item)):
+            reason = (
+                "it quotes no code: the line that shows the problem, copied from the "
+                "file, goes on a detail line of its own starting with `> `"
+            )
+        elif misquoted := _misquoted(root, item, quotes):
+            reason = f"it quotes code that is in none of its files: {misquoted[0]!r}"
         else:
             kept.append(item)
             continue
@@ -1274,7 +1325,7 @@ def drop_improvements(root: Path, titles: set[str]) -> None:
         match = _OPEN_ITEM.match(line.rstrip("\r\n"))
         if match is not None:
             skipping = match.group("title") in titles
-        elif skipping and not line.startswith((" ", "\t")):
+        elif skipping and not _continues(line):
             skipping = False
         if not skipping:
             kept.append(line)
@@ -1488,7 +1539,7 @@ def _backlog_rows(root: Path, title: str | None) -> list[str]:
         match = _OPEN_ITEM.match(line)
         if match is not None and match.group("title") == title:
             end = index + 1
-            while end < len(lines) and lines[end].startswith((" ", "\t")):
+            while end < len(lines) and lines[end].strip() and _continues(lines[end]):
                 end += 1
             return _numbered(lines, index + 1, end)
     return []
@@ -1553,8 +1604,12 @@ SCOUT_RULES = "\n".join(
         "above), exactly in this shape, with 1 to 3 steps:",
         "- [ ] <short imperative title>",
         "    <what is wrong today and how you know: the code you read, or the log line>",
+        "    > <a line of code that shows it, copied exactly from the file>",
         "    1. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the change, "
         "in one sentence>",
+        "- Say only what the code you READ does, and prove it: at least one `> ` line "
+        "copied character-for-character from the file (without the `NNNNN| ` "
+        "prefix). An item whose quote is in none of its files is thrown away.",
         _ANCHOR_RULE,
         "- Use edit: `old` = the file's last line as shown above, without the "
         "`NNNNN| ` prefix (number, bar, ONE space); `new` = that line followed by "

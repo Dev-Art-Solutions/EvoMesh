@@ -195,8 +195,10 @@ regresses.
     recurring warnings point into (`warning_leads`, counted only since that file last changed),
     else a seed-rotated live module — that may only write under `docs/evolution/` and appends
     **one item with steps**; `vet_new_improvements` strips any item without steps, or whose
-    step anchors (`find_symbol`), files or `function()`s do not exist, and a scout left with
-    none is a no-op. The scout only runs where improvements.md exists — the file's presence is
+    step anchors (`find_symbol`), files or `function()`s do not exist, or that quotes no code
+    (`> ` detail lines, each of which must appear in a file the item names — a small model
+    describes code it has not read: gen 1386's item was about a fallback and a ValueError in a
+    one-line function), and a scout left with none is a no-op. The scout only runs where improvements.md exists — the file's presence is
     the opt-in.
 
     **Items are split into steps, and a step is the unit of work** (2026-09-24, from reading
