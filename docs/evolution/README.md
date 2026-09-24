@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1458](001458.md) — Added one small test that calls `tool_shell` with the simplest realistic args (`python -c "pass"`, python allow-listed) and asserts the obvious documented behavior — a successful command with no output returns `"exit 0"` — matching the return on line 1052 of the code under test, using a short command to avoid the E501 failure from the prior attempt.
 - [Generation 1456](001456.md) — This asserts the single documented behavior of `runtime_fault_needle` (its returned prefix), using the real `RuntimeFault` dataclass with simple field values and no changes under `src/evomesh/`.
 - [Generation 1455](001455.md) — The test exercises the load-bearing `improvement_needle` with minimal realistic args and asserts the single concrete output its source defines, leaving every other branch untested as instructed.
 - [Generation 1454](001454.md) — The source returns `f"{SCOUT_NEEDLE} from src/evomesh/{module}.py"` with `SCOUT_NEEDLE = "Refill the improvement backlog"`, so `scout_needle("codebase")` must equal `"Refill the improvement backlog from src/evomesh/codebase.py"`, a single real, passing check covering the load-bearing function's output.

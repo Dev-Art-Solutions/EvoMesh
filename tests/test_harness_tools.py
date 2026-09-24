@@ -9,6 +9,7 @@ from evomesh.harness_tools import (
     tool_edit,
     tool_fetch,
     tool_patch_skill,
+    tool_shell,
     tool_write,
     valid_id,
 )
@@ -56,3 +57,9 @@ async def test_tool_delete_removes_the_file_it_is_asked_to(tmp_path):
     ctx = ToolContext(root=tmp_path, allow_write=True)
     await tool_delete(ctx, {"path": "gone.txt"})
     assert not target.exists()
+
+
+async def test_tool_shell_reports_exit_0_for_a_successful_command():
+    ctx = ToolContext(root=Path("."), allow_write=True, shell_allow=frozenset({"python"}))
+    result = await tool_shell(ctx, {"command": 'python -c "pass"'})
+    assert result == "exit 0"
