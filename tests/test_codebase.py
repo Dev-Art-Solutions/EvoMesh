@@ -2,6 +2,7 @@ from evomesh.codebase import (
     IMPROVEMENTS_FILE,
     PACKAGE,
     Improvement,
+    RuntimeFault,
     Step,
     fabricated_references,
     improvement_needle,
@@ -9,6 +10,7 @@ from evomesh.codebase import (
     package_root,
     plan_needle,
     plan_objective,
+    runtime_fault_needle,
     scout_needle,
     step_needle,
     stray_root_files,
@@ -85,4 +87,21 @@ def test_scout_needle_prefixed_with_the_scout_objective_prefix():
 def test_improvement_needle_prefixed_with_the_improvement_phrase():
     assert improvement_needle(Improvement("Split the DB module")) == (
         "Implement this improvement to EvoMesh: Split the DB module"
+    )
+
+
+def test_runtime_fault_needle_prefixed_with_the_bug_prefix():
+    assert runtime_fault_needle(
+        RuntimeFault(
+            module="codebase",
+            function="survey",
+            line=1,
+            exception="KeyError",
+            count=1,
+            last_seen="",
+            traceback="",
+        )
+    ) == (
+        "Fix a real bug the running mesh hit: `KeyError` escaping "
+        "`survey` in `src/evomesh/codebase.py`"
     )
