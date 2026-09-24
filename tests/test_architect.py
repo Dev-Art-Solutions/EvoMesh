@@ -1,11 +1,13 @@
 from evomesh.architect import derive_access, derive_model, plausible_constraints
 
 
-def test_derive_model_returns_normalized_model_and_system_prompt():
-    provider, model = derive_model("GPT-4o", "openai", "GPT-4o")
-    system_prompt = "You are a test agent."
-    assert model == "GPT-4o"
-    assert system_prompt == "You are a test agent."
+def test_derive_model_returns_the_default_provider_and_model_when_no_need_pattern_matches():
+    # With no `provider:model` token in `need`, derive_model falls back to the
+    # defaults passed in -- this is the obvious, real behavior of the function.
+    assert derive_model("Just talk to me about gold prices", "openai", "GPT-4o") == (
+        "openai",
+        "GPT-4o",
+    )
 
 
 def test_derive_access_returns_the_path_token_in_the_need():
