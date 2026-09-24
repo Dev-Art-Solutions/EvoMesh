@@ -303,8 +303,29 @@ async def test_refusals_name_paths_the_way_the_job_does(tmp_path: Path) -> None:
     past = await registry.invoke(context, "read", {"path": "tests/test_x.py", "offset": 9})
 
     assert missed == "no match for promote in tests/test_x.py (*.py)"
-    assert absent == "DENIED: tests/test_y.py does not exist"
+    assert absent == "DENIED: tests/test_y.py does not exist."
     assert past == "tests/test_x.py has no lines at offset 9 (2 lines total)"
+
+
+async def test_a_missing_path_says_what_was_probably_meant(tmp_path: Path) -> None:
+    """Found in 250 sessions: 136 refused calls were a path that was not there
+    -- a module without its `.py`, a `generations/NNNNNN-candidate/` prefix
+    copied out of an absolute path, a file under the wrong directory."""
+    root = tmp_path / "root"
+    (root / "src" / "evomesh").mkdir(parents=True)
+    (root / "src" / "evomesh" / "behaviors.py").write_text("X = 1\n", encoding="utf-8")
+    context = ToolContext(root=root)
+    registry = ToolRegistry()
+
+    bare = await registry.invoke(context, "read", {"path": "src/evomesh/behaviors"})
+    copied = await registry.invoke(
+        context, "read", {"path": "generations/001218-candidate/src/evomesh/behaviors.py"}
+    )
+    moved = await registry.invoke(context, "ls", {"path": "src/behaviors.py"})
+
+    assert bare.endswith("Did you mean: src/evomesh/behaviors.py?")
+    assert copied.endswith("Did you mean: src/evomesh/behaviors.py?")
+    assert moved.endswith("Did you mean: src/evomesh/behaviors.py?")
 
 
 async def test_a_read_cut_by_characters_says_where_it_really_stopped(project: Path) -> None:
@@ -338,12 +359,15 @@ async def test_grep_reports_matches_relative_to_the_root(project: Path) -> None:
     assert "src/answer.py:1:" in result.replace("\\", "/")
 
 
-async def test_a_bad_regular_expression_comes_back_as_a_refusal(project: Path) -> None:
+async def test_a_bad_regular_expression_is_searched_as_plain_text(project: Path) -> None:
+    """Found live: 29 of 971 refused calls were a pattern like `def foo(` -- text
+    meant literally, invalid as a regex. Refusing it only cost a step."""
     result = await ToolRegistry().invoke(
-        ToolContext(root=project), "grep", {"pattern": "def ("}
+        ToolContext(root=project), "grep", {"pattern": "def reconsider("}
     )
 
-    assert result.startswith("DENIED:")
+    assert "searched for it as plain text" in result
+    assert "src/answer.py:1:" in result.replace("\\", "/")
 
 
 # -- edit and write ------------------------------------------------------
@@ -1436,6 +1460,85 @@ async def test_a_program_outside_the_list_is_named_in_the_refusal(project: Path)
     )
 
     assert "curl is not in harness.shell_allow" in result
+
+
+async def test_read_only_unix_commands_are_answered_by_the_tools_that_do_them(
+    project: Path,
+) -> None:
+    """Found in 250 sessions: 380 of 971 refused calls were `ls`, `cd`,
+    `grep`, `cat`, `wc`, `find`... through a shell that only runs python --
+    each a step spent learning that. The read-only ones are answered."""
+    (project / "long.py").write_text("\n".join(f"row {n}" for n in range(1, 31)), encoding="utf-8")
+    context = shell_context(project, {"python"})
+    shell = ToolRegistry(SHELL_TOOLS)
+
+    async def run(command: str) -> str:
+        return await shell.invoke(context, "shell", {"command": command})
+
+    listing = await run("ls -la src")
+    cat = await run("cat src/answer.py")
+    head = await run("head -n 3 long.py")
+    tail = await run("tail -2 long.py")
+    sed = await run("sed -n '10,12p' long.py")
+    grep = await run("grep -rn reconsider src")
+    count = await run("wc -l long.py")
+    found = await run("find . -name 'answer.py'")
+    where = await run("pwd")
+
+    assert listing.startswith("[there is no unix shell here: `ls -la src` was answered as ls")
+    assert "answer.py" in listing
+    assert "def reconsider" in cat
+    assert "    3| row 3" in head and "row 4" not in head
+    assert "   30| row 30" in tail and "row 28" not in tail
+    assert "   10| row 10" in sed and "   12| row 12" in sed and "row 13" not in sed
+    assert "src/answer.py:1:" in grep.replace("\\", "/")
+    assert count.endswith("30 long.py")
+    assert found.endswith("src/answer.py")
+    assert "the job root" in where
+
+
+async def test_git_status_is_answered_only_where_the_root_is_its_own_repository(
+    tmp_path: Path, project: Path
+) -> None:
+    """Rule 11: git walks up to the nearest ancestor .git, so an agent's
+    playground nested in the mesh's checkout would be shown the whole mesh."""
+    from evomesh.git import GitRepository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = GitRepository(repo)
+    await git.run("init", "-b", "main")
+    (repo / "new.py").write_text("X = 1\n", encoding="utf-8")
+    shell = ToolRegistry(SHELL_TOOLS)
+
+    own = await shell.invoke(shell_context(repo, {"python"}), "shell", {"command": "git status"})
+    nested = await shell.invoke(
+        shell_context(project, {"python"}), "shell", {"command": "git status"}
+    )
+
+    assert "was answered as git status --short" in own
+    assert "?? new.py" in own
+    assert nested.startswith("DENIED: git is not in harness.shell_allow")
+
+
+async def test_cd_and_piped_commands_are_still_refused_and_say_why(project: Path) -> None:
+    context = shell_context(project, {"python"})
+    shell = ToolRegistry(SHELL_TOOLS)
+
+    moved = await shell.invoke(context, "shell", {"command": "cd src"})
+    piped = await shell.invoke(context, "shell", {"command": "cat src/answer.py | head"})
+
+    assert "There is no working directory to change" in moved
+    assert piped.startswith("DENIED: cat is not in harness.shell_allow")
+
+
+async def test_python3_is_the_python_on_the_list(project: Path) -> None:
+    result = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}), "shell", {"command": "python3 -c 'print(6*7)'"}
+    )
+
+    assert result.startswith("exit 0")
+    assert "42" in result
 
 
 async def test_python_cannot_shell_out_to_undo_its_own_edit(project: Path) -> None:

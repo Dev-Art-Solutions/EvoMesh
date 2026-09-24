@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import re
 import shlex
 import tempfile
@@ -324,7 +325,7 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
     if target.is_dir():
         raise ToolDenied(f"DENIED: {_shown(context, target)} is a directory, use ls")
     if not target.is_file():
-        raise ToolDenied(f"DENIED: {_shown(context, target)} does not exist")
+        raise _missing(context, target)
     context.tally.reads += 1
     offset = max(1, int(args.get("offset", 1) or 1))
     limit = int(args.get("limit", 0) or 0)
@@ -346,12 +347,22 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
     pattern = str(args.get("pattern", "")).strip()
     if not pattern:
         raise ToolDenied("DENIED: grep needs a pattern")
+    note = ""
     try:
         expression = re.compile(pattern)
     except re.error as exc:
-        raise ToolDenied(f"DENIED: {pattern} is not a valid regular expression: {exc}") from exc
+        # Found live: 29 of 971 refused calls were a pattern like `def foo(` --
+        # meant as text, invalid as a regex. Searching for the text is what was
+        # meant; refusing only cost a step.
+        expression = re.compile(re.escape(pattern))
+        note = (
+            f"[{pattern} is not a valid regular expression ({exc}); "
+            "searched for it as plain text]\n"
+        )
     target = _resolve_readable(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
+    if not target.exists():
+        raise _missing(context, target)
     context.tally.reads += 1
     glob = str(args.get("glob", "*.py") or "*.py")
     files = [target] if target.is_file() else sorted(target.rglob(glob))
@@ -390,17 +401,48 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
                 matches.append(f"{where}:{number}: {line.strip()}")
             if len(matches) >= context.limits.grep_matches:
                 found = "\n".join(matches)
-                return f"{found}\n[... more matches withheld, narrow the pattern ...]"
+                return f"{note}{found}\n[... more matches withheld, narrow the pattern ...]"
     if not matches:
-        return f"no match for {pattern} in {_shown(context, target)} ({glob})"
-    return _clip("\n".join(matches), context.limits, unit="matches")
+        return f"{note}no match for {pattern} in {_shown(context, target)} ({glob})"
+    return note + _clip("\n".join(matches), context.limits, unit="matches")
+
+
+def _missing(context: ToolContext, target: Path) -> ToolDenied:
+    """"Does not exist", and the path most likely meant, when there is one.
+
+    Found in the last 250 harness sessions: 136 refused calls were a path that
+    was not there -- `src/evomesh/behaviors` without its `.py`, a
+    `generations/001218-candidate/...` prefix copied out of an absolute path
+    the model had been shown, a test file under the wrong name.
+    """
+    shown = _shown(context, target)
+    guesses: list[str] = []
+
+    def offer(path: Path) -> None:
+        if path.exists() and path.is_relative_to(context.root):
+            relative = "/".join(path.relative_to(context.root).parts)
+            if relative not in guesses:
+                guesses.append(relative)
+
+    if not target.suffix:
+        offer(target.with_suffix(".py"))
+    parts = shown.split("/")
+    for index, part in enumerate(parts):
+        if re.fullmatch(r"\d{6}-candidate", part):
+            offer(context.root.joinpath(*parts[index + 1 :]))
+    if target.name and len(guesses) < 3:
+        for path in sorted(context.root.rglob(target.name))[:20]:
+            if not SKIP_DIRECTORIES & set(_inside(context.root, path)):
+                offer(path)
+    hint = f" Did you mean: {', '.join(guesses[:3])}?" if guesses else ""
+    return ToolDenied(f"DENIED: {shown} does not exist.{hint}")
 
 
 async def tool_ls(context: ToolContext, args: dict[str, Any]) -> str:
     target = _resolve_readable(context, str(args.get("path", ".")))
     await _permit(context, target, "read")
     if not target.exists():
-        raise ToolDenied(f"DENIED: {_shown(context, target)} does not exist")
+        raise _missing(context, target)
     context.tally.reads += 1
     if target.is_file():
         return f"{target.name} ({target.stat().st_size} bytes)"
@@ -630,9 +672,8 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     if not old:
         raise ToolDenied("DENIED: edit needs 'old', the exact text to replace")
     if not target.is_file():
-        raise ToolDenied(
-            f"DENIED: {_shown(context, target)} does not exist. Use write to create a file."
-        )
+        missing = _missing(context, target)
+        raise ToolDenied(f"{missing} To create a new file, use write.")
     if old == new:
         raise ToolDenied("DENIED: 'old' and 'new' are identical, so this edit changes nothing")
     content = target.read_text(encoding="utf-8")
@@ -816,6 +857,115 @@ _SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
 _SHELL_REDIRECT_PREFIXES = ("<<", ">>", "<", ">")
 
 
+def _flag_value(parts: list[str], flag: str) -> str | None:
+    """The value after ``flag`` (``-n 20``) or glued to it (``-n20``), if any."""
+    for index, part in enumerate(parts):
+        if part == flag and index + 1 < len(parts):
+            return parts[index + 1]
+        if part.startswith(flag) and part != flag:
+            return part[len(flag) :]
+    return None
+
+
+def _operands(parts: list[str], *, valued: tuple[str, ...] = ()) -> list[str]:
+    """The non-flag arguments, skipping the value of each flag in ``valued``."""
+    operands: list[str] = []
+    skip = False
+    for part in parts:
+        if skip:
+            skip = False
+        elif part in valued:
+            skip = True
+        elif not part.startswith("-") or part == "-":
+            operands.append(part)
+    return operands
+
+
+async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, str] | None:
+    """A read-only unix command, done with the tool that already does it.
+
+    Found in the last 250 harness sessions: 380 of 971 refused calls were a
+    small model reaching for `ls`, `cd`, `grep`, `git`, `wc`, `cat`, `find`
+    through `shell`, each one a step spent learning that `shell` only runs
+    python. The ones that only look at files are answered instead, through
+    read/ls/grep (the same permission checks, the same clipping), with a note
+    naming the tool to call directly next time. ``None`` for anything else.
+    """
+    program, rest = Path(parts[0]).name.lower().removesuffix(".exe"), parts[1:]
+    if program == "pwd":
+        return "pwd", (
+            ". -- the job root. There is no working directory to change: every tool "
+            "takes a path relative to this root."
+        )
+    if program == "ls":
+        target = (_operands(rest) or ["."])[0]
+        return f'ls {{"path": "{target}"}}', await tool_ls(context, {"path": target})
+    if program == "cat" and len(files := _operands(rest)) == 1:
+        return f'read {{"path": "{files[0]}"}}', await tool_read(context, {"path": files[0]})
+    if program in ("head", "tail") and len(files := _operands(rest, valued=("-n",))) == 1:
+        count = _flag_value(rest, "-n") or next(
+            (part[1:] for part in rest if part[1:].isdigit() and part.startswith("-")), "10"
+        )
+        limit = int(count) if count.lstrip("+").isdigit() else 10
+        offset = 1
+        if program == "tail":
+            target = _resolve_readable(context, files[0])
+            if target.is_file():
+                total = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+                offset = max(1, total - limit + 1)
+        call = {"path": files[0], "offset": offset, "limit": limit}
+        return f"read {json.dumps(call)}", await tool_read(context, call)
+    if program == "sed" and rest[:1] == ["-n"] and len(rest) == 3:
+        span = re.fullmatch(r"(\d+),(\d+)p", rest[1])
+        if span is not None:
+            first, last = int(span.group(1)), int(span.group(2))
+            call = {"path": rest[2], "offset": first, "limit": max(1, last - first + 1)}
+            return f"read {json.dumps(call)}", await tool_read(context, call)
+    if program == "grep" and (found := _operands(rest, valued=("-e", "-m", "-A", "-B", "-C"))):
+        pattern = _flag_value(rest, "-e") or found.pop(0)
+        if "-i" in rest or any(part.startswith("-") and "i" in part[1:3] for part in rest):
+            pattern = f"(?i){pattern}"
+        call = {"pattern": pattern, "path": found[0] if found else "."}
+        include = next(
+            (part.split("=", 1)[1] for part in rest if part.startswith("--include=")), ""
+        )
+        if include:
+            call["glob"] = include
+        return f"grep {json.dumps(call)}", await tool_grep(context, call)
+    if program == "wc" and "-l" in rest and len(files := _operands(rest)) == 1:
+        target = _resolve_readable(context, files[0])
+        if not target.is_file():
+            raise ToolDenied(f"DENIED: {_shown(context, target)} does not exist")
+        count = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+        return "read (line count)", f"{count} {_shown(context, target)}"
+    if program == "find":
+        name = _flag_value(rest, "-name") or _flag_value(rest, "-iname")
+        roots = [part for part in _operands(rest, valued=("-name", "-iname", "-type")) if part]
+        if name:
+            base = _resolve_readable(context, roots[0] if roots else ".")
+            hits = sorted(
+                "/".join(_inside(context.root, path))
+                for path in base.rglob(name)
+                if not SKIP_DIRECTORIES & set(_inside(context.root, path))
+            )
+            listing = "\n".join(hits[:40]) or f"no file named {name}"
+            if len(hits) > 40:
+                listing += f"\n[... {len(hits) - 40} more, narrow the name ...]"
+            return f"ls/grep (find -name {name})", listing
+    # Only where the root is its own repository (a candidate's worktree): git
+    # walks up to the nearest ancestor .git otherwise (rule 11), and an agent's
+    # playground under workspace/ would be shown the whole mesh's checkout.
+    if program == "git" and rest[:1] in (["status"], ["diff"]) and (context.root / ".git").exists():
+        paths = [str(_resolve(context, part)) for part in _operands(rest[1:])]
+        argv = (
+            ["git", "status", "--short"] if rest[0] == "status" else ["git", "diff", "--", *paths]
+        )
+        result = await run_command(*argv, cwd=context.root, timeout_seconds=context.shell_seconds)
+        body = _clip(result.output.rstrip() or "(nothing)", context.limits, unit="lines")
+        return " ".join(argv[:3]), body
+    return None
+
+
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
     """Run one allowed program in the job root. The only tool that can do harm.
 
@@ -848,16 +998,33 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied("DENIED: shell needs a command")
     program = Path(parts[0]).name.lower()
     program = program[:-4] if program.endswith(".exe") else program
+    if program in ("python3", "py") and "python" in context.shell_allow:
+        # The same interpreter under the name a model trained on Linux reaches for.
+        program, parts = "python", ["python", *parts[1:]]
+    operators = _SHELL_OPERATOR_TOKENS & set(parts[1:]) or any(
+        token.startswith(_SHELL_REDIRECT_PREFIXES) for token in parts[1:]
+    )
     if program not in context.shell_allow:
+        translated = None if operators else await _shell_as_tool(context, parts)
+        if translated is not None:
+            tool, body = translated
+            return (
+                f"[there is no unix shell here: `{raw}` was answered as {tool} -- "
+                f"call that tool directly next time]\n{body}"
+            )
         allowed = ", ".join(sorted(context.shell_allow))
+        where = (
+            " There is no working directory to change: every tool takes a path "
+            "relative to the job root."
+            if program == "cd"
+            else " Files are read with read, grep and ls, which are tools of their own."
+        )
         raise ToolDenied(
-            f"DENIED: {program} is not in harness.shell_allow (allowed: {allowed})"
+            f"DENIED: {program} is not in harness.shell_allow (allowed: {allowed}).{where}"
         )
     if program == "python" and any(needle in raw for needle in _PYTHON_ESCAPE_NEEDLES):
         raise ToolDenied(PYTHON_ESCAPE_HINT)
-    if _SHELL_OPERATOR_TOKENS & set(parts[1:]) or any(
-        token.startswith(_SHELL_REDIRECT_PREFIXES) for token in parts[1:]
-    ):
+    if operators:
         raise ToolDenied(
             "DENIED: there is no shell interpreter here, so `&&`, `||`, `;`, "
             "`|`, `&`, `<`, `<<`, `>` and `>>` are not operators -- they "
