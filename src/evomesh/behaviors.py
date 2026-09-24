@@ -542,6 +542,18 @@ class EvolverBehavior(BDIBehavior):
         evolver = cast("EnvironmentEvolver | None", context.service("evolver"))
         if evolver is None:
             return StepResult.blocked("no evolution workspace is attached")
+        restarting = getattr(context.service("environment"), "restart_requested", None)
+        if isinstance(restarting, asyncio.Event) and restarting.is_set():
+            # Found live 2026-09-24, once stages chain without waiting out a
+            # cycle: a promotion asks for a restart, and the very next cycle
+            # opened generation 1393 while the process was shutting down --
+            # a worktree and an open candidate nothing would ever finish.
+            # Nothing new starts once this process is on its way out.
+            return StepResult(
+                summary="a restart is under way; nothing new starts before it",
+                hold=True,
+                phase=AgentPhase.ACTING,
+            )
         state = await evolver.pipeline_state()
         stage = str(state.get("stage", STAGE_PLAN))
         if stage == STAGE_AWAIT_HUMAN:
@@ -707,6 +719,23 @@ class EvolverBehavior(BDIBehavior):
                             f"`src/evomesh/{module.name}.py`."
                         )
                         objective = _with_recent_failure(evolver, objective, (needle,))
+        # At this stage no candidate is in flight, by definition. One still open
+        # that was never worked on -- no change, no verdict -- is an orphan of a
+        # restart that landed mid-open, and prune_stale() protects open
+        # candidates forever. One with work in it is left alone: a human who
+        # reset the pipeline may still want to promote it by hand.
+        supervisor = evolver.workspace.supervisor
+        for orphan in supervisor.candidates():
+            if (
+                orphan.status is GenerationStatus.CANDIDATE
+                and not orphan.changes
+                and evolver.read_validation(orphan) is None
+            ):
+                logger.info(
+                    "generation %s was left open with nothing driving it; discarding it",
+                    orphan.number,
+                )
+                supervisor.discard(orphan.number)
         generation = await evolver.create_candidate(objective)
         # create_candidate()/prune_stale() may just have deleted old
         # generation directories, and a harness job's filesystem grant

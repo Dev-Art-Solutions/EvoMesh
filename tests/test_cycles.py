@@ -2634,6 +2634,53 @@ async def test_a_promoted_generation_lands_on_the_checkout(tmp_path: Path) -> No
     assert metadata["restart_required"] is True
 
 
+async def test_nothing_new_starts_once_a_restart_is_under_way(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-24: with stages chained, the cycle right after a
+    promotion opened generation 1393 while the process was shutting down --
+    a worktree and an open candidate nothing would ever finish."""
+    from types import SimpleNamespace
+
+    evolver, context, harness = await evolving(
+        tmp_path, project, [MUTATION], ScriptedValidator([passing()])
+    )
+    restarting = asyncio.Event()
+    restarting.set()
+    context.services["environment"] = SimpleNamespace(restart_requested=restarting)
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    outcome = await behavior.cycle(context)
+
+    assert "a restart is under way" in outcome.summary
+    assert evolver.workspace.supervisor.candidates() == []
+    assert harness.objectives == []
+
+
+async def test_an_open_candidate_nobody_worked_on_is_cleared_before_the_next(
+    tmp_path: Path, project: Path
+) -> None:
+    """The orphan such a restart left behind: open, with no change and no
+    verdict -- and prune_stale() protects open candidates forever. One with
+    work in it stays, for a human who reset the pipeline to promote by hand."""
+    evolver, context, _ = await evolving(
+        tmp_path, project, [MUTATION], ScriptedValidator([passing()])
+    )
+    orphan = await evolver.create_candidate("interrupted mid-open")
+    worked = await evolver.create_candidate("parked for a human")
+    await evolver.record_harness_changes(
+        worked, [{"kind": "edit", "path": "src/app.py", "diff": "+x"}], "o", "r"
+    )
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)  # plan: opens the next candidate
+
+    open_numbers = [item.number for item in evolver.workspace.supervisor.candidates()]
+    assert orphan.number not in open_numbers
+    assert worked.number in open_numbers
+    assert len(open_numbers) == 2
+
+
 async def test_a_stage_that_moved_asks_for_the_next_now_and_a_verdict_wakes_it(
     tmp_path: Path, project: Path
 ) -> None:
