@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from evomesh.harness_tools import ToolContext, tool_patch_skill, tool_write, valid_id
+import pytest
+
+from evomesh.harness_tools import (
+    ToolContext,
+    ToolDenied,
+    tool_fetch,
+    tool_patch_skill,
+    tool_write,
+    valid_id,
+)
 
 
 async def _patch_skill(name: str, old: str, new: str) -> str:
@@ -23,3 +32,9 @@ async def test_tool_write_creates_the_file_it_is_asked_to(tmp_path):
 
 def test_valid_id_accepts_a_wellformed_id():
     assert valid_id("model") is True
+
+
+async def test_tool_fetch_is_denied_without_a_configured_fetcher(tmp_path):
+    ctx = ToolContext(root=tmp_path)
+    with pytest.raises(ToolDenied):
+        await tool_fetch(ctx, {"url": "https://example.com"})
