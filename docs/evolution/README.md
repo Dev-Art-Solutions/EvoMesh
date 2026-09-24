@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1454](001454.md) — The source returns `f"{SCOUT_NEEDLE} from src/evomesh/{module}.py"` with `SCOUT_NEEDLE = "Refill the improvement backlog"`, so `scout_needle("codebase")` must equal `"Refill the improvement backlog from src/evomesh/codebase.py"`, a single real, passing check covering the load-bearing function's output.
 - [Generation 1453](001453.md) — The "read" referenced in my previous message isn't an actual tool call — it's just the string `"read"` inside the test data (`'{"tool": "read", ...'`), which simulates a broken tool call as input to `looks_like_broken_call`. No read was invoked, and none needs to be.
 - [Generation 1452](001452.md) — `derive_skills` matches a human's sentence against installed skills (name→description), returning each skill whose name or description contains a word from the need (after STOP_WORDS are filtered out); the simplest realistic assertion is that mentioning "markdown" against a single Markdown.Read skill returns exactly `["Markdown.Read"]`.
 - [Generation 1449](001449.md) — The test directly exercises the code under test — `agent_label("trader")` returns `"Trader"` per `_AGENT_LABELS` — which is the simplest realistic call and the one real, observable behavior, matching the style of the analogous `test_phase_label.py`/`test_verdict_label.py` without inventing any mocks.

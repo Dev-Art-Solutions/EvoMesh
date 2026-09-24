@@ -8,6 +8,7 @@ from evomesh.codebase import (
     package_root,
     plan_needle,
     plan_objective,
+    scout_needle,
     step_needle,
     stray_root_files,
     survey,
@@ -71,4 +72,10 @@ def test_step_needle_prefixed_with_the_improvement_needle_and_step_number():
         Improvement("Split the DB module"), Step(number=3, path="", symbol="", change="")
     ) == (
         "Implement this improvement to EvoMesh: Split the DB module [step 3]"
+    )
+
+
+def test_scout_needle_prefixed_with_the_scout_objective_prefix():
+    assert scout_needle("codebase") == (
+        "Refill the improvement backlog from src/evomesh/codebase.py"
     )
