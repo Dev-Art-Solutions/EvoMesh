@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1376](001376.md) — The model changed `src/evomesh/evolution.py, src/evomesh/processes.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1372](001372.md) — I gave `SingletonLock.acquire` an optional `wait_seconds` parameter that retries the non-blocking flock every up-to-0.25s until the deadline passes before raising `AlreadyRunningError`, and passed `wait_seconds=5` from the `__main__.py` entry point so a restarted mesh process waits out the old one's shutdown instead of racing it and exiting with code 86.
 - [Generation 1371](001371.md) — I changed `src/evomesh/telegram.py` only — logging `type(exc).__name__` alongside the (often empty) message so a failed poll records its cause, and replacing the fixed 5-second sleep with a capped exponential backoff (5s→10s→20s…→120s) that resets to 5s after any successful poll, which directly addresses both problems in the improvement backlog item without touching docs.
 - [Generation 1370](001370.md) — The model changed `src/evomesh/evolution.py, src/evomesh/processes.py` but gave no rationale for it -- see the diff below for what actually moved.

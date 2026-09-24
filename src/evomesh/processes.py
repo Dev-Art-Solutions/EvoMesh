@@ -23,6 +23,7 @@ plumbing, ``uv run pytest`` -- so a thread is the honest shape for them anyway.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -87,3 +88,21 @@ async def run_command(
         output=output.decode(errors="replace"),
         timed_out=timed_out,
     )
+
+
+def without_virtual_env() -> dict[str, str]:
+    """The current environment with ``VIRTUAL_ENV`` removed.
+
+    ``uv`` reads ``VIRTUAL_ENV`` off the environment and refuses to run unless it
+    names this process's own virtualenv, so a stale value -- set by whatever
+    launched the Evolver, not by ``uv`` itself -- lands in the child's ``os.environ``
+    and is printed as a warning on every validation and autofix run:
+
+    ``warning: VIRTUAL_ENV=... does not match the project environment path``
+
+    Clearing it stops the warning without dropping the rest of the environment
+    (``PATH`` etc.), which ``uv`` still needs. Both ``uv`` callers in
+    ``evolution.py`` build this the same way, so they share this one.
+    """
+
+    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}

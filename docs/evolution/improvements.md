@@ -43,7 +43,7 @@ implemented it; do not tick one by hand unless you did the work yourself.
     tracks (src/evomesh/evolution.py, `GenerationSupervisor`) and add one line to the
     `/evolution status` output in src/evomesh/console.py, e.g.
     `recent: 4 promoted, 16 discarded of the last 20`.
-- [ ] Actually pass the VIRTUAL_ENV-free environment to the candidate's uv commands
+- [x] Actually pass the VIRTUAL_ENV-free environment to the candidate's uv commands
     Generation 1370 added `env: Mapping[str, str] | None = None` to `run_command` in
     src/evomesh/processes.py, but nothing passes it yet, so uv still prints
     `warning: VIRTUAL_ENV=... does not match the project environment path` into every

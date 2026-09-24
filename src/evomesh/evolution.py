@@ -43,7 +43,7 @@ from evomesh.codebase import (
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.models import ModelProvider
-from evomesh.processes import run_command
+from evomesh.processes import run_command, without_virtual_env
 from evomesh.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -1116,7 +1116,12 @@ class CandidateValidator:
                 ),
             )
         for command in self.COMMANDS:
-            result = await run_command(uv, *command[1:], cwd=generation.path)
+            result = await run_command(
+                uv,
+                *command[1:],
+                cwd=generation.path,
+                env=without_virtual_env(),
+            )
             outcomes.append(
                 {
                     "command": " ".join(command),
@@ -1171,7 +1176,12 @@ class CandidateRepairer:
 
     async def autofix(self, generation: Generation) -> dict[str, object]:
         uv = uv_executable(generation.path)
-        result = await run_command(uv, *self.AUTOFIX[1:], cwd=generation.path)
+        result = await run_command(
+            uv,
+            *self.AUTOFIX[1:],
+            cwd=generation.path,
+            env=without_virtual_env(),
+        )
         return {
             "command": " ".join(self.AUTOFIX),
             "exit_code": result.exit_code,
