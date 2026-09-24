@@ -233,6 +233,34 @@ async def test_tool_install_directory_bundle_becomes_active_once_allow_listed(
     await environment.stop()
 
 
+async def test_custom_tools_go_only_to_the_agents_that_name_them(tmp_path: Path) -> None:
+    """Found 2026-09-24: every harness job, the Evolver's code jobs included,
+    was offered every custom tool -- mt5_signal among them -- at 5870 chars of
+    schema a turn. A system agent that names none gets none; an agent that
+    names some gets exactly those; one that never said keeps them all."""
+    from evomesh.contracts import AgentDefinition
+
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        harness=HarnessSettings(enabled=True, shell_allow=["python"]),
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.tools.install(TOOL_TEXT, created_by="console")
+
+    def names(definition: AgentDefinition) -> list[str]:
+        return [tool.name for tool in environment.custom_tools_for(definition)]
+
+    assert names(AgentDefinition(name="Evolver", purpose="x", type="system")) == []
+    assert names(AgentDefinition(name="Legacy", purpose="x")) == ["check-site"]
+    assert names(AgentDefinition(name="Named", purpose="x", tools=["check-site"])) == [
+        "check-site"
+    ]
+    assert names(AgentDefinition(name="Coder", purpose="x", tools=[])) == []
+    await environment.stop()
+
+
 async def test_tool_show_previews_the_raw_tool_md(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})

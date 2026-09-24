@@ -296,6 +296,9 @@ class AgentTemplateRegistry:
             autonomy=template.autonomy,
             cycle_seconds=template.cycle_seconds,
             skills=list(template.skills),
+            # Exactly the tools it bundles, and none for one that bundles none
+            # (the coder templates) -- see AgentDefinition.tools.
+            tools=list(template.tools),
             can_learn_skills=template.learn_skills,
             status=AgentStatus.ACTIVE,
             watch_command=template.watch_command.replace(

@@ -643,6 +643,16 @@ class Environment:
             if custom_tool_program(definition) in allow
         )
 
+    def custom_tools_for(self, definition: AgentDefinition) -> tuple[Tool, ...]:
+        """The allowed custom tools ``definition``'s harness jobs are offered:
+        the ones it names, or -- when it names none at all -- every one for an
+        ordinary agent and none for a system agent (see AgentDefinition.tools)."""
+        tools = self.active_custom_tools()
+        if definition.tools is not None:
+            wanted = set(definition.tools)
+            return tuple(tool for tool in tools if tool.name in wanted)
+        return () if definition.type == "system" else tools
+
     async def active_mcp_tools(self, agent_id: str) -> tuple[Tool, ...]:
         """MCP-sourced tools for one agent's harness job: the mesh-wide
         default server list plus this agent's own AgentDefinition.
@@ -829,8 +839,10 @@ class Environment:
         self_check_command = settings.self_check_command
         self_check_max_attempts = settings.self_check_max_attempts
         can_learn_skills = False
+        custom_tools = self.active_custom_tools()
         if job.agent_id and self._has(job.agent_id):
             definition = self.registry.get(job.agent_id)
+            custom_tools = self.custom_tools_for(definition)
             provider_name, model = definition.provider, definition.model_name
             num_ctx_override = definition.num_ctx
             can_learn_skills = definition.can_learn_skills
@@ -874,8 +886,7 @@ class Environment:
                 else None
             ),
             skills_root=self.skills.root,
-            custom_tools=self.active_custom_tools()
-            + await self.active_mcp_tools(job.agent_id or ""),
+            custom_tools=custom_tools + await self.active_mcp_tools(job.agent_id or ""),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,
             structured_fallback=settings.structured_fallback,

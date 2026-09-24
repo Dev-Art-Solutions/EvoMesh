@@ -477,6 +477,14 @@ class AgentDefinition(BaseModel):
     model_name: str = "qwen3"
     mind: MindState = Field(default_factory=MindState)
     skills: list[str] = Field(default_factory=list)
+    # The custom tools (tools/<name>/TOOL.md) this agent's harness jobs are
+    # offered. None is the old behavior -- every allowed custom tool -- kept
+    # for an agent that never said, except a system agent, which gets none.
+    # Found 2026-09-24: every job, the Evolver's included, was offered all
+    # seven (mt5_signal, which places a trade, among them): 5870 characters
+    # of schema on every turn of a code job, and seven more ways for a small
+    # model to pick the wrong tool. A template sets this from its `tools:`.
+    tools: list[str] | None = None
     permissions: list[str] = Field(default_factory=list)
     memory_enabled: bool = True
     memory_strategy: str = "persistent"

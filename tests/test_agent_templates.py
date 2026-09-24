@@ -207,6 +207,8 @@ async def test_harness_true_grants_access_with_no_bundled_tools(tmp_path: Path) 
     assert definition.harness_root != ""
     playground = environment.memory_for(definition).playground_path
     assert Path(definition.harness_root) == playground
+    # Bundles no custom tool, so is offered none -- not every one installed.
+    assert definition.tools == []
     await environment.stop()
 
 
