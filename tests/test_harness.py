@@ -24,6 +24,7 @@ from evomesh.harness import (
     HarnessResult,
     HarnessRunner,
     build_runner,
+    call_key,
     compact,
     message_size,
     parse_text_call,
@@ -3118,3 +3119,11 @@ def test_a_runner_is_constructible_without_the_helper(project: Path) -> None:
     )
 
     assert runner.context.root == project
+
+
+def test_call_key_is_the_name_joined_with_its_json_arguments() -> None:
+    call = ToolCall(name="read", arguments={"path": "notes/todo.txt"})
+
+    result = call_key(call)
+
+    assert result == "read:{\"path\": \"notes/todo.txt\"}"
