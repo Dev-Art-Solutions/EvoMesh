@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1381](001381.md) — The change spans two write methods in `evolution.py` plus one reader in `console.py`, so it is a 3-step job; each step is independently validatable and each names exactly one OUTLINE function.
 - [Generation 1380](001380.md) — I added `tests/test_evolution.py`, a single test that calls the load-bearing `review_objective("add a test", "def test(): pass\n")` classmethod and asserts both the objective and diff strings are embedded verbatim in the returned prompt — exercising real behavior of the function whose coverage was missing, with no mock or new dependency.
 - [Generation 1376](001376.md) — The model changed `src/evomesh/evolution.py, src/evomesh/processes.py` but gave no rationale for it -- see the diff below for what actually moved.
 - [Generation 1372](001372.md) — I gave `SingletonLock.acquire` an optional `wait_seconds` parameter that retries the non-blocking flock every up-to-0.25s until the deadline passes before raising `AlreadyRunningError`, and passed `wait_seconds=5` from the `__main__.py` entry point so a restarted mesh process waits out the old one's shutdown instead of racing it and exiting with code 86.
