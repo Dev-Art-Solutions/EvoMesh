@@ -91,6 +91,15 @@ HARNESS_VERBS = (
     "gather",
 )
 
+# Told to an agent that has tools, since it decides which of its steps get them.
+PLAN_TOOL_HINT = (
+    "You have tools, but a step is only carried out with them if it STARTS with "
+    "one of these words: "
+    + ", ".join(sorted({verb.strip().capitalize() for verb in HARNESS_VERBS}))
+    + ". Start every step that must look something up or use a tool with one of "
+    "them, and name the tool when you know it."
+)
+
 # How long a reactive chat question may wait on a harness job before falling
 # back to answering from memory -- comfortably under the console's own 300s
 # reply wait, so a human sees some answer rather than only ever a timeout.
@@ -296,12 +305,28 @@ class BDIReasoner:
         return mind.commit(goal.id, steps, plan="model" if len(steps) > 1 else "ad-hoc")
 
     async def _plan_with_model(self, context: CycleContext, goal: Goal) -> list[str]:
-        """One planning call per goal. A model that is down still yields a plan."""
+        """One planning call per goal. A model that is down still yields a plan.
+
+        For an agent granted the harness, whether a step runs with tools is
+        decided by its first word (HARNESS_VERBS, see through_harness) -- a rule
+        the model was never told. So the planning prompt says it, and a plan
+        that paraphrased a tool-shaped goal ("Fetch ... with news_fetch") into
+        steps none of which qualify is dropped for the goal itself, verbatim:
+        a small model's plan must not be what takes its tools away.
+        """
+        tooled = bool(context.definition.harness_root)
+        instruction = f"{PLAN_FORMAT}\n{PLAN_TOOL_HINT}" if tooled else PLAN_FORMAT
         try:
-            raw = await context.think(PLAN_FORMAT, goal=goal)
+            raw = await context.think(instruction, goal=goal)
         except (ModelUnavailableError, RuntimeError, ValueError):
             return [goal.description]
         steps = parse_plan(raw, self.max_steps)
+        if (
+            tooled
+            and goal.description.strip().lower().startswith(HARNESS_VERBS)
+            and not any(step.strip().lower().startswith(HARNESS_VERBS) for step in steps)
+        ):
+            return [goal.description]
         return steps or [goal.description]
 
     # -- execution --------------------------------------------------------

@@ -151,6 +151,42 @@ async def test_the_agent_plans_once_and_then_executes_the_plan(tmp_path: Path) -
     await environment.stop()
 
 
+async def test_an_agent_with_tools_is_told_which_steps_get_them(tmp_path: Path) -> None:
+    """Whether a step runs with tools is decided by its first word -- a rule
+    the planning prompt never mentioned, so a plan could quietly leave a
+    tooled agent answering from memory."""
+    tooled_provider, plain_provider = ScriptedProvider(), ScriptedProvider()
+    tooled_env, tooled = await worker(tmp_path / "a", tooled_provider)
+    tooled.harness_root = str(tmp_path)
+    plain_env, _ = await worker(tmp_path / "b", plain_provider)
+
+    await tooled_env.cycle_agent("Worker")
+    await plain_env.cycle_agent("Worker")
+
+    def planning_prompt(provider: MockProvider) -> str:
+        return next(str(c["prompt"]) for c in provider.calls if PLANNING_MARKER in str(c["prompt"]))
+
+    assert "only carried out with them if it STARTS with" in planning_prompt(tooled_provider)
+    assert "Fetch" in planning_prompt(tooled_provider)
+    assert "STARTS with" not in planning_prompt(plain_provider)
+    await tooled_env.stop()
+    await plain_env.stop()
+
+
+async def test_a_plan_that_paraphrases_away_a_tool_goal_is_replaced_by_the_goal(
+    tmp_path: Path,
+) -> None:
+    goal = "Fetch the latest headlines with news_fetch and note what is new"
+    provider = ScriptedProvider(plan="1. get the latest headlines\n2. note what is new\n")
+    environment, agent = await worker(tmp_path, provider, goal=goal)
+    agent.harness_root = str(tmp_path)
+
+    await environment.cycle_agent("Worker")
+
+    assert [step.description for step in agent.mind.intentions[-1].steps] == [goal]
+    await environment.stop()
+
+
 async def test_one_plan_step_is_executed_per_cycle(tmp_path: Path) -> None:
     provider = ScriptedProvider()
     environment, agent = await worker(tmp_path, provider)
