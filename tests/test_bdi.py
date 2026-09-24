@@ -1521,6 +1521,29 @@ async def _cycles_reach(runtime: Any, count: int, within: float) -> bool:
     return runtime.state.cycles >= count
 
 
+async def test_a_new_agent_is_due_at_once_however_long_its_interval(tmp_path: Path) -> None:
+    """The first cycle used to be due only once time.monotonic() -- seconds
+    since boot on Linux -- passed the agent's own interval: CI's fresh VM never
+    cycled a 600-second agent, and a just-booted host would hold every agent
+    back the same way. An interval longer than any uptime pins it down."""
+    environment = Environment(settings_for(tmp_path), {"ollama": ScriptedProvider()})
+    await environment.start()
+    agent = AgentDefinition(
+        name="Worker", purpose="Work", status=AgentStatus.ACTIVE, cycle_seconds=10**9
+    )
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=3600)
+    runtime = environment.runtimes[agent.id]
+
+    assert runtime._due_in() <= 0  # noqa: SLF001 - the loop's own check, before any cycle
+    assert runtime.stuck_for() is None
+    # The status every reply carries says so, instead of round(-inf) raising
+    # inside the reply path (found when the fix above first went in: every
+    # chat with an agent that had not cycled yet hung).
+    assert "next cycle in about 0s" in runtime._work_summary()  # noqa: SLF001
+    await environment.stop()
+
+
 async def _slow_worker(tmp_path: Path, provider: MockProvider) -> tuple[Environment, Any]:
     """An agent whose own interval is ten minutes, cycling once at start."""
     environment = Environment(settings_for(tmp_path), {"ollama": provider})

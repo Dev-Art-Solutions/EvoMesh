@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -150,7 +151,13 @@ class AgentRuntime:
     _tasks: list[asyncio.Task[None]] = field(default_factory=list, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _inbox: list[Message] = field(default_factory=list, init=False)
-    _last_cycle_started: float = field(default=0.0, init=False)
+    # -inf is "never", and a runtime that never cycled is due at once. It was
+    # 0.0, which on time.monotonic()'s own clock means "at boot": found
+    # 2026-09-24 when CI (a VM up for under ten minutes) never gave a
+    # cycle_seconds=600 agent its first cycle -- and the same would hold back
+    # every agent on a machine that just booted (the NSSM service) until the
+    # uptime passed its own interval.
+    _last_cycle_started: float = field(default=-math.inf, init=False)
     _last_cycle_finished: float = field(default=0.0, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
@@ -568,7 +575,9 @@ class AgentRuntime:
         if self.state.last_error:
             lines.append(f"last error: {self.state.last_error}")
         if self.definition.autonomy is Autonomy.CYCLIC:
-            lines.append(f"next cycle in about {max(0, round(self._due_in()))}s")
+            # max() before round(): before its first cycle _due_in() is -inf,
+            # and round(-inf) raises -- inside the reply path of every message.
+            lines.append(f"next cycle in about {round(max(0.0, self._due_in()))}s")
         return "\n".join(lines)
 
     def _refresh_goal(self) -> None:
