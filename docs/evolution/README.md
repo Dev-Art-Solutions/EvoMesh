@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1418](001418.md) — Added one mechanical test for `edge_snapshot` that passes the simplest realistic argument and asserts the single obvious result — that it returns the edges with the same contents — without touching anything under src/.
 - [Generation 1417](001417.md) — The implementation is a pure string-builder that returns a join of the inputs; asserting the plan text and project strings are embedded is the single real, passing check of what the code does, matching the style of the neighboring mechanical tests.
 - [Generation 1416](001416.md) — One real, passing check against the demonstrated behavior; `belief_key` takes a plain str so no mock or stand-in was needed.
 - [Generation 1415](001415.md) — The function is a pure string-builder that joins `project`, the node path, `title`, `reasoning`, and rules. The single obvious check is that the inputs it was handed appear in the output — the project string and the "ITEM TITLE:" line — rather than testing every branch.
