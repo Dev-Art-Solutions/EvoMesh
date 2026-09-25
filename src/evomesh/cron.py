@@ -14,6 +14,18 @@ FIELD_NAMES = ("minute", "hour", "day of month", "month", "day of week")
 _FIELD_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 _SEARCH_LIMIT_DAYS = 4 * 366 + 1
 
+# Named tokens accepted in the month and day-of-week fields (per the standard
+# cron grammar), including common three-letter abbreviations. Sunday is 0; 7 is
+# treated the same way by `parse()`, which folds it down with `value % 7`.
+_MONTH_NAMES = {
+    "JAN": 1, "FAB": 2, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+}
+_WEEKDAY_NAMES = {
+    "MON": 1, "TUE": 2, "TUES": 2, "WED": 3, "WEDS": 3, "THU": 4,
+    "THUR": 4, "THURS": 4, "FRI": 5, "SAT": 6, "SATU": 6, "SUN": 0,
+}
+
 
 class InvalidCronError(ValueError):
     """Raised for a cron expression that cannot be parsed or never matches."""
@@ -21,6 +33,7 @@ class InvalidCronError(ValueError):
 
 def _parse_field(field: str, name: str, low: int, high: int) -> set[int]:
     values: set[int] = set()
+    names = _MONTH_NAMES if name == "month" else _WEEKDAY_NAMES if name == "day of week" else None
     for part in field.split(","):
         step = 1
         if "/" in part:
@@ -28,6 +41,13 @@ def _parse_field(field: str, name: str, low: int, high: int) -> set[int]:
             if not step_text.isdigit() or int(step_text) <= 0:
                 raise InvalidCronError(f"bad step in {name} field: {field!r}")
             step = int(step_text)
+        # Month names (JAN, FEB, ...) and day-of-week names (MON, ..., SUN),
+        # including common abbreviations, translate to their integer codes before
+        # range/step handling so they compose with `*`, `-` ranges and `/` steps.
+        # Splitting on the range separator `-` keeps names (which contain no `-`)
+        # from colliding with one another (e.g. TUE vs TUES) during substitution.
+        if names is not None:
+            part = "-".join(str(names.get(seg.upper(), seg)) for seg in part.split("-"))
         if part == "*":
             start, end = low, high
         elif "-" in part:
@@ -36,7 +56,15 @@ def _parse_field(field: str, name: str, low: int, high: int) -> set[int]:
                 raise InvalidCronError(f"bad range in {name} field: {field!r}")
             start, end = int(start_text), int(end_text)
         elif part.isdigit():
-            start = end = int(part)
+            start = int(part)
+            # A bare value with a step (e.g. `MON/2`, `5/2`) runs to the field
+            # max by cron convention, so `MON/2` means MON, WED, FRI -- not just MON.
+            if step > 1:
+                # 7 folds to Sunday (0) in the day-of-week field, so the step
+                # stops at Saturday (6) instead of hitting 7 and re-adding Sunday.
+                end = high - 1 if name == "day of week" else high
+            else:
+                end = start
         else:
             raise InvalidCronError(f"unrecognised {name} field: {field!r}")
         if not (low <= start <= high and low <= end <= high and start <= end):

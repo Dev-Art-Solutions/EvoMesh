@@ -84,6 +84,36 @@ def test_rejects_a_malformed_field() -> None:
         parse("abc * * * *")
 
 
+def test_a_named_weekday_matches_the_numeric_one() -> None:
+    assert is_valid_cron_expression("0 9 * * MON")
+    _, _, _, _, weekday = parse("0 9 * * MON")
+    assert weekday == {1}
+
+
+def test_named_month_matches_the_numeric_one() -> None:
+    assert is_valid_cron_expression("0 0 1 JAN *")
+    _, _, _, month, _ = parse("0 0 1 JAN *")
+    assert month == {1}
+
+
+def test_named_weekday_range_parses() -> None:
+    assert is_valid_cron_expression("0 9 * * MON-FRI")
+    _, _, _, _, weekday = parse("0 9 * * MON-FRI")
+    assert weekday == {1, 2, 3, 4, 5}
+
+
+def test_named_weekday_with_step_parses() -> None:
+    assert is_valid_cron_expression("0 9 * * MON/2")
+    _, _, _, _, weekday = parse("0 9 * * MON/2")
+    assert weekday == {1, 3, 5}
+
+
+def test_full_named_expression_runs_through_next_after() -> None:
+    # 2026-09-03 is a Thursday; the next Monday is four days out.
+    now = datetime(2026, 9, 3, 14, 20, tzinfo=UTC)
+    assert next_after("0 9 * * MON", now) == datetime(2026, 9, 7, 9, 0, tzinfo=UTC)
+
+
 def test_parse_splits_fields_into_sets() -> None:
     minute, hour, day, month, weekday = parse("0 12 * * 1")
     assert minute == {0}

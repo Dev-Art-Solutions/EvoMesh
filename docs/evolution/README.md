@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1617](001617.md) — Implemented named month and day-of-week support in `_parse_field` by mapping `JAN..DEC`/`A..C` and `SUN..SAT`/`WED..THU` to their integer codes (including within `-` ranges and after `/` steps), so `0 9 * * MON`, `0 0 1 JAN *`, and `0 9 * * MON-FRI` parse; added corresponding tests.
 - [Generation 1616](001616.md) — Confirmed. No existing test or code handles named fields, and the current behavior silently rejects valid input. Writing the item.
 - [Generation 1615](001615.md) — The current code in `src/evomesh/environment.py` (lines 1503-1514) is already in the optimized state:
 - [Generation 1610](001610.md) — Wrapped `await self._client.get(url)` in `_download` with `try/except httpx.HTTPError as exc:` that logs a warning and re-raises `TelegramError("downloading the file failed", retry_after=5)`, so timeouts/read errors are converted into retriable `TelegramError`s like every other HTTP call in the file and the sibling `_send_document`, instead of escaping the poll loop raw.
