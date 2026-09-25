@@ -40,6 +40,7 @@ from evomesh.coordination import (
     ContractNet,
     Performative,
     WorkItem,
+    WorkStatus,
     semantic_message,
 )
 from evomesh.events import Event, EventBus, EventType
@@ -250,6 +251,17 @@ class Environment:
         try:
             stalled = self.registry.get(event.agent_id)
         except KeyError:
+            return
+        if any(
+            work.type == "assistance"
+            and work.parent_goal_id == event.goal_id
+            and work.inputs.get("stalled_agent_id") == stalled.id
+            and work.status
+            not in {WorkStatus.COMPLETED, WorkStatus.FAILED, WorkStatus.CANCELLED}
+            for work in self.blackboard.work_items.values()
+        ):
+            # Help for this goal is already out; asking again only piles a
+            # duplicate goal onto whoever accepted the first request.
             return
         item = WorkItem(
             parent_goal_id=event.goal_id,

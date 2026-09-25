@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from evomesh.cognition import CycleOutcome
-from evomesh.contracts import Goal, GoalStatus, LearnedProcedure, MemoryEpisode, MindState
+from evomesh.config import Settings
+from evomesh.contracts import (
+    AgentDefinition,
+    Goal,
+    GoalStatus,
+    LearnedProcedure,
+    MemoryEpisode,
+    MindState,
+)
+from evomesh.environment import Environment
 from evomesh.events import Event, EventBus, EventType
+from evomesh.models import MockProvider
 from evomesh.progress import ProgressTracker
 
 
@@ -45,9 +57,7 @@ def test_memory_forms_are_structurally_separate_and_bounded() -> None:
     mind = MindState()
     mind.remember("provider is ready")
     for number in range(3):
-        mind.record_episode(
-            MemoryEpisode(kind="cycle", summary=f"cycle {number}"), keep=2
-        )
+        mind.record_episode(MemoryEpisode(kind="cycle", summary=f"cycle {number}"), keep=2)
     mind.remember_procedure(
         LearnedProcedure(name="health-check", trigger="provider unhealthy", steps=["ping"])
     )
@@ -56,3 +66,37 @@ def test_memory_forms_are_structurally_separate_and_bounded() -> None:
     assert mind.beliefs[0].statement == "provider is ready"
     assert mind.procedures["health-check"].steps == ["ping"]
     assert GoalStatus.STALLED.value == "stalled"
+
+
+def test_progress_tracker_signals_a_stall_once_not_every_cycle_after() -> None:
+    goal = Goal(description="Poll a feed", interval_seconds=60)
+    tracker = ProgressTracker(failure_threshold=3)
+    outcome = CycleOutcome.failed("connection refused")
+
+    signals = [tracker.observe(goal, outcome).stalled for _ in range(6)]
+
+    assert signals == [False, False, True, False, False, False]
+
+
+async def test_a_repeated_stall_does_not_delegate_the_same_help_twice(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    stalled = AgentDefinition(name="Stalled", purpose="Poll a feed")
+    await environment.register_agent(stalled)
+    event = Event(
+        EventType.AGENT_STALLED,
+        "progress_tracker",
+        agent_id=stalled.id,
+        goal_id="goal-1",
+        payload={"reason": "same failure repeated 3 times"},
+    )
+
+    await environment.events.publish(event)
+    await environment.events.publish(event)
+
+    assistance = [
+        item for item in environment.blackboard.work_items.values() if item.type == "assistance"
+    ]
+    assert len(assistance) == 1
+    await environment.stop()

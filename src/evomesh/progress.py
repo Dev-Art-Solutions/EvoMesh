@@ -34,7 +34,11 @@ class ProgressTracker:
         self._repeats[goal.id] = repeats
         threshold = self.failure_threshold if outcome.error else self.no_progress_threshold
         no_progress = not outcome.goal_done and not outcome.fact and not outcome.step
-        stalled = repeats >= threshold and (bool(outcome.error) or no_progress)
+        # Edge-triggered: the cycle that reaches the threshold is the stall.
+        # Every identical cycle after it is the same stall, and re-signalling
+        # it sent a fresh assistance work item -- a new persisted goal on the
+        # helper -- once per cycle for as long as the failure lasted.
+        stalled = repeats == threshold and (bool(outcome.error) or no_progress)
         reason = ""
         if stalled:
             reason = (
