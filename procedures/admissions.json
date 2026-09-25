@@ -8,5 +8,15 @@
     ],
     "approved_by": "operator:iliya",
     "note": "W1 reference procedure; reviewed with the closure plan v2 change."
+  },
+  {
+    "procedure_id": "report_comparison",
+    "revision": 1,
+    "digest": "508437bc66941b427dac70204989f843a3501eba5fce03d6b00c85ef1e696ac7",
+    "goal_kinds": [
+      "report_comparison"
+    ],
+    "approved_by": "operator:iliya",
+    "note": "W2 reference procedure; one bounded model call, cited ids checked."
   }
 ]

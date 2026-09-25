@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 # Identifies this process's claims: a DISPATCHING operation with another
 # epoch was claimed by a process that is gone.
 PROCESS_EPOCH = uuid.uuid4().hex
+# Executions some advance() in this process is inside right now, across every
+# executor instance. One step at a time per execution: a second advancer gets
+# "busy" instead of mistaking a live claim for a crashed one and recovering it.
+_ADVANCING: set[str] = set()
 RECEIPTS_DIR = ".evomesh-receipts"
 MAX_JSON_READ_BYTES = 256 * 1024
 # Beside the shipped definitions: the reviewed approvals, bound to digests.
@@ -669,7 +673,10 @@ class JsonRead:
 class JsonWrite:
     """Canonical JSON to an approved destination under the agent's root, with
     a receipt keyed by the logical operation. An existing file is a conflict
-    unless it is this operation's own completed write."""
+    unless it is this operation's own completed write, or the unchanged output
+    of an earlier write to the same path (a recurring occurrence replacing its
+    own previous artifact). Ownership is what the path index recorded, never
+    what the file claims about itself."""
 
     contract = AdapterContract(
         adapter_id="core.json_write",
@@ -699,6 +706,21 @@ class JsonWrite:
     def _receipt_path(context: AdapterContext) -> Path:
         name = digest_of(context.operation_key)[:32] + ".json"
         return context.tool_context.root.resolve(strict=False) / RECEIPTS_DIR / name
+
+    @staticmethod
+    def _owner_path(context: AdapterContext, relative: str) -> Path:
+        name = digest_of(relative)[:32] + ".json"
+        return context.tool_context.root.resolve(strict=False) / RECEIPTS_DIR / "paths" / name
+
+    def _owned(self, context: AdapterContext, relative: str, actual: str | None) -> bool:
+        owner = self._owner_path(context, relative)
+        if actual is None or not owner.is_file():
+            return False
+        try:
+            record = json.loads(owner.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return record.get("path") == relative and record.get("digest") == actual
 
     async def invoke(self, context: AdapterContext, arguments: dict[str, Any]) -> AdapterResult:
         tool = context.tool_context
@@ -737,10 +759,24 @@ class JsonWrite:
             receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-            temporary.write_text(content, encoding="utf-8")
+            # Bytes, not text: canonical LF on every platform, so the digest
+            # recorded here is the digest of what is on disk.
+            temporary.write_bytes(content.encode("utf-8"))
             os.replace(temporary, target)
             receipt["state"] = "applied"
             receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            owner = self._owner_path(context, receipt["path"])
+            owner.parent.mkdir(parents=True, exist_ok=True)
+            owner.write_text(
+                json.dumps(
+                    {
+                        "path": receipt["path"],
+                        "digest": expected,
+                        "operation_key": context.operation_key,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
         await asyncio.to_thread(write)
         tool.tally.writes += 1
@@ -782,6 +818,9 @@ class JsonWrite:
         if receipt is not None and not exists:
             return ReconcileState.NOT_APPLIED, None
         if receipt is None and not exists:
+            return ReconcileState.NOT_APPLIED, None
+        if receipt is None and self._owned(context, _rel(tool, target), actual):
+            # Our own earlier artifact, unchanged since we wrote it.
             return ReconcileState.NOT_APPLIED, None
         # A file this operation has no receipt for, or one that changed since.
         return ReconcileState.CONFLICT, None
@@ -924,17 +963,13 @@ class CheckOutcome:
 CheckFunction = Callable[[dict[str, Any], CheckContext], Awaitable[CheckOutcome]]
 
 
-async def artifact_matches_source(arguments: dict[str, Any], context: CheckContext) -> CheckOutcome:
-    """The artifact's content equals the value this occurrence's own source
-    read captured, and this execution's journal holds the write receipt for
-    it. Neither the writer's digest nor a file merely existing is trusted."""
+def _artifact_equals(
+    context: CheckContext, artifact_id: str, expected_value: Any, extra: dict[str, Any]
+) -> CheckOutcome:
+    """The file holds exactly ``expected_value`` and this occurrence's journal
+    holds the applied write receipt for it."""
     execution = context.execution
-    source_step = arguments.get("source_step")
-    captured = execution.results.get(str(source_step))
-    if not isinstance(captured, dict) or "value" not in captured:
-        return CheckOutcome(False, "the source read has no captured value")
-    expected = canonical_json(captured["value"]) + "\n"
-    artifact_id = str(arguments.get("artifact_id") or "")
+    expected = canonical_json(expected_value) + "\n"
     receipts = [
         op
         for op in context.operations
@@ -953,15 +988,50 @@ async def artifact_matches_source(arguments: dict[str, Any], context: CheckConte
         return CheckOutcome(False, f"{artifact_id} does not exist")
     actual = target.read_text(encoding="utf-8")
     if actual != expected:
-        return CheckOutcome(False, f"{artifact_id} does not match the captured source")
+        return CheckOutcome(False, f"{artifact_id} does not match the expected content")
     return CheckOutcome(
         True,
         evidence={
             "artifact_id": artifact_id,
             "digest": digest_of(actual),
-            "source_digest": captured.get("source_digest", ""),
             "operation_key": receipts[-1].operation_key,
+            **extra,
         },
+    )
+
+
+async def artifact_matches_source(arguments: dict[str, Any], context: CheckContext) -> CheckOutcome:
+    """The artifact's content equals the value this occurrence's own source
+    read captured, and this execution's journal holds the write receipt for
+    it. Neither the writer's digest nor a file merely existing is trusted."""
+    captured = context.execution.results.get(str(arguments.get("source_step")))
+    if not isinstance(captured, dict) or "value" not in captured:
+        return CheckOutcome(False, "the source read has no captured value")
+    return _artifact_equals(
+        context,
+        str(arguments.get("artifact_id") or ""),
+        captured["value"],
+        {"source_digest": captured.get("source_digest", "")},
+    )
+
+
+async def artifact_matches_output(arguments: dict[str, Any], context: CheckContext) -> CheckOutcome:
+    """The artifact holds exactly the output a cognitive step produced and
+    the runtime validated in this occurrence -- not whatever the writer was
+    handed, and not a model's claim that it wrote something."""
+    execution = context.execution
+    step_id = str(arguments.get("output_step") or "")
+    validated = any(
+        item.get("kind") == "cognitive" and item.get("step_id") == step_id
+        for item in execution.evidence
+    )
+    if not validated or step_id not in execution.results:
+        return CheckOutcome(False, f"{step_id} has no validated output in this occurrence")
+    return _artifact_equals(
+        context,
+        str(arguments.get("artifact_id") or ""),
+        execution.results[step_id],
+        {"output_step": step_id, "model_generated": True},
     )
 
 
@@ -979,6 +1049,20 @@ CORE_CHECKS: dict[str, tuple[CheckContract, CheckFunction]] = {
             "artifact equals the canonical value captured by this occurrence's source read",
         ),
         artifact_matches_source,
+    ),
+    "artifact_matches_output": (
+        CheckContract(
+            "artifact_matches_output",
+            _object(
+                {
+                    "artifact_id": {"type": "string", "maxLength": 500},
+                    "output_step": {"type": "string", "maxLength": 64},
+                },
+                ["artifact_id", "output_step"],
+            ),
+            "artifact equals the validated output of this occurrence's cognitive step",
+        ),
+        artifact_matches_output,
     ),
 }
 
@@ -1274,6 +1358,15 @@ class ProcedureExecutor:
     # -- one step ---------------------------------------------------------------
 
     async def advance(self, execution_id: str, host: ProcedureHost) -> StepOutcome:
+        if execution_id in _ADVANCING:  # checked and taken with no await between
+            return StepOutcome("busy", "", "IN_FLIGHT", "another advance holds this execution")
+        _ADVANCING.add(execution_id)
+        try:
+            return await self._advance(execution_id, host)
+        finally:
+            _ADVANCING.discard(execution_id)
+
+    async def _advance(self, execution_id: str, host: ProcedureHost) -> StepOutcome:
         version, execution = await self.load(execution_id)
         definition = self.registry.definitions.get(f"{execution.procedure_id}@{execution.revision}")
         if execution.terminal:
