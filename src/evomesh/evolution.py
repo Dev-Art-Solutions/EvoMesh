@@ -1298,6 +1298,7 @@ BASELINE_FILE = Path(".runtime") / "baseline-tests.json"
 BASELINE_VENV = Path(".runtime") / "baseline-venv"
 BASELINE_TEMP = Path(".runtime") / "baseline-pytest"
 BASELINE_FAILURE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)
+BASELINE_PASSED = re.compile(r"\b[1-9]\d* passed\b")
 # What of pytest's output goes into the objective: a harness transcript is
 # ~12000 chars and its fixed prompt already takes most of that.
 BASELINE_OUTPUT_CHARS = 1500
@@ -1344,6 +1345,12 @@ def parse_baseline(key: str, exit_code: int, output: str) -> BaselineResult:
     """A pytest run's verdict: the failing node ids out of its ``-rfE`` summary."""
     if exit_code == 0:
         return BaselineResult(key=key, passed=True)
+    # Not one test passed: the run itself broke, not the code. Found live
+    # 2026-09-25: "790 errors", every one a PermissionError at tmp_path setup
+    # while an orphaned earlier run still held the temp dir -- read as a red
+    # suite, and a generation then "fixed" code that had nothing wrong.
+    if not BASELINE_PASSED.search(output):
+        return BaselineResult(key=key, passed=False, output=output, blocked=True)
     failures = tuple(dict.fromkeys(BASELINE_FAILURE.findall(output)))
     # A crash or collection error with no summary line is still a red suite.
     return BaselineResult(
@@ -1467,7 +1474,11 @@ class EnvironmentEvolver:
         sync = await run_command(uv, "sync", "--frozen", cwd=root, env=env)
         if sync.exit_code != 0:
             return BaselineResult(key=key, passed=False, output=sync.output, blocked=True)
+        # A directory of its own per run: an orphan of an earlier run (a mesh
+        # killed mid-suite) may still hold the last one open. Old ones are
+        # swept best-effort; a locked one just stays until it is free.
         shutil.rmtree(root / BASELINE_TEMP, ignore_errors=True)
+        basetemp = root / BASELINE_TEMP / f"run-{time.time_ns()}"
         suite = await run_command(
             uv,
             "run",
@@ -1478,7 +1489,7 @@ class EnvironmentEvolver:
             "-p",
             "no:cacheprovider",
             "--basetemp",
-            str(root / BASELINE_TEMP),
+            str(basetemp),
             cwd=root,
             env=env,
         )

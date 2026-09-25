@@ -91,12 +91,24 @@ def test_a_green_run_passes_and_a_red_one_names_its_failures() -> None:
         "k",
         1,
         "FAILED tests/test_a.py::test_x - boom\nERROR tests/test_b.py::test_y\n"
-        "FAILED tests/test_a.py::test_x - boom\n",
+        "FAILED tests/test_a.py::test_x - boom\n2 failed, 770 passed\n",
     )
 
     assert not red.passed
     assert red.failures == ("tests/test_a.py::test_x", "tests/test_b.py::test_y")
-    assert parse_baseline("k", 2, "collection crashed").failures == ("pytest exited 2",)
+    assert parse_baseline("k", 2, "1 passed, collection crashed").failures == (
+        "pytest exited 2",
+    )
+
+
+def test_a_run_where_nothing_passed_is_no_verdict() -> None:
+    """Found live: 790 PermissionErrors at tmp_path setup, read as a red suite."""
+    broken = parse_baseline(
+        "k", 1, "ERROR tests/test_a.py::test_x - PermissionError\n790 errors in 51.07s\n"
+    )
+
+    assert broken.blocked
+    assert not broken.failures
 
 
 async def test_a_red_suite_is_the_objective_before_any_improvement(
