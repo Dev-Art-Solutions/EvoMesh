@@ -30,7 +30,13 @@ from evomesh.contracts import (
 )
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
 from evomesh.harness import HarnessResult, build_runner
-from evomesh.harness_queue import HarnessGateway, HarnessJob, HarnessQueue, HarnessWorker
+from evomesh.harness_queue import (
+    HarnessGateway,
+    HarnessJob,
+    HarnessQueue,
+    HarnessWorker,
+    JobStatus,
+)
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
 from evomesh.mcp_client import McpManager
@@ -901,6 +907,7 @@ class Environment:
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,
             structured_fallback=settings.structured_fallback,
+            stop=lambda: job.detail if job.status is JobStatus.CANCELLED else "",
         )
         # An agent's job runs under that agent's grants, so the harness is the
         # loudest user of the permission policy rather than a way around it.

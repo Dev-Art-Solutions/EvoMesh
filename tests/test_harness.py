@@ -3134,3 +3134,29 @@ def test_a_missing_closing_brace_is_still_recognised_as_a_tool_call() -> None:
     text = '{"tool": "read", "args": {"path": "notes/todo.txt"}'
 
     assert looks_like_broken_call(text) is True
+
+
+async def test_a_stop_reason_ends_the_job_before_its_next_step(project: Path) -> None:
+    provider = MockProvider(responses=["It is defined in src/answer.py."])
+    runner = build_runner(provider, project, stop=lambda: "generation 1517 was discarded")
+
+    result = await runner.run("where does reconsider live?")
+
+    assert result.outcome == "cancelled"
+    assert "discarded" in result.detail
+    assert provider.calls == []
+
+
+def test_discarding_a_generation_cancels_the_jobs_working_in_it(tmp_path: Path) -> None:
+    """Found live: a discarded generation's job held the background lane for
+    minutes while the next generation waited behind it."""
+    generation = tmp_path / "generations" / "001517-candidate"
+    (generation / "src").mkdir(parents=True)
+    queue = HarnessQueue()
+    inside = queue.submit("fix it", generation / "src")
+    elsewhere = queue.submit("other work", tmp_path / "workspace")
+
+    assert queue.cancel_under(generation, "generation 1517 was discarded") == [inside.number]
+
+    assert inside.status is JobStatus.CANCELLED
+    assert elsewhere.status is JobStatus.QUEUED

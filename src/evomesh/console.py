@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import threading
+from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -1111,6 +1112,12 @@ class ConsoleChannel:
                     f"Generation {number} promoted and applied as {commit[:8]}, "
                     f"{evolver.last_publish}. {self._restart_note()} "
                     "The pipeline is free for the next objective."
+                )
+            # Its harness job would otherwise run to its own step cap and hold
+            # the background lane while the next generation waits.
+            with suppress(Exception):
+                self.environment.harness_queue.cancel_under(
+                    evolver.candidate(number).path, f"generation {number} was discarded"
                 )
             supervisor.discard(number)
             await evolver.reset_pipeline()

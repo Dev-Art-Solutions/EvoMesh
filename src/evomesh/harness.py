@@ -373,6 +373,10 @@ class HarnessRunner:
     self_check_max_attempts: int = 2
     # See HarnessSettings.structured_fallback -- off by default.
     structured_fallback: bool = False
+    # Asked before every step: a non-empty reason ends the job there. Found
+    # live 2026-09-25: a discarded generation's job ran on for minutes and
+    # held the only background lane while the next generation waited.
+    stop: Callable[[], str] | None = None
     _self_check_attempts: int = field(default=0, init=False, repr=False)
     _self_check_last_output: str = field(default="", init=False, repr=False)
     # A separate flag from the output string above: a check can fail (a
@@ -398,6 +402,10 @@ class HarnessRunner:
         self.session.record("job", task=task, root=str(self.context.root))
 
         for step in range(1, self.max_steps + 1):
+            if self.stop is not None and (reason := self.stop()):
+                return self._end(
+                    "cancelled", started, step - 1, calls_made, native, detail=reason
+                )
             elapsed = time.monotonic() - started
             if elapsed > self.max_seconds:
                 return self._end(
@@ -840,6 +848,7 @@ def build_runner(
     self_check_command: str = "",
     self_check_max_attempts: int = 2,
     structured_fallback: bool = False,
+    stop: Callable[[], str] | None = None,
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -895,4 +904,5 @@ def build_runner(
         self_check_command=self_check_command if allow_write else "",
         self_check_max_attempts=self_check_max_attempts,
         structured_fallback=structured_fallback,
+        stop=stop,
     )

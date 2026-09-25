@@ -289,13 +289,28 @@ class HarnessQueue:
     def finish(self, job: HarnessJob, result: HarnessResult) -> None:
         job.result = result
         job.steps = result.steps
-        job.status = JobStatus.DONE
+        # Cancelled while it ran (see cancel_under): it stays cancelled.
+        if job.status is not JobStatus.CANCELLED:
+            job.status = JobStatus.DONE
         job.finished_at = datetime.now(UTC)
 
     def cancel(self, job: HarnessJob, detail: str) -> None:
         job.status = JobStatus.CANCELLED
         job.detail = detail
         job.finished_at = datetime.now(UTC)
+
+    def cancel_under(self, root: Path, detail: str) -> list[int]:
+        """Cancel every open job working in ``root`` or below it; the job
+        numbers. A queued one is never taken; a running one stops at its
+        next step (HarnessRunner.stop)."""
+        target = root.resolve(strict=False)
+        cancelled: list[int] = []
+        for job in self.open_jobs():
+            path = job.root.resolve(strict=False)
+            if path == target or target in path.parents:
+                self.cancel(job, detail)
+                cancelled.append(job.number)
+        return cancelled
 
     def open_jobs(self) -> list[HarnessJob]:
         return [job for job in self.jobs.values() if job.open]
