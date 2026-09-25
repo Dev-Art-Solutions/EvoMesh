@@ -31,6 +31,7 @@ from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.models import describe
+from evomesh.procedural_learning import ProcedureLearner
 from evomesh.skills import InvalidSkillError, MissingSkillError
 from evomesh.tools import InvalidToolError, MissingToolError
 
@@ -76,6 +77,8 @@ HELP = """Commands:
                                 skill's own strict-format rule); clear removes it
   /notifications [since-id]     What the mesh has announced on its own, and their ids
   /memory <agent>               Show the agent's memory.md
+  /procedures <agent> [approve <pattern>|forget <name>]
+                                Learned procedures and repeated plans; approve one early
   /context <agent>|world        Show context.md
   /grant <agent> <path> <mode>  Grant read or write access
   /revoke <agent> <path>        Revoke access
@@ -890,6 +893,52 @@ class ConsoleChannel:
         memory = self.environment.memory_for(definition)
         await memory.ensure()
         return f"{memory.memory_path}\n\n{await memory.read_memory(4000)}"
+
+    async def _command_procedures(self, parts: list[str]) -> str:
+        """What an agent learned to do without a planning call, and the
+        repeated plans a human may approve before they earn it on their own."""
+        if len(parts) not in {2, 4} or (len(parts) == 4 and parts[2] not in {"approve", "forget"}):
+            return "Usage: /procedures <agent> [approve <pattern>|forget <name>]"
+        definition = self.environment.registry.get(parts[1])
+        mind = definition.mind
+        if len(parts) == 4:
+            if parts[2] == "forget":
+                if mind.procedures.pop(parts[3], None) is None:
+                    return f"{definition.name} has no procedure named {parts[3]}."
+                message = f"{definition.name} forgot {parts[3]}."
+            else:
+                procedure = ProcedureLearner().promote(mind, parts[3], human_approved=True)
+                if procedure is None:
+                    return f"No successful trace with pattern {parts[3]} to approve."
+                message = f"Approved {procedure.name}: {len(procedure.steps)} step(s)."
+            definition.touch()
+            await self.environment.repository.save_agent(definition)
+            return message
+        learned = [
+            f"  {item.name}{' (approved)' if item.approved else ''}: "
+            f"{item.successes} ok / {item.failures} failed -- {item.trigger}"
+            for item in mind.procedures.values()
+        ]
+        counts: dict[str, tuple[int, int, str]] = {}
+        for trace in mind.execution_traces:
+            ok, bad, _ = counts.get(trace.pattern, (0, 0, ""))
+            counts[trace.pattern] = (
+                ok + trace.succeeded,
+                bad + (not trace.succeeded),
+                trace.context_signature,
+            )
+        known = {item.pattern for item in mind.procedures.values()}
+        pending = [
+            f"  {pattern}: {ok} ok / {bad} failed -- {signature}"
+            for pattern, (ok, bad, signature) in counts.items()
+            if pattern not in known
+        ]
+        return (
+            f"{definition.name} learned procedures:\n"
+            + ("\n".join(learned) or "  none")
+            + "\nrepeated plans not yet learned:\n"
+            + ("\n".join(pending) or "  none")
+        )
 
     async def _command_context(self, parts: list[str]) -> str:
         if len(parts) != 2:

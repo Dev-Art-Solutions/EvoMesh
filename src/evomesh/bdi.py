@@ -53,6 +53,12 @@ from evomesh.goal_manager import GoalEvaluationContext, GoalManager
 from evomesh.harness_queue import HarnessGateway
 from evomesh.memory import clip
 from evomesh.models import ModelUnavailableError
+from evomesh.procedural_learning import (
+    LEARNED_PREFIX,
+    ExecutionTrace,
+    ProcedureLearner,
+    goal_signature,
+)
 from evomesh.rules import RuleEngine
 
 MAX_PLAN_STEPS = 4
@@ -253,6 +259,7 @@ class BDIReasoner:
     """One turn of the interpreter per cycle."""
 
     max_steps: int = MAX_PLAN_STEPS
+    learner: ProcedureLearner = field(default_factory=ProcedureLearner)
 
     async def cycle(self, behavior: BDIBehavior, context: CycleContext) -> CycleOutcome:
         mind = context.definition.mind
@@ -367,8 +374,36 @@ class BDIReasoner:
             # full goal, not a paraphrase that dropped the part naming the
             # tool.
             return mind.commit(goal.id, [goal.description], plan="ad-hoc")
+        procedure = self.learner.match(mind, goal)
+        if procedure is not None:
+            # A plan this agent already made for this exact goal, and saw
+            # succeed repeatedly: reusing it is the planning call not paid.
+            mind.record_plan_selected(procedure.name)
+            return mind.commit(goal.id, procedure.steps, plan=procedure.name)
         steps = await self._plan_with_model(context, goal)
         return mind.commit(goal.id, steps, plan="model" if len(steps) > 1 else "ad-hoc")
+
+    def _learn(
+        self, context: CycleContext, mind: MindState, intention: Intention, *, succeeded: bool
+    ) -> None:
+        """Feed a finished model-made or learned plan to procedural learning.
+        Library plans are known already and ad-hoc ones have nothing to reuse."""
+        if intention.plan != "model" and not intention.plan.startswith(LEARNED_PREFIX):
+            return
+        if not _has_goal(mind, intention):
+            return
+        goal = mind.goal(intention.goal_id)
+        self.learner.observe(
+            mind,
+            ExecutionTrace(
+                goal_type=goal.kind,
+                context_signature=goal_signature(goal),
+                plan_name=intention.plan,
+                steps=[step.description for step in intention.steps],
+                agents=[context.definition.id],
+                succeeded=succeeded,
+            ),
+        )
 
     async def _plan_with_model(self, context: CycleContext, goal: Goal) -> list[str]:
         """One planning call per goal. A model that is down still yields a plan.
@@ -417,12 +452,14 @@ class BDIReasoner:
         except (ModelUnavailableError, RuntimeError, ValueError) as exc:
             intention.advance(str(exc), failed=True)
             mind.record_plan_outcome(intention.plan, success=False)
+            self._learn(context, mind, intention, succeeded=False)
             return CycleOutcome.failed(f"{position} failed: {exc}")
 
         goal = mind.goal(intention.goal_id) if _has_goal(mind, intention) else None
         if result.impossible:
             intention.finish(IntentionStatus.IMPOSSIBLE)
             mind.record_plan_outcome(intention.plan, success=False)
+            self._learn(context, mind, intention, succeeded=False)
             if goal is not None and not goal.recurring:
                 goal.status = GoalStatus.BLOCKED
                 goal.blocked_reason = result.impossible
@@ -462,6 +499,7 @@ class BDIReasoner:
         if achieved:
             intention.finish(IntentionStatus.ACHIEVED)
             mind.record_plan_outcome(intention.plan, success=not result.failed)
+            self._learn(context, mind, intention, succeeded=not result.failed)
         elif intention.exhausted:
             # The procedure finished, but its explicit predicate did not. It
             # may be reconsidered next cycle; it must not silently certify the

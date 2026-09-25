@@ -36,7 +36,6 @@ from evomesh.goal_manager import GoalManager
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, ModelUnavailableError
-from evomesh.procedural_learning import ExecutionTrace, ProcedureLearner
 from evomesh.progress import ProgressTracker
 from evomesh.storage import SQLiteRepository
 
@@ -170,7 +169,6 @@ class AgentRuntime:
     num_ctx: int | None = None
     cognitive: CognitiveModelService = field(default_factory=CognitiveModelService)
     events: EventBus = field(default_factory=EventBus)
-    procedure_learner: ProcedureLearner = field(default_factory=ProcedureLearner)
     start_delay: float = 0.0
     services: Callable[[], dict[str, Any]] = dict
     world_context: Callable[[], str] = lambda: ""
@@ -505,19 +503,6 @@ class AgentRuntime:
                         ),
                         None,
                     )
-                    if intention is not None and intention.steps:
-                        trace = ExecutionTrace(
-                            goal_type=goal.kind,
-                            context_signature=",".join(sorted(intention.context_keys)),
-                            plan_name=intention.plan,
-                            steps=[step.description for step in intention.steps],
-                            agents=[self.definition.id],
-                            succeeded=True,
-                        )
-                        self.procedure_learner.record(trace)
-                        self.procedure_learner.promote(
-                            self.definition.mind, trace.pattern
-                        )
                     await self.events.publish(
                         Event(
                             EventType.GOAL_COMPLETED,

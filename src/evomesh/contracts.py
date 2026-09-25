@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -340,7 +341,12 @@ class MemoryEpisode(BaseModel):
 
 
 class LearnedProcedure(BaseModel):
-    """Reusable procedural knowledge retained after successful execution."""
+    """Reusable procedural knowledge retained after successful execution.
+
+    ``trigger`` is the normalized goal description it was learned for, and
+    ``goal_kind`` the goal kind: together they are what a later goal must
+    match for the procedure to replace a planning call.
+    """
 
     name: str
     trigger: str
@@ -348,7 +354,32 @@ class LearnedProcedure(BaseModel):
     successes: int = 0
     failures: int = 0
     source_goal_id: str = ""
+    pattern: str = ""
+    goal_kind: str = ""
+    approved: bool = False
     updated_at: datetime = Field(default_factory=now_utc)
+
+
+class ExecutionTrace(BaseModel):
+    """One finished execution of a plan, the raw material procedures are
+    learned from. Persisted (bounded) in the agent's MindState, so repeated
+    successes accumulate across restarts instead of resetting with them."""
+
+    goal_type: str
+    context_signature: str
+    plan_name: str
+    steps: list[str]
+    tools: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
+    succeeded: bool
+    model_calls: int = 0
+    duration_seconds: float = 0.0
+    created_at: datetime = Field(default_factory=now_utc)
+
+    @property
+    def pattern(self) -> str:
+        material = "|".join((self.goal_type, self.context_signature, *self.steps))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -424,6 +455,7 @@ class MindState(BaseModel):
     plan_statistics: dict[str, PlanUsage] = Field(default_factory=dict)
     episodes: list[MemoryEpisode] = Field(default_factory=list)
     procedures: dict[str, LearnedProcedure] = Field(default_factory=dict)
+    execution_traces: list[ExecutionTrace] = Field(default_factory=list)
 
     def open_goals(self) -> list[Goal]:
         # Imported lazily to keep the persisted contracts independent from the
@@ -595,6 +627,9 @@ class MindState(BaseModel):
 
     def remember_procedure(self, procedure: LearnedProcedure) -> None:
         self.procedures[procedure.name] = procedure
+
+    def record_trace(self, trace: ExecutionTrace, *, keep: int = 200) -> None:
+        self.execution_traces = [*self.execution_traces, trace][-keep:]
 
 
 class AgentDefinition(BaseModel):

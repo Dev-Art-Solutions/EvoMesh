@@ -72,7 +72,6 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
-from evomesh.procedural_learning import ProcedureLearner
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
@@ -111,7 +110,6 @@ class Environment:
         self.blackboard = Blackboard()
         self.capabilities = CapabilityRegistry()
         self.contract_net = ContractNet(self.capabilities)
-        self.procedure_learner = ProcedureLearner()
         self.improvement_backlog = ImprovementBacklog()
         self.improvement_scout = ImprovementScout()
         self.improvement_triage = ImprovementTriage()
@@ -666,7 +664,6 @@ class Environment:
             num_ctx=self.num_ctx_for(definition),
             cognitive=self.cognition,
             events=self.events,
-            procedure_learner=self.procedure_learner,
             start_delay=start_delay,
             services=self._services,
             world_context=self._world_snapshot,
@@ -1119,7 +1116,6 @@ class Environment:
             "blackboard": self.blackboard,
             "capabilities": self.capabilities,
             "contract_net": self.contract_net,
-            "procedure_learner": self.procedure_learner,
             "improvement_backlog": self.improvement_backlog,
             "improvement_coordinator": self.improvement_coordinator,
         }
