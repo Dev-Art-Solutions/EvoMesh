@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1514](001514.md) — The lock file is created in acquire() but never removed, leaving an empty `evomesh.lock` behind in `.runtime/` on every shutdown.
 - [Generation 1503](001503.md) — The current code at lines 70-71 catches the `TimeoutError` from `asyncio.wait_for(self._tick(), ...)` but logs a bare message with no exception info, so the timed-out commands the mesh logged leave no trace of what failed; logging `exc=e` records the cause without changing the timeout, process-group, or result-reporting behavior that the existing timeout-kill test depends on.
 - [Generation 1502](001502.md) — The four divisors are each one unit too small, so any duration of at least a week (an "ago" age older than a week, or a harness elapsed time past a week) is mis-bucketed and mislabeled — e.g. 1,209,600 s prints as `"14w"` — yet the branch is untested and `humanize_duration`/`humanize_timestamp` are used for real elapsed-time and timestamp output.
 - [Generation 1495](001495.md) — `_FIELD_RANGES` makes `7` a valid Sunday weekday that `parse()` accepts, but `_day_matches` maps Sunday to `0` (never `7`), so a set containing only `7` never matched and `next_after` gave up with "never matches within four years"; folding `7` into `0` makes `0`/`7` identical and canonical so Sunday-cron expressions fire correctly.

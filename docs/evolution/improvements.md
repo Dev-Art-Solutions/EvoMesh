@@ -111,3 +111,8 @@ the line below the title.
     >             except TimeoutError:
     >                 logger.warning("Watcher command timed out: %s", self._argv)
     1. [ ] src/evomesh/watchers.py `AgentWatcher._loop` -- add `exc=e` to the timeout log so the `TimeoutError` (with its traceback/cause) is recorded.
+- [ ] Delete the lock file in SingletonLock.release()
+    The singleton lock writes the file at self._path (`.runtime/evomesh.lock` from config, created via `self._path.mkdir(parents=True, exist_ok=True)` then `self._path.write_bytes(b"\0")` in acquire()), but release() only unlocks and closes the file handle — it never unlinks the file, so the lock file lingers forever after each process exits.
+    > `self._path.write_bytes(b"\0")`
+    > `handle.close()`
+    1. [ ] src/evomesh/singleton.py `SingletonLock.release` -- after unlocking and before closing, delete the lock file if it exists (e.g. `try: self._path.unlink() except FileNotFoundError: pass`), so the stale lock file does not accumulate in `.runtime/`.
