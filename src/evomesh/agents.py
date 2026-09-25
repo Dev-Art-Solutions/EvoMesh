@@ -38,7 +38,7 @@ from evomesh.coordination import (
     semantic_message,
 )
 from evomesh.events import Event, EventBus, EventType
-from evomesh.goal_manager import GoalManager
+from evomesh.goal_manager import TERMINAL_GOAL_STATUSES, GoalManager
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, ModelUnavailableError
@@ -488,6 +488,11 @@ class AgentRuntime:
         return running_for if running_for > threshold else None
 
     async def _apply(self, outcome: CycleOutcome, goal: Goal | None) -> None:
+        if goal is not None and goal.status in TERMINAL_GOAL_STATUSES and not outcome.goal_done:
+            # Closed while this cycle was running (a human's /goal drop or
+            # done during a minute-long model call): the cycle's result must
+            # not reopen it. Found live: a dropped goal came back ACTIVE.
+            goal = None
         worked_before = bool(goal.notes) if goal else False
         self.state.cycles += 1
         self.state.last_cycle_at = now_utc()

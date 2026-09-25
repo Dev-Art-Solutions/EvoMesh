@@ -100,3 +100,34 @@ async def test_a_repeated_stall_does_not_delegate_the_same_help_twice(tmp_path: 
     ]
     assert len(assistance) == 1
     await environment.stop()
+
+
+async def test_a_goal_dropped_during_a_cycle_stays_dropped(tmp_path: Path) -> None:
+    """Found live: /goal drop during a minute-long model call was undone when
+    the cycle finished and set the goal it had started on back to ACTIVE."""
+    from evomesh.cognition import CycleContext, CycleOutcome
+    from evomesh.contracts import AgentStatus
+
+    environment = Environment(
+        Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations"),
+        {"ollama": MockProvider()},
+    )
+    await environment.start()
+    agent = AgentDefinition(name="Busy", purpose="Work", status=AgentStatus.ACTIVE)
+    goal = agent.mind.add_goal("Do the thing")
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=3600)
+    runtime = environment.runtimes[agent.id]
+
+    class DropsMidCycle:
+        name = "drops"
+
+        async def cycle(self, context: CycleContext) -> CycleOutcome:
+            goal.status = GoalStatus.FAILED  # the human's /goal drop
+            return CycleOutcome(summary="did a step", step="a step", worked=True)
+
+    runtime.behavior = DropsMidCycle()  # type: ignore[assignment]
+    await runtime.run_cycle()
+
+    assert goal.status is GoalStatus.FAILED
+    await environment.stop()
