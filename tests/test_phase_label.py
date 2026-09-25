@@ -20,3 +20,16 @@ def test_phase_label_preserves_trailing_uppercase_and_digits():
 
 def test_phase_label_capitalizes_only_the_first_char():
     assert phase_label("planning_phase") == "Planning phase"
+
+
+def test_phase_label_none_for_empty_whitespace_and_none():
+    # Documented contract: empty, whitespace-only, or None input yields None.
+    assert phase_label("") is None
+    assert phase_label("   ") is None
+    assert phase_label(None) is None
+
+
+def test_phase_label_formats_non_empty_unknown_phase():
+    # Empty/whitespace is the only None case; non-empty unknown phases are
+    # still upper-cased, so this returns a formatted label, not None.
+    assert phase_label("unknown_phase") == "Unknown phase"

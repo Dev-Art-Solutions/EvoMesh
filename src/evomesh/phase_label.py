@@ -38,11 +38,18 @@ _LABELS: dict[str, str] = {
 }
 
 
-def phase_label(phase: AgentPhase | str) -> str:
-    """Render any agent phase as a short human label."""
+def phase_label(phase: AgentPhase | str | None) -> str | None:
+    """Render any agent phase as a short human label.
+
+    Empty, whitespace-only, or ``None`` input yields ``None``; every other
+    (unknown) phase renders as the first character upper-cased and the rest
+    preserved.
+    """
+    if phase is None:
+        return None
     text = phase.value if isinstance(phase, AgentPhase) else str(phase).strip()
     try:
         return _LABELS[text]
     except KeyError:
         text = text.replace("_", " ").strip()
-        return text[:1].upper() + text[1:] or "Unknown"
+        return text[:1].upper() + text[1:] or None
