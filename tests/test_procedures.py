@@ -234,6 +234,7 @@ async def test_t09_a_revision_is_immutable_and_executions_stay_pinned(tmp_path: 
     match = registry.select(
         "local_json_snapshot", {"source": "a.json", "destination": "b.json"}, CAPS
     )
+    assert match.definition is not None and match.admission is not None
     execution = await executor.start(
         match.definition,
         match.admission,
@@ -402,6 +403,7 @@ async def test_branch_takes_explicit_edges_and_unknown_fails(tmp_path: Path) -> 
     for index, body in enumerate(['{"status": "healthy"}', '{"status": "down"}', '{"other": 1}']):
         (host.root / f"s{index}.json").write_text(body, encoding="utf-8")
         match = registry.select("branch_fixture", {"source": f"s{index}.json"}, CAPS)
+        assert match.definition is not None and match.admission is not None
         execution = await executor.start(
             match.definition,
             match.admission,
@@ -411,6 +413,7 @@ async def test_branch_takes_explicit_edges_and_unknown_fails(tmp_path: Path) -> 
             parameters={"source": f"s{index}.json"},
         )
         outcome = await run(executor, execution.execution_id, host)
+        assert outcome is not None
         routes[index] = (outcome.kind, outcome.code, outcome.result)
     assert routes[0] == ("completed", "", {"route": "healthy"})
     assert routes[1] == ("completed", "", {"route": "unhealthy"})
