@@ -131,3 +131,11 @@ the line below the title.
     `phase_label` mangles any phase string that contains uppercase letters or digits: `"E2E"` becomes `"E2e"`, `"2D"` becomes `"2d"`, because the fallback calls `.capitalize()`, which lowercases everything after the first character. That fallback exists precisely to render phases not in `_LABELS`, and the function is typed and called with arbitrary phase strings.
     >         return text.replace("_", " ").strip().capitalize() or "Unknown"
     1. [x] src/evomesh/phase_label.py `phase_label` -- in the `except KeyError` fallback, replace `.capitalize()` with an upper-case-only-first-char transform (e.g. `text[:1].upper() + text[1:]`) so trailing digits/uppercase are preserved.
+- [ ] Add backoff so a watcher that keeps timing out slows down instead of hammering the failing command every interval
+    `AgentWatcher._loop` catches `TimeoutError`, logs one line, and then falls straight to `asyncio.sleep(self.interval_seconds)` and loops — so three consecutive timeouts (the logged failure) means three commands launched `interval_seconds` apart with no delay growing with the failure count, even though `run_command` has to tear down the whole process group after each one.
+    >             except TimeoutError:
+    >                 logger.warning("Watcher command timed out: %s", self._argv)
+    >             except Exception:  # noqa: BLE001 - one bad tick must not end the watcher
+    >                 logger.exception("Watcher command failed: %s", self._argv)
+    >             await asyncio.sleep(self.interval_seconds)
+    1. [ ] src/evomesh/watchers.py `AgentWatcher._loop` -- add a `self._timeout_streak` counter (set to 0 in `__init__`): in the `except TimeoutError:` branch do `self._timeout_streak = min((self._timeout_streak + 1) % 32, 31)`; in the `except Exception:` branch do `self._timeout_streak = 0`; and replace the trailing `await asyncio.sleep(self.interval_seconds)` with `await asyncio.sleep(min(self.interval_seconds, BACKOFF_MIN_SECONDS * (2 ** self._timeout_streak)))` so repeated timeouts exponentially back off (capped) while a non-timeout error resets it.
