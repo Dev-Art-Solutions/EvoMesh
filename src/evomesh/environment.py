@@ -1501,14 +1501,15 @@ class Environment:
             # Open goals nobody has touched for an hour: work that is
             # neither progressing nor failing loudly enough to be a stall.
             "stale_goals": {
-                definition.name: len(
-                    GoalManager(definition.mind).stalled_goals(
-                        timedelta(seconds=STALE_GOAL_SECONDS)
-                    )
-                )
+                definition.name: count
                 for definition in self.registry.all()
-                if GoalManager(definition.mind).stalled_goals(
-                    timedelta(seconds=STALE_GOAL_SECONDS)
-                )
+                for count in [
+                    len(
+                        GoalManager(definition.mind).stalled_goals(
+                            timedelta(seconds=STALE_GOAL_SECONDS)
+                        )
+                    )
+                ]
+                if count
             },
         }
