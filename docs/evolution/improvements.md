@@ -117,7 +117,8 @@ the line below the title.
     > `self._path.write_bytes(b"\0")`
     > `handle.close()`
     1. [ ] src/evomesh/singleton.py `SingletonLock.release` -- after unlocking and before closing, delete the lock file if it exists (e.g. `try: self._path.unlink() except FileNotFoundError: pass`), so the stale lock file does not accumulate in `.runtime/`.
-- [ ] Give `ToolDefinition.parameters_schema` the real JSON schema type of each parameter instead of always "string"
+- [-] Give `ToolDefinition.parameters_schema` the real JSON schema type of each parameter instead of always "string"
+    Rejected 2026-09-25: ToolParameter has only name/description/required -- there is no `annotation` to map -- and every value is appended to argv as a string, so "string" is the true type.
     <every ToolDefinition.parameter becomes {"type": "string"} regardless of the model field — an `int`, `float`, `bool` or enum parameter is declared as a string. The model fields are pydantic types, so `param.annotation` gives the true type.>
     >                     param.name: {"type": "string", "description": param.description}
     >                     for param in self.parameters
