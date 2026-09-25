@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from evomesh.config import (
     EvolutionSettings,
@@ -784,3 +785,38 @@ async def test_telegram_stays_off_until_it_is_configured(tmp_path: Path) -> None
     assert not TelegramChannel(environment, TelegramSettings()).configured
     assert not TelegramChannel(environment, TelegramSettings(enabled=True)).configured
     assert TelegramChannel(environment, TelegramSettings(enabled=True, token="1:a")).configured
+
+
+async def test_a_telegram_429_is_explained_and_its_retry_after_honored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: "getUpdates failed with HTTP 429" and nothing else, then a
+    retry 5s later -- Telegram's body said why and how long to stay away."""
+    environment = await telegram_environment(tmp_path)
+    settings = TelegramSettings(enabled=True, token="1:a")
+
+    def flood(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "ok": False,
+                "description": "Too Many Requests: retry after 17",
+                "parameters": {"retry_after": 17},
+            },
+        )
+
+    channel = TelegramChannel(
+        environment, settings, httpx.AsyncClient(transport=httpx.MockTransport(flood))
+    )
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        channel._running = False
+
+    monkeypatch.setattr("evomesh.telegram.asyncio.sleep", sleep)
+    channel._running = True
+
+    await channel._poll()
+
+    assert slept == [17]

@@ -60,7 +60,12 @@ BLOCKED_COMMANDS = {"/exit"}
 
 
 class TelegramError(RuntimeError):
-    pass
+    """A Bot API failure; ``retry_after`` is the wait Telegram asked for on a
+    429 (its ``parameters.retry_after``), ``None`` when it named none."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class TelegramChannel:
@@ -248,7 +253,10 @@ class TelegramChannel:
                     type(exc).__name__,
                     exc,
                 )
-                await asyncio.sleep(self._backoff)
+                # A 429 names how long to stay away; retrying sooner only
+                # extends the flood limit.
+                retry_after = exc.retry_after if isinstance(exc, TelegramError) else None
+                await asyncio.sleep(max(self._backoff, retry_after or 0))
                 self._backoff = min(self._backoff * 2, BACKOFF_MAX_SECONDS)
                 continue
             self._backoff = BACKOFF_INTERVAL_SECONDS
@@ -429,7 +437,22 @@ class TelegramChannel:
             f"{API_ROOT}/bot{self.settings.token.strip()}/{method}", json=payload
         )
         if response.status_code >= 400:
-            raise TelegramError(f"{method} failed with HTTP {response.status_code}")
+            # The error body says why (and, on a 429, for how long) -- found
+            # live 2026-09-25: "getUpdates failed with HTTP 429" and nothing
+            # else, then a retry 5s later regardless.
+            try:
+                error = response.json()
+            except ValueError:
+                error = {}
+            if not isinstance(error, dict):
+                error = {}
+            description = error.get("description") or "no reason given"
+            parameters = error.get("parameters")
+            retry_after = parameters.get("retry_after") if isinstance(parameters, dict) else None
+            raise TelegramError(
+                f"{method} failed with HTTP {response.status_code}: {description}",
+                retry_after=float(retry_after) if isinstance(retry_after, int | float) else None,
+            )
         body = response.json()
         if not body.get("ok"):
             raise TelegramError(f"{method} was refused: {body.get('description', 'no reason')}")
