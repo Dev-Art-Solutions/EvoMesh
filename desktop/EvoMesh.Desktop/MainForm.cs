@@ -1753,6 +1753,11 @@ internal sealed class MainForm : Form
             Width = width,
             Height = 36,
             Margin = new Padding(4),
+            // Grows past `width` when the text needs it (in the font it ends
+            // up with), instead of clipping it -- "Improvements" did not fit 120.
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
+            MinimumSize = new Size(width, 36),
         };
         StyleButton(button);
         return button;
