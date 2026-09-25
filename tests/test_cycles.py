@@ -3287,3 +3287,24 @@ async def test_a_test_objectives_repair_is_told_to_fix_the_test_and_may_not_touc
     assert harness.catalogs == [False, False]
     assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
     assert validator.calls == 1
+
+
+async def test_evolution_status_says_when_the_checkout_moved_past_the_active_generation(
+    tmp_path: Path,
+) -> None:
+    """Found live: after a hand revert of generation 1516, status still said
+    "active generation: 1516" and nothing about the tree being elsewhere."""
+    repo = GitRepository(tmp_path)
+    await repo.run("init", "-b", "main")
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    await repo.run("add", "a.txt")
+    await repo.run("commit", "-m", "generation")
+    active = await repo.current_commit()
+    (tmp_path / "a.txt").write_text("b\n", encoding="utf-8")
+    await repo.run("commit", "-am", "a human's revert")
+
+    moved = await ConsoleChannel._checkout_line(tmp_path, active)
+    same = await ConsoleChannel._checkout_line(tmp_path, await repo.current_commit())
+
+    assert moved.startswith("checkout: ") and "1 commit(s) after" in moved
+    assert same == ""

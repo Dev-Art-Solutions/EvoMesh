@@ -26,6 +26,7 @@ from evomesh.contracts import (
     TelegramSettings,
 )
 from evomesh.environment import Environment
+from evomesh.git import GitError, GitRepository
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
@@ -1078,6 +1079,7 @@ class ConsoleChannel:
                 if state.get("stage") == "await-human" and state.get("awaiting")
                 else ""
             )
+            checkout = await self._checkout_line(evolver.workspace.repository_root, applied)
             outcomes = metadata.get("recent_outcomes") or []
             recent = (
                 f"recent: {outcomes.count('promoted')} promoted, "
@@ -1087,6 +1089,7 @@ class ConsoleChannel:
             return (
                 f"active generation: {metadata['active']}"
                 f"{f' ({applied[:8]})' if applied else ''}\n"
+                f"{checkout}"
                 f"last known good: {metadata['last_known_good']}\n"
                 f"published: {self._publish_state(metadata)}\n"
                 f"pipeline stage: {state.get('stage', 'plan')}\n"
@@ -1256,6 +1259,24 @@ class ConsoleChannel:
         if self.environment.settings.evolution.auto_restart:
             return "The mesh restarts into it now."
         return "Restart the mesh to run it (auto_restart is off)."
+
+    @staticmethod
+    async def _checkout_line(root: Path, applied: str) -> str:
+        """What the tree is really at, when that is not the active generation.
+
+        Found live 2026-09-25: after a human reverted generation 1516 by hand,
+        status still said "active generation: 1516" and nothing else -- the
+        metadata only moves when the pipeline promotes.
+        """
+        repository = GitRepository(root)
+        try:
+            head = await repository.current_commit()
+            if not applied or head.startswith(applied) or applied.startswith(head):
+                return ""
+            ahead = (await repository.run("rev-list", "--count", f"{applied}..HEAD")).strip()
+        except GitError:
+            return ""
+        return f"checkout: {head[:8]}, {ahead} commit(s) after the active generation\n"
 
     @staticmethod
     def _publish_state(metadata: dict[str, object]) -> str:
