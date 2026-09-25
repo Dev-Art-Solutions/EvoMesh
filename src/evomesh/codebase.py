@@ -1012,7 +1012,9 @@ SCOUT_MAX_ITEMS = 2
 # act on without re-deriving the whole problem itself. Its steps count: they are
 # the most concrete part of it.
 SCOUT_MIN_DETAIL_CHARS = 80
-_DONE_ITEM = re.compile(r"^ {0,3}- \[[xX]\] (?P<title>\S.*?)\s*$")
+# `[x]` done, `[-]` rejected by a human: closed either way -- never handed out,
+# never proposed again by a scout.
+_DONE_ITEM = re.compile(r"^ {0,3}- \[[xX-]\] (?P<title>\S.*?)\s*$")
 _SOURCE_PATH = re.compile(r"src/evomesh/(?P<module>\w+)\.py")
 _CALLED_NAME = re.compile(r"`(?:[\w.]+\.)?(?P<name>[A-Za-z_]\w*)\(\)`")
 _LEVEL_WARNING = ("WARNING", "ERROR", "CRITICAL")
@@ -1020,7 +1022,8 @@ _STEP_SHAPE = "N. [ ] src/evomesh/<module>.py `<Name or Class.method>` -- <the c
 
 
 def done_improvements(root: Path) -> list[str]:
-    """Titles of every ticked ``- [x]`` item, in file order."""
+    """Titles of every closed item -- ``- [x]`` done or ``- [-]`` rejected --
+    in file order."""
     path = root / IMPROVEMENTS_FILE
     if not path.is_file():
         return []

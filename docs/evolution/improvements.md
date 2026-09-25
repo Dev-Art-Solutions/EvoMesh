@@ -24,6 +24,10 @@ last step. An item written without steps is split into steps by a *plan* generat
 a plan) three recent generations failed is set aside until those attempts age out of the
 look-back window. Do not tick anything by hand unless you did the work yourself.
 
+`- [-]` marks an item a human rejected (a problem the code does not have, or a change not
+worth making): it is never handed out and scouts will not propose it again. Say why on
+the line below the title.
+
 - [x] Back off exponentially when Telegram polling keeps failing, and log what actually failed
     `TelegramChannel`'s poll loop in src/evomesh/telegram.py catches `httpx.HTTPError` and
     logs `"Telegram poll failed, retrying: %s", exc`, then sleeps a fixed 5 seconds. Two real
@@ -101,7 +105,8 @@ look-back window. Do not tick anything by hand unless you did the work yourself.
     `humanize_duration` formats any duration of a week or more in a multi-part string, but its four `divmod` divisors descend one unit level too far: the weeks bucket divides by `days*hours*minutes` (86,400 s = one day), the days bucket by `days*hours` (1,440 s), the hours bucket by `hours` (60 s = one minute), and the minutes bucket then divides by `minutes` (60) a value that is already `< 60`, so minutes is always `0`. A timestamp two weeks ago (`delta` = 1,209,600 s) therefore renders as `"14w ago"` instead of `"2w ago"`, and the branch is only reached for the `humanize_timestamp` "ago" text and for the `harness_session` elapsed / mean-elapsed values once they cross a week. No test covers it (`tests/test_humanize.py` only exercises sub-second durations and sub-1024 byte sizes).
     >         weeks, remaining = divmod(remaining, _DAYS * _HOURS * _MINUTES)
     1. [x] src/evomesh/humanize.py `humanize_duration` -- replace the four `divmod` divisors with the correct number of seconds per unit (weeks → `_DAYS * _HOURS * _MINUTES * _WEEKS`, days → `_DAYS * _HOURS * _MINUTES`, hours → `_HOURS * _MINUTES`, minutes → `_MINUTES`) so the bucket counts are no longer shifted by one level.
-- [ ] Log the exception detail when a watcher command times out
+- [-] Log the exception detail when a watcher command times out
+    Rejected 2026-09-25: the TimeoutError from wait_for carries no message, the log line already names the command, and `exc=` is not a logging argument.
     The watchdog log line is empty of cause: the mesh logged "Watcher command timed out" but the handler that emits it captures the `TimeoutError` yet logs nothing about it, so operators can't tell what actually failed. This is a distinct gap from the already-done timeout-kill fix — nothing about logging the cause has been addressed.
     >             except TimeoutError:
     >                 logger.warning("Watcher command timed out: %s", self._argv)

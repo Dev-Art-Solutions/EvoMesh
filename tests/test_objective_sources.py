@@ -764,3 +764,17 @@ def test_a_test_work_order_carries_the_code_and_the_test_files_edges(tmp_path: P
     assert "Never change anything under src/evomesh/" in task
     assert "tests/test_new.py does not exist yet: create it with write." in fresh
     assert len(task) < 3000
+
+
+def test_a_rejected_item_is_closed_and_not_proposed_again(tmp_path: Path) -> None:
+    _write_backlog(
+        tmp_path,
+        "- [-] Log the timeout's exception\n"
+        "    Rejected: TimeoutError carries no message.\n"
+        "    1. [ ] src/evomesh/busy.py `helper` -- log it\n"
+        "- [ ] Real work\n"
+        "    why\n",
+    )
+
+    assert [item.title for item in open_improvements(tmp_path)] == ["Real work"]
+    assert done_improvements(tmp_path) == ["Log the timeout's exception"]
