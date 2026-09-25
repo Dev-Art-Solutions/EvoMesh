@@ -44,4 +44,5 @@ def phase_label(phase: AgentPhase | str) -> str:
     try:
         return _LABELS[text]
     except KeyError:
-        return text.replace("_", " ").strip().capitalize() or "Unknown"
+        text = text.replace("_", " ").strip()
+        return text[:1].upper() + text[1:] or "Unknown"

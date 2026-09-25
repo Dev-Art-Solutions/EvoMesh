@@ -127,7 +127,7 @@ the line below the title.
     `agent_label(role)` maps known roles to labels but returns the string `"agent"` for anything not in `_AGENT_LABELS`; its callers (`agents.py`, `console.py`) pass `role=agent.type`, so any custom, new, or unknown agent type (e.g. `type="researcher") is rendered as the generic "agent" rather than as `researcher`.
     > `    return _AGENT_LABELS.get(role, "agent")`
     1. [x] src/evomesh/agent_label.py `agent_label` -- change the fallback of the `.get` on the final line from the literal `"agent"` to the `role` argument itself (e.g. `return _AGENT_LABELS.get(role, role)`).
-- [ ] Capitalize only the first letter when rendering an unknown phase, not the whole string
+- [x] Capitalize only the first letter when rendering an unknown phase, not the whole string
     `phase_label` mangles any phase string that contains uppercase letters or digits: `"E2E"` becomes `"E2e"`, `"2D"` becomes `"2d"`, because the fallback calls `.capitalize()`, which lowercases everything after the first character. That fallback exists precisely to render phases not in `_LABELS`, and the function is typed and called with arbitrary phase strings.
     >         return text.replace("_", " ").strip().capitalize() or "Unknown"
-    1. [ ] src/evomesh/phase_label.py `phase_label` -- in the `except KeyError` fallback, replace `.capitalize()` with an upper-case-only-first-char transform (e.g. `text[:1].upper() + text[1:]`) so trailing digits/uppercase are preserved.
+    1. [x] src/evomesh/phase_label.py `phase_label` -- in the `except KeyError` fallback, replace `.capitalize()` with an upper-case-only-first-char transform (e.g. `text[:1].upper() + text[1:]`) so trailing digits/uppercase are preserved.
