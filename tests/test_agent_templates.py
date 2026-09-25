@@ -342,3 +342,17 @@ async def test_the_news_watcher_template_spawns_with_learn_skills_granted(
     installed = {skill.name for skill in environment.skills.discover()}
     assert {"news-triage", "news-report-export"} <= installed
     await environment.stop()
+
+
+def test_a_watch_block_can_set_its_command_timeout() -> None:
+    """The watcher's 20s kill was fixed in code, with no way to change it
+    per agent -- the improvement three generations could not wire through."""
+    watched = VALID.replace(
+        "---\n\nNotes",
+        "watch:\n  command: python watch.py\n  timeout_seconds: 45\n---\n\nNotes",
+    )
+
+    assert parse_agent_template(Path("t/AGENT.md"), watched).watch_timeout_seconds == 45
+    assert parse_agent_template(Path("t/AGENT.md"), VALID).watch_timeout_seconds is None
+    news = REPO_TEMPLATES / "news-watcher" / "AGENT.md"
+    assert parse_agent_template(news, news.read_text(encoding="utf-8")).watch_timeout_seconds == 60

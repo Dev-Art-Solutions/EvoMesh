@@ -46,7 +46,7 @@ from evomesh.permissions import FilesystemPolicy
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
-from evomesh.watchers import AgentWatcher
+from evomesh.watchers import DEFAULT_TIMEOUT_SECONDS, AgentWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +257,7 @@ class Environment:
         watcher = AgentWatcher(
             definition.watch_command,
             interval_seconds=definition.watch_interval_seconds or 5.0,
+            timeout_seconds=definition.watch_timeout_seconds or DEFAULT_TIMEOUT_SECONDS,
             notify=functools.partial(self.announce_agent, definition.id),
             cwd=self.default_harness_root(definition),
         )

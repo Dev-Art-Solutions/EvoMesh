@@ -14,6 +14,8 @@ learn_skills: true
 watch:
   command: python "{template_dir}/scripts/watch_news.py"
   interval_seconds: 300
+  # Three feeds fetched in parallel at 10s each; room to spare.
+  timeout_seconds: 60
 ---
 
 A human reading this: edit `config.json` beside this AGENT.md to set

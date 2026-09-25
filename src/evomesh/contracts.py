@@ -536,6 +536,9 @@ class AgentDefinition(BaseModel):
     # agent's own channels; silence means nothing crossed a threshold.
     watch_command: str = ""
     watch_interval_seconds: float | None = None
+    # How long one run of watch_command may take before it is killed; None
+    # defers to watchers.DEFAULT_TIMEOUT_SECONDS.
+    watch_timeout_seconds: float | None = None
     # Overrides the provider's num_ctx for this one agent. None defers to
     # ProviderSettings.num_ctx for whatever provider/model this agent runs.
     num_ctx: int | None = None
