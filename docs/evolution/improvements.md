@@ -176,5 +176,5 @@ the line below the title.
 - [ ] Show improvement work-item progress in `/improvements` and `/status`
     An improvement with several steps is now worked as a DAG of work items (one per step), but neither `ImprovementControl.summary` (what `/improvements` prints) nor `Environment.status` says how far along those work items are -- a human sees `[active]` and nothing about which step it is on or how many are left.
     >                 f"{item.title}"
-    1. [ ] src/evomesh/improvements.py `ImprovementControl.summary` -- for an improvement that has work items, append ` work <completed>/<total>` to its line, counting its work items (from `item.work_item_ids`, looked up in `self.backlog.work_items`) and leaving cancelled ones out of the total.
+    1. [x] src/evomesh/improvements.py `ImprovementControl.summary` -- for an improvement that has work items, append ` work <completed>/<total>` to its line, counting its work items (from `item.work_item_ids`, looked up in `self.backlog.work_items`) and leaving cancelled ones out of the total.
     2. [ ] src/evomesh/environment.py `Environment.status` -- in the `improvements` mapping, add a `work_items` entry: a count of `self.improvement_backlog.work_items` by status value.

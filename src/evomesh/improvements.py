@@ -870,10 +870,20 @@ class ImprovementControl:
         for item in sorted(self.backlog.items.values(), key=lambda entry: -entry.factors.score)[
             :10
         ]:
-            lines.append(
+            work = [
+                self.backlog.work_items[wid]
+                for wid in item.work_item_ids
+                if wid in self.backlog.work_items
+            ]
+            active = [w for w in work if w.status is not WorkStatus.CANCELLED]
+            completed = sum(1 for w in active if w.status is WorkStatus.COMPLETED)
+            line = (
                 f"  {item.id} [{item.status.value}] score {item.factors.score:.2f} "
                 f"{item.title}"
                 + (f" (after {', '.join(item.dependencies)})" if item.dependencies else "")
                 + (f" -- {item.rejection_reason}" if item.rejection_reason else "")
             )
+            if work:
+                line += f" work {completed}/{len(active)}"
+            lines.append(line)
         return "\n".join(lines)
