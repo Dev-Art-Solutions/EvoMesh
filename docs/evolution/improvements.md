@@ -139,3 +139,11 @@ the line below the title.
     >                 logger.exception("Watcher command failed: %s", self._argv)
     >             await asyncio.sleep(self.interval_seconds)
     1. [x] src/evomesh/watchers.py `AgentWatcher._loop` -- keep a timeout streak (start at 0 in `__init__`): after a tick that finishes, set it to 0; in the `except TimeoutError:` branch add 1, capped at 5; then sleep `self.interval_seconds * 2 ** streak` instead of `self.interval_seconds`, so each consecutive timeout doubles the wait (up to 32x) and one good tick restores the normal interval.
+- [ ] Make `_sum` use a correctly-rounded float sum instead of a running total
+    `_sum` accumulates values with `total += value`, so values of very different magnitudes lose precision to rounding error, which then propagates into `mean` (called on every elapsed record in `harness_session.py`). It is the sole summation primitive in the module and has no more accurate implementation; the existing test only checks `1.0+2.0+3.0 == 6.0`, which a correct sum also satisfies, so the inaccuracy is currently uncaught.
+    >
+    >     total = 0.0
+    >     for value in values:
+    >         total += value
+    >     return total
+    1. [ ] src/evomesh/metrics.py `_sum` -- replace the manual `total += value` loop with `math.fsum(values)` (adding `import math` at the top) so the total — and therefore `mean` — is correctly rounded rather than accumulating rounding error.
