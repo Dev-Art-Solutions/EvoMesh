@@ -36,6 +36,18 @@ def _stamp(moment: datetime | None = None) -> str:
     return (moment or now_utc()).strftime("%Y-%m-%dT%H:%MZ")
 
 
+def _newest_within(entries: list[str], chars: int, *, minimum: int) -> list[str]:
+    """The newest ``entries`` whose lines fit in ``chars`` (at least ``minimum``)."""
+    chosen: list[str] = []
+    used = 0
+    for entry in reversed(entries):
+        if len(chosen) >= minimum and used + len(entry) + 1 > chars:
+            break
+        chosen.append(entry)
+        used += len(entry) + 1
+    return list(reversed(chosen))
+
+
 def clip(text: str, budget: int, *, keep: str = "tail") -> str:
     """Trim text to a character budget on a line boundary."""
     if budget <= 0:
@@ -191,16 +203,26 @@ class AgentMemory:
         entries = [line for line in recent.splitlines() if line.strip().startswith("- ")]
         if len(entries) < 4:
             return False
-        keep = entries[len(entries) - max(3, len(entries) // 3) :]
+        # Keep the newest entries that fit half the budget (never fewer than
+        # three). It was the newest third by count: with 1000 entries that is
+        # still far over budget, so the file compacted again every cycle.
+        keep = _newest_within(entries, self.budget.memory_chars // 2, minimum=3)
         overflow = entries[: len(entries) - len(keep)]
+        # What the summarizer sees is bounded by the prompt budget too. Found
+        # by the benchmark: 200 KB of memory went to the model in one prompt,
+        # which a 4k-context server silently truncates.
+        shown = _newest_within(overflow, max(400, self.budget.prompt_chars - 400), minimum=1)
+        dropped = len(overflow) - len(shown)
         summary = ""
-        if summarizer is not None and overflow:
+        if summarizer is not None and shown:
             try:
-                summary = (await summarizer("\n".join(overflow))).strip()
+                summary = (await summarizer("\n".join(shown))).strip()
             except (RuntimeError, ValueError, TimeoutError):
                 summary = ""
         if not summary:
             summary = f"{len(overflow)} older entries compacted on {_stamp()}."
+        elif dropped:
+            summary = f"{summary}\n({dropped} older entries dropped unsummarized on {_stamp()}.)"
         previous = ""
         if SUMMARY_SECTION in head:
             before, _, existing = head.partition(SUMMARY_SECTION)

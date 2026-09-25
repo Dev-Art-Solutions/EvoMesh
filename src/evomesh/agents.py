@@ -570,8 +570,26 @@ class AgentRuntime:
                 manager.complete(goal)
             if outcome.goal_done and not goal.recurring:
                 if worked_before:
-                    manager.complete(goal)
+                    changes = manager.complete(goal)
                     self._progress.clear(goal.id)
+                    for change in changes:
+                        # complete() refreshes the mind itself, so the
+                        # environment's handler would find nothing left to
+                        # unblock: the dependants' event is dispatched here.
+                        if (
+                            change.before is GoalStatus.BLOCKED
+                            and change.after is GoalStatus.RUNNABLE
+                            and goal.id in change.goal.dependency_goal_ids
+                        ):
+                            await self.events.publish(
+                                Event(
+                                    EventType.GOAL_UNBLOCKED,
+                                    source="goal_manager",
+                                    agent_id=self.definition.id,
+                                    goal_id=change.goal.id,
+                                    payload={"dependency_goal_id": goal.id},
+                                )
+                            )
                     intention = next(
                         (
                             item

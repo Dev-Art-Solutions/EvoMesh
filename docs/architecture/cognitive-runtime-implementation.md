@@ -8,7 +8,12 @@ called from the running mesh, not only from tests.
 ## Deterministic cognitive core
 
 - `GoalManager` owns goal predicates, dependencies, deadlines, retry policy,
-  utility-based selection and stale-goal detection (`/status` → `stale_goals`).
+  utility-based selection, preemption and stale-goal detection (`/status` →
+  `stale_goals`). Every status change goes through `transition`, which refuses
+  illegal ones; `refresh` and `complete` return the transitions they made and
+  the runtime dispatches events from those records (one `GOAL_UNBLOCKED` per
+  dependant). Every goal creation path refuses a dependency on an unknown goal;
+  a failed dependency fails its dependants.
 - `RuleEngine` runs every BDI cycle after belief revision. Its rules are the
   behavior's built-ins (the Guardian's degradation rule) plus the agent's own
   `AgentDefinition.rules` (from a template's `rules:` or `/rules`), validated
@@ -18,8 +23,11 @@ called from the running mesh, not only from tests.
   handled by `BDIBehavior.on_rule_action` (`announce`, `wake`).
 - BDI keeps a committed intention and re-plans only after relevant change or
   failure. `BELIEF_CHANGED` and `GOAL_CREATED` are published every cycle.
-- `ProgressTracker` detects identical failures and no-progress cycles; a stall
-  is signalled once, on the cycle that reaches the threshold.
+- `ProgressTracker` detects identical failures and no-progress cycles from a
+  signature that includes structural progress (steps done, children done,
+  artifacts, progress), so repeated text with real progress is not a stall. A
+  stall is signalled once; the goal pauses (5 min, doubling, capped at 1 h) and
+  then runs again, and a one-shot goal that stalls three times fails.
 
 ## Procedural learning
 
@@ -53,11 +61,17 @@ use oversized irrelevant context and prove required sections remain intact.
 ## Memory, events and the blackboard
 
 Working context, semantic beliefs, bounded episodes, execution traces and
-learned procedures are separate. The typed `EventBus` has bounded history.
+learned procedures are separate. Memory compaction keeps the newest entries
+that fit half the memory budget and sends the summarizer only what fits the
+prompt budget. The typed `EventBus` has bounded history, filtered
+subscriptions (an agent receives only events addressed to it) and coalesces an
+immediate duplicate. A requester's cycle wakes when its delegated work
+completes.
 The `Blackboard` is shared, bounded and persisted (`repository` state
 `blackboard`): revised beliefs become facts (`<agent>.<key>`), files a harness
 job wrote become artifacts, and open work items are listed; its projection is
-part of every agent's world snapshot and `world.md`.
+part of every agent's world snapshot and `world.md`. Conflicting claims for
+one key keep their versions and sources (`fact_versions`), across restarts.
 
 ## Multi-agent cooperation
 
@@ -67,11 +81,19 @@ objective, inputs, outputs, conditions and budget. An accepted `DELEGATE`
 becomes a priority-2 `delegated_work` goal recording its requester; completing
 it closes the work item, stores the result as a fact, sends `RESULT` back and
 publishes `TASK_COMPLETED`; failing it sends `FAILURE` and spends budget.
+A harness job hands over a task with `delegate_work` (a routed WorkItem);
+`ask_agent` is for questions. Work items carry requester, deadline, result
+references, causation chain and delegation depth; an exhausted budget is
+`NEEDS_HUMAN`. Contract Net ranks by history per agent, work type and
+capability set, computed from finished work on the blackboard. Delegated work
+in flight at shutdown is kept if an open goal still owns it and cancelled
+otherwise.
 
 A stall delegates a diagnosis to the `health.verify` capability via Contract
 Net. The Guardian answers it from runtime state without a model call. A request
 is not repeated while one is open, expires after an hour, and is cancelled when
-the stalled goal finishes.
+the stalled goal finishes. A causation loop or a chain deeper than the
+budget escalates the originating work instead of creating more.
 
 ## Evidence-backed evolution
 
@@ -90,15 +112,32 @@ the stalled goal finishes.
    capability and published on the blackboard; a retry reuses its budget.
 4. **Review and validate.** The read-only review verdict and deterministic
    validation are recorded separately.
-5. **Settle.** A work item closes from its generation's recorded outcome
-   (`GenerationSupervisor.outcome`), so no ending path is missed. An exhausted
-   budget becomes `NEEDS_HUMAN`, announced once.
+5. **Settle.** A work item closes from its `WorkExecutor`'s recorded
+   outcome, so no ending path is missed and settling survives a restart. The
+   generation pipeline is one executor (`GenerationExecutor`: promoted →
+   completed, discarded → failed). An exhausted budget becomes `NEEDS_HUMAN`,
+   announced once.
 6. **Measure.** A finished improvement is `VERIFYING` until its evidence stays
    gone for its observation window → `VERIFIED`, or `INEFFECTIVE` if it comes
    back. A verified improvement whose evidence returns is reopened.
 
+Every opened generation is an improvement: the evolver's own fallbacks
+(scout, maintenance) and a human's objective are adopted with evidence
+(`backlog_exhausted`, `codebase_analysis`, `human_request`), under the same
+budget and verification.
+
 `/improvements` shows the backlog; `depend <id> <on-id>` builds the dependency
 graph (cycles refused) and `epic <id> <name>` groups improvements into epics.
+
+## Measurements
+
+`python -m benchmarks.cognitive_runtime` drives the real runtime through the
+eight scenarios of the Phase 2 plan and writes
+`docs/architecture/cognitive-runtime-benchmark.md`; `tests/test_cognitive_benchmark.py`
+runs it as a quality gate. Highlights of the committed run: known work 0 model
+calls; one standing goal over 8 passes needs 3 planning calls instead of 8;
+delegation routes with 0 model calls; 200 KB of memory stays inside a 6000-,
+12000- and 24000-character prompt budget (4k/8k/16k context).
 
 ## Verification commands
 

@@ -421,7 +421,9 @@ class GoalManager:
         *,
         at: datetime | None = None,
         human_override: bool = False,
-    ) -> None:
+    ) -> list[GoalTransition]:
+        """Complete ``goal`` and return what that did to the rest of the
+        mind (dependants unblocked), for the caller to dispatch."""
         at = at or now_utc()
         if goal.status is GoalStatus.PENDING:
             self.refresh(at=at)
@@ -440,7 +442,7 @@ class GoalManager:
             self.transition(
                 goal, GoalStatus.DONE, at=at, human_override=human_override
             )
-        self.refresh(at=at)
+        return self.refresh(at=at)
 
     def record_failure(self, goal: Goal, reason: str, *, at: datetime | None = None) -> None:
         at = at or now_utc()
