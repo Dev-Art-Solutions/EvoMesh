@@ -123,7 +123,7 @@ the line below the title.
     >                     param.name: {"type": "string", "description": param.description}
     >                     for param in self.parameters
     1. [ ] src/evomesh/tools.py `ToolDefinition.parameters_schema` -- map each parameter's declared field annotation (`param.annotation`) to the matching JSON-schema `"type"` (e.g. `int` -> "integer", `float` -> "number", `bool` -> "boolean", everything else -> "string") instead of hardcoding "string".
-- [ ] Make `agent_label` return the role itself for roles absent from `_AGENT_LABELS` instead of the hard-coded "agent"
+- [x] Make `agent_label` return the role itself for roles absent from `_AGENT_LABELS` instead of the hard-coded "agent"
     `agent_label(role)` maps known roles to labels but returns the string `"agent"` for anything not in `_AGENT_LABELS`; its callers (`agents.py`, `console.py`) pass `role=agent.type`, so any custom, new, or unknown agent type (e.g. `type="researcher") is rendered as the generic "agent" rather than as `researcher`.
     > `    return _AGENT_LABELS.get(role, "agent")`
-    1. [ ] src/evomesh/agent_label.py `agent_label` -- change the fallback of the `.get` on the final line from the literal `"agent"` to the `role` argument itself (e.g. `return _AGENT_LABELS.get(role, role)`).
+    1. [x] src/evomesh/agent_label.py `agent_label` -- change the fallback of the `.get` on the final line from the literal `"agent"` to the `role` argument itself (e.g. `return _AGENT_LABELS.get(role, role)`).
