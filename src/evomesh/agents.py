@@ -31,7 +31,12 @@ from evomesh.contracts import (
     Message,
     now_utc,
 )
-from evomesh.coordination import Performative, WorkItem, semantic_message
+from evomesh.coordination import (
+    DELEGATED_GOAL_KIND,
+    Performative,
+    WorkItem,
+    semantic_message,
+)
 from evomesh.events import Event, EventBus, EventType
 from evomesh.goal_manager import GoalManager
 from evomesh.memory import AgentMemory, MemoryBudget
@@ -45,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 MAX_INBOX_HISTORY = 6
 MAX_PENDING_EVENTS = 64
+DELEGATED_GOAL_PRIORITY = 2
 
 # How long a cycle can run before it counts as stuck rather than merely slow.
 # The validate stage hands a multi-minute suite off to a background task and
@@ -346,14 +352,31 @@ class AgentRuntime:
                         goal.parameters.get("work_item_id") == item.id and goal.is_open
                         for goal in self.definition.mind.goals
                     ):
-                        self.definition.mind.add_goal(
+                        goal = self.definition.mind.add_goal(
                             item.objective,
-                            kind="delegated_work",
-                            parameters={"work_item_id": item.id},
+                            kind=DELEGATED_GOAL_KIND,
+                            parameters={
+                                "work_item_id": item.id,
+                                "work_type": item.type,
+                                "requester_id": incoming.sender_id,
+                                "inputs": dict(item.inputs),
+                            },
                             owner_agent_id=self.definition.id,
-                            priority=4,
+                            # Ahead of a standing goal (3): someone is waiting
+                            # on this, and a recurring goal that is always
+                            # runnable would otherwise starve it forever.
+                            priority=DELEGATED_GOAL_PRIORITY,
                         )
                         await self.repository.save_agent(self.definition)
+                        await self.events.publish(
+                            Event(
+                                EventType.GOAL_CREATED,
+                                source="delegation",
+                                agent_id=self.definition.id,
+                                goal_id=goal.id,
+                                payload={"work_item_id": item.id, "kind": goal.kind},
+                            )
+                        )
                     reply, detail = Performative.ACCEPT, "accepted"
                     self.wake()
             await self.bus.send(
@@ -541,6 +564,7 @@ class AgentRuntime:
                                     for call in self.cognitive.metrics.records
                                 ),
                                 "plan": intention.plan if intention else "",
+                                "summary": outcome.summary,
                             },
                         )
                     )

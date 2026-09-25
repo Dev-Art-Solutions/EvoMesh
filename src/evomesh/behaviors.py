@@ -29,6 +29,7 @@ from evomesh.bdi import (
 )
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, Intention, PlanStep
+from evomesh.coordination import DELEGATED_GOAL_KIND
 from evomesh.evolution import (
     BACKLOG_MAX_SECONDS,
     BACKLOG_MAX_STEPS,
@@ -150,6 +151,8 @@ AWAITING_KEY = "evolution.awaiting_human"
 
 HEALTHY_PREFIXES = ("the model provider is ready", "all ")
 INVESTIGATE = "Investigate why "
+# The Guardian's plan for a delegated stall diagnosis (no model call).
+DIAGNOSE_STALL = "diagnose-stall"
 
 # How long the validate stage waits before deciding the suite is not instant.
 # Widened twice already -- 0.05s, then 0.1s -- each passing locally every
@@ -299,6 +302,12 @@ class GuardianBehavior(BDIBehavior):
         return PlanLibrary(
             (
                 PlanRecipe(
+                    name=DIAGNOSE_STALL,
+                    steps=("diagnose the stalled agent from its runtime state",),
+                    goal_kind=DELEGATED_GOAL_KIND,
+                    matches=lambda goal, mind: goal.parameters.get("work_type") == "assistance",
+                ),
+                PlanRecipe(
                     name="investigate-degradation",
                     steps=(
                         "identify which agents stopped",
@@ -326,6 +335,9 @@ class GuardianBehavior(BDIBehavior):
             if (item := mind.belief(key)) is not None
             and not item.statement.startswith(HEALTHY_PREFIXES)
         ]
+        if intention.plan == DIAGNOSE_STALL:
+            finding = self._diagnose(context, intention)
+            return StepResult(summary=finding, fact=finding, achieved=True)
         if intention.plan == "investigate-degradation":
             # The desire that produced this goal is discharged the moment the
             # mesh recovers, so a transient boot wobble cannot leave the
@@ -340,6 +352,31 @@ class GuardianBehavior(BDIBehavior):
             return await super().execute(context, intention, step)
         summary = "; ".join(findings) if findings else "mesh healthy, provider ready"
         return StepResult(summary=summary, fact=findings[0] if findings else "")
+
+
+    @staticmethod
+    def _diagnose(context: CycleContext, intention: Intention) -> str:
+        """Answer a delegated stall diagnosis from runtime state alone."""
+        goal = context.definition.mind.goal(intention.goal_id)
+        inputs = goal.parameters.get("inputs") or {}
+        stalled_id = str(inputs.get("stalled_agent_id") or "")
+        reason = str((inputs.get("event") or {}).get("reason") or "no progress")
+        states = cast("dict[str, Any]", context.service("runtime_states") or {})
+        state = states.get(stalled_id)
+        if state is None:
+            text = f"agent {stalled_id or '?'} is not running; its stall ({reason}) is moot"
+        else:
+            parts = [f"{state.name} is {state.phase}", f"stall: {reason}"]
+            if state.last_error:
+                parts.append(f"last error: {state.last_error}")
+            if state.last_outcome:
+                parts.append(f"last outcome: {state.last_outcome}")
+            if not context.service("provider_health") or not cast(
+                "tuple[bool, str]", context.service("provider_health")
+            )[0]:
+                parts.append("the model provider is not ready")
+            text = "; ".join(parts)
+        return text
 
 
 class EvaluatorBehavior(BDIBehavior):

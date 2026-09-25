@@ -17,7 +17,7 @@ from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
-from evomesh.blackboard import Blackboard
+from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
 from evomesh.cognition import AgentBehavior, CycleOutcome
 from evomesh.cognitive_services import (
     CognitiveModelService,
@@ -31,11 +31,14 @@ from evomesh.contracts import (
     AgentRuntimeState,
     AgentStatus,
     FilesystemGrant,
+    Goal,
     GoalStatus,
     Message,
     now_utc,
 )
 from evomesh.coordination import (
+    ASSISTANCE_CAPABILITY,
+    DELEGATED_GOAL_KIND,
     CapabilityRegistry,
     ContractNet,
     Performative,
@@ -79,6 +82,13 @@ from evomesh.watchers import DEFAULT_TIMEOUT_SECONDS, AgentWatcher
 
 logger = logging.getLogger(__name__)
 
+# An unfinished assistance request older than this no longer blocks a new one.
+ASSISTANCE_TTL_SECONDS = 3600.0
+# Beliefs that are one agent's own conversation, not facts about the world.
+PRIVATE_BELIEF_PREFIXES = ("inbox.",)
+# Shared blackboard lines per section in every agent's world snapshot.
+WORLD_BLACKBOARD_LINES = 6
+
 
 class HealthState(StrEnum):
     STARTING = "STARTING"
@@ -121,6 +131,10 @@ class Environment:
             self.events.subscribe(event_type, self.blackboard.publish_event)
         self.events.subscribe(EventType.AGENT_STALLED, self._capture_improvement)
         self.events.subscribe(EventType.AGENT_STALLED, self._assist_stalled_agent)
+        self.events.subscribe(EventType.BELIEF_CHANGED, self._publish_belief_fact)
+        self.events.subscribe(EventType.GOAL_CREATED, self._start_delegated_work)
+        self.events.subscribe(EventType.GOAL_COMPLETED, self._finish_delegated_work)
+        self.events.subscribe(EventType.TASK_FAILED, self._fail_delegated_work)
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
         self.harness_workers: list[HarnessWorker] = []
@@ -245,29 +259,37 @@ class Environment:
         )
 
     async def _assist_stalled_agent(self, event: Event) -> None:
-        """Reassign analysis to another capable agent or broadcast a help request."""
+        """Delegate a diagnosis to a capable agent or broadcast a help request."""
         try:
             stalled = self.registry.get(event.agent_id)
         except KeyError:
             return
-        if any(
-            work.type == "assistance"
-            and work.parent_goal_id == event.goal_id
-            and work.inputs.get("stalled_agent_id") == stalled.id
-            and work.status
-            not in {WorkStatus.COMPLETED, WorkStatus.FAILED, WorkStatus.CANCELLED}
-            for work in self.blackboard.work_items.values()
-        ):
-            # Help for this goal is already out; asking again only piles a
-            # duplicate goal onto whoever accepted the first request.
-            return
+        now = now_utc()
+        for work in self.blackboard.open_work():
+            if work.type != "assistance" or work.inputs.get("stalled_agent_id") != stalled.id:
+                continue
+            if work.parent_goal_id != event.goal_id:
+                continue
+            if (now - work.created_at).total_seconds() < ASSISTANCE_TTL_SECONDS:
+                # Help for this goal is already out; asking again only piles a
+                # duplicate goal onto whoever accepted the first request.
+                return
+            # Nobody finished it in time: close it so this stall can ask again.
+            work.status = WorkStatus.CANCELLED
+            work.updated_at = now
         item = WorkItem(
             parent_goal_id=event.goal_id,
             type="assistance",
-            objective=str(event.payload.get("reason") or "Diagnose stalled goal"),
-            required_capabilities=list(stalled.capabilities),
+            objective=(
+                f"Diagnose why {stalled.name} is stalled: "
+                f"{event.payload.get('reason') or 'no progress'}"
+            ),
+            # The diagnosing capability, not the stalled agent's own set: no
+            # other agent has all of those, so help only ever went out as an
+            # unanswered broadcast.
+            required_capabilities=[ASSISTANCE_CAPABILITY],
             inputs={"stalled_agent_id": stalled.id, "event": event.payload},
-            expected_outputs=["recovery proposal"],
+            expected_outputs=["diagnosis"],
         )
         bid = self.contract_net.award(
             item,
@@ -288,6 +310,128 @@ class Environment:
         if bid is None:
             message.metadata["broadcast"] = True
         await self.bus.send(message)
+        await self._save_blackboard()
+
+    # -- shared world state ---------------------------------------------
+
+    async def _save_blackboard(self) -> None:
+        await self.repository.save_state("blackboard", self.blackboard.dump())
+
+    async def _publish_belief_fact(self, event: Event) -> None:
+        """A revised belief becomes a shared fact every agent can read,
+        instead of something each has to be told in conversation."""
+        key = str(event.payload.get("key") or "")
+        if not key or key.startswith(PRIVATE_BELIEF_PREFIXES) or not self._has(event.agent_id):
+            return
+        definition = self.registry.get(event.agent_id)
+        belief = definition.mind.belief(key)
+        if belief is None:
+            return
+        self.blackboard.publish_fact(
+            WorldFact(
+                key=f"{definition.name}.{key}",
+                value=belief.statement,
+                source=definition.name,
+                confidence=belief.confidence,
+            )
+        )
+        await self._save_blackboard()
+
+    def _delegated_goal(self, event: Event) -> tuple[AgentDefinition, Goal, WorkItem] | None:
+        if not event.goal_id or not self._has(event.agent_id):
+            return None
+        definition = self.registry.get(event.agent_id)
+        goal = next((item for item in definition.mind.goals if item.id == event.goal_id), None)
+        if goal is None or goal.kind != DELEGATED_GOAL_KIND:
+            return None
+        work = self.blackboard.work_items.get(str(goal.parameters.get("work_item_id") or ""))
+        if work is None:
+            return None
+        return definition, goal, work
+
+    async def _start_delegated_work(self, event: Event) -> None:
+        found = self._delegated_goal(event)
+        if found is None:
+            return
+        definition, _, work = found
+        work.assigned_agent_id = definition.id
+        work.status = WorkStatus.ACTIVE
+        work.updated_at = now_utc()
+        await self._save_blackboard()
+
+    async def _finish_delegated_work(self, event: Event) -> None:
+        """A delegated goal is done: close its work item and hand the result
+        back to whoever delegated it, as a structured RESULT."""
+        self._close_assistance_for(event)
+        found = self._delegated_goal(event)
+        if found is None:
+            await self._save_blackboard()
+            return
+        definition, goal, work = found
+        summary = str(event.payload.get("summary") or goal.last_error or "done")
+        work.status = WorkStatus.COMPLETED
+        work.updated_at = now_utc()
+        self.blackboard.publish_fact(
+            WorldFact(key=f"work.{work.id}.result", value=summary, source=definition.name)
+        )
+        requester = str(goal.parameters.get("requester_id") or "")
+        if requester:
+            await self.bus.send(
+                semantic_message(
+                    Performative.RESULT,
+                    sender_id=definition.id,
+                    recipient_id=requester,
+                    task_id=work.id,
+                    goal_id=work.parent_goal_id,
+                    payload={"summary": summary, "work_item_id": work.id},
+                    content=f"{work.objective}: {summary}",
+                )
+            )
+        await self.events.publish(
+            Event(
+                EventType.TASK_COMPLETED,
+                source=definition.name,
+                agent_id=requester,
+                goal_id=work.parent_goal_id,
+                payload={"work_item_id": work.id, "summary": summary},
+            )
+        )
+        await self._save_blackboard()
+
+    def _close_assistance_for(self, event: Event) -> None:
+        """The stalled goal finished after all: help for it is moot."""
+        for work in self.blackboard.open_work():
+            if (
+                work.type == "assistance"
+                and work.parent_goal_id == event.goal_id
+                and work.inputs.get("stalled_agent_id") == event.agent_id
+            ):
+                work.status = WorkStatus.CANCELLED
+                work.updated_at = now_utc()
+
+    async def _fail_delegated_work(self, event: Event) -> None:
+        found = self._delegated_goal(event)
+        if found is None:
+            return
+        definition, goal, work = found
+        if goal.status is not GoalStatus.FAILED:
+            return
+        reason = str(event.payload.get("reason") or "failed")
+        work.fail(reason)
+        requester = str(goal.parameters.get("requester_id") or "")
+        if requester:
+            await self.bus.send(
+                semantic_message(
+                    Performative.FAILURE,
+                    sender_id=definition.id,
+                    recipient_id=requester,
+                    task_id=work.id,
+                    goal_id=work.parent_goal_id,
+                    payload={"reason": reason, "work_item_id": work.id},
+                    content=f"{work.objective}: {reason}",
+                )
+            )
+        await self._save_blackboard()
 
     def _on_generation_landed(self, number: int, commit: str) -> None:
         """A generation is now in the tree, and this process is not running it.
@@ -435,6 +579,7 @@ class Environment:
         )
         self.improvement_backlog.items = restored.items
         self.improvement_backlog.work_items = restored.work_items
+        self.blackboard.load(await self.repository.load_state("blackboard"))
         await self.skills.load()
         await self.tools.load()
         await self.agent_templates.load()
@@ -1088,6 +1233,7 @@ class Environment:
         """
         if job.agent_id and (runtime := self.runtimes.get(job.agent_id)) is not None:
             runtime.wake()
+        await self._publish_job_artifacts(job)
         if not job.agent_id or not job.notify:
             return
         if job.result is not None:
@@ -1098,6 +1244,31 @@ class Environment:
         await self.send_message(
             Message(sender_id="harness", recipient_id=job.agent_id, content=body)
         )
+
+    async def _publish_job_artifacts(self, job: HarnessJob) -> None:
+        """What a job wrote is a shared artifact, found by key instead of
+        re-described in a message."""
+        changes = self.harness.changes(job)
+        if not changes:
+            return
+        owner = (
+            self.registry.get(job.agent_id).name
+            if job.agent_id and self._has(job.agent_id)
+            else "console"
+        )
+        for change in changes:
+            path = str(change.get("path") or "")
+            if not path:
+                continue
+            self.blackboard.publish_artifact(
+                ArtifactRecord(
+                    key=f"{owner}:{path}",
+                    path=str(job.root / path),
+                    source=owner,
+                    metadata={"job": job.number, "kind": change.get("kind")},
+                )
+            )
+        await self._save_blackboard()
 
     def _services(self) -> dict[str, object]:
         return {
@@ -1220,6 +1391,11 @@ class Environment:
         for state in self.runtime_states().values():
             goal = f" goal: {state.goal}" if state.goal else ""
             lines.append(f"- {state.name} [{state.phase}]{goal}")
+        shared = self.blackboard.projection(limit=WORLD_BLACKBOARD_LINES)
+        for section in ("Facts", "Artifacts", "Work items"):
+            if shared[section] != "none":
+                lines.append(f"Shared {section.lower()}:")
+                lines.append(shared[section])
         return "\n".join(lines)
 
     async def refresh_world(self) -> None:
@@ -1241,6 +1417,10 @@ class Environment:
                 ),
                 "Agents": roster,
                 "Evolution": f"stage: {pipeline.get('stage', 'plan')}",
+                **{
+                    f"Shared {name.lower()}": text
+                    for name, text in self.blackboard.projection().items()
+                },
             }
         )
 

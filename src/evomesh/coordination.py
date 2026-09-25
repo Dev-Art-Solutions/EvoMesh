@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 
 from evomesh.contracts import AgentDefinition, AgentRuntimeState, Message, now_utc
 
+# The goal kind an accepted DELEGATE becomes on the receiving agent.
+DELEGATED_GOAL_KIND = "delegated_work"
+# The capability a stalled agent's diagnosis is delegated to.
+ASSISTANCE_CAPABILITY = "health.verify"
+
 
 class Performative(StrEnum):
     INFORM = "inform"
