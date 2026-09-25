@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from evomesh.codebase import (
     IMPROVEMENTS_FILE,
     REPAIR_RULES,
+    RUNTIME_LOG,
     SCOUT_NEEDLE,
     Improvement,
     Module,
@@ -65,11 +66,14 @@ from evomesh.codebase import (
 from evomesh.coordination import WorkItem
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.improvements import (
+    DISCOVERY_SOURCE,
     EVIDENCE_FAILING_TESTS,
     EVIDENCE_HUMAN_BACKLOG,
     EVIDENCE_RUNTIME_FAULT,
+    RUNTIME_SOURCE,
     Candidate,
     ExecutionScope,
+    Observation,
     PriorityFactors,
     WorkHandle,
     WorkInspection,
@@ -1455,6 +1459,8 @@ class EnvironmentEvolver:
         self.validation: ValidationRun | None = None
         # The live tree's own suite, while it runs: (tree key, task).
         self._baseline_run: tuple[str, asyncio.Task[BaselineResult]] | None = None
+        # The runtime log as last observed: (size, mtime_ns).
+        self._last_log_reading: tuple[int, int] | None = None
 
     # -- baseline -------------------------------------------------------
 
@@ -1692,6 +1698,53 @@ class EnvironmentEvolver:
             if (pick := self._item_pick(item, fresh)) is not None:
                 found.append((pick, backlog_candidate(item)))
         return found
+
+    def observations(self, baseline: BaselineResult | None = None) -> list[Observation]:
+        """This pass's real observations for verification (closure plan
+        15.3). The suite observes failing-test evidence once per tree state
+        (its key); the runtime log observes faults and runtime events, and
+        only counts when the mesh actually ran since the last reading -- a
+        quiet log is no evidence that a fault is gone."""
+        found: list[Observation] = [self._log_observation()]
+        if baseline is not None:
+            found.append(
+                Observation(
+                    observation_id=f"suite:{baseline.key}",
+                    observer_id="baseline_suite",
+                    covers=frozenset({EVIDENCE_FAILING_TESTS}),
+                    eligible=0 if baseline.blocked else 1,
+                    healthy=not baseline.blocked,
+                )
+            )
+        return found
+
+    def _log_observation(self) -> Observation:
+        covers = frozenset({EVIDENCE_RUNTIME_FAULT, RUNTIME_SOURCE, DISCOVERY_SOURCE})
+        path = self.workspace.repository_root / RUNTIME_LOG
+        if not path.is_file():
+            return Observation("log:missing", "runtime_log", covers, eligible=0, healthy=False)
+        stat = path.stat()
+        reading = (stat.st_size, stat.st_mtime_ns)
+        ran = self._last_log_reading is not None and reading != self._last_log_reading
+        self._last_log_reading = reading
+        return Observation(
+            f"log:{reading[0]}:{reading[1]}", "runtime_log", covers, eligible=1 if ran else 0
+        )
+
+    async def candidate_revision(self, generation: Generation) -> str:
+        """The identity of what a verdict judged: a digest of the candidate's
+        code change against its parent. ``docs/evolution`` bookkeeping (a
+        ticked backlog step) is left out, so it never invalidates a verdict;
+        any code edit does."""
+        candidate = await self._own_repository(generation)
+        if candidate is None:
+            return ""
+        try:
+            await candidate.run("add", "-A", "-N")
+            patch = await candidate.run("diff", "HEAD", "--", ".", ":(exclude)docs/evolution")
+        except GitError:
+            return ""
+        return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
     def evidence_refs(self, baseline: BaselineResult | None = None) -> set[str]:
         """Every piece of evidence present now, attempted or not: what

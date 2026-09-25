@@ -117,6 +117,22 @@ class PriorityFactors(BaseModel):
         return benefit / max(0.01, self.estimated_effort * self.risk)
 
 
+@dataclass(frozen=True)
+class Observation:
+    """One real reading by one observer (closure plan 15.3). ``covers`` is
+    the evidence kinds it can speak to, ``eligible`` how many eligible
+    requests or probes it actually processed; ``values`` optionally measures
+    specific evidence refs (else: 0.0 when the evidence is gone, 1.0 when it
+    is still present)."""
+
+    observation_id: str
+    observer_id: str
+    covers: frozenset[str]
+    eligible: int = 1
+    healthy: bool = True
+    values: Mapping[str, float] = field(default_factory=dict)
+
+
 class VerificationPlan(BaseModel):
     metric: str
     baseline: float
@@ -124,6 +140,18 @@ class VerificationPlan(BaseModel):
     direction: str = "at_most"
     minimum_observations: int = 1
     observations: list[float] = Field(default_factory=list)
+    # One id per observation that counted: the same reading twice is one.
+    observation_ids: list[str] = Field(default_factory=list)
+    observers: list[str] = Field(default_factory=list)
+
+    def record(self, observation_id: str, observer_id: str, value: float) -> bool:
+        if observation_id in self.observation_ids:
+            return False
+        self.observation_ids.append(observation_id)
+        self.observations.append(value)
+        if observer_id not in self.observers:
+            self.observers.append(observer_id)
+        return True
 
     def verdict(self) -> bool | None:
         if len(self.observations) < self.minimum_observations:
@@ -164,6 +192,14 @@ class Improvement(BaseModel):
     rejection_reason: str = ""
     review_verdict: ReviewVerdict | None = None
     validation_passed: bool | None = None
+    # The candidate revision each verdict judged: a verdict on one diff is
+    # not carried over to another (closure plan 15.2).
+    review_revision: str = ""
+    validation_revision: str = ""
+    # Why a VERIFYING item is not decided yet, in words a human can act on.
+    inconclusive_reason: str = ""
+    # A trusted operator's verification, when no observer can give one.
+    verified_by: str = ""
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -358,8 +394,11 @@ class ImprovementCoordinator:
         improvement.work_item_ids.append(work.id)
         return work
 
-    def record_review(self, improvement: Improvement, verdict: ReviewVerdict) -> None:
+    def record_review(
+        self, improvement: Improvement, verdict: ReviewVerdict, revision: str = ""
+    ) -> None:
         improvement.review_verdict = verdict
+        improvement.review_revision = revision
         improvement.updated_at = now_utc()
 
     def refresh(self, improvement: Improvement) -> ImprovementStatus:
@@ -374,8 +413,18 @@ class ImprovementCoordinator:
             improvement.updated_at = now_utc()
         return improvement.status
 
-    def record_validation(self, improvement: Improvement, *, passed: bool) -> None:
+    def record_validation(
+        self, improvement: Improvement, *, passed: bool, revision: str = ""
+    ) -> None:
         improvement.validation_passed = passed
+        improvement.validation_revision = revision
+        if (
+            revision
+            and improvement.review_revision
+            and improvement.review_revision != revision
+        ):
+            # The candidate changed since it was reviewed: that review is stale.
+            improvement.review_verdict = None
         improvement.updated_at = now_utc()
 
     def begin_verification(self, improvement: Improvement, *, require_review: bool = True) -> bool:
@@ -387,12 +436,26 @@ class ImprovementCoordinator:
             for item_id in improvement.work_item_ids
             if item_id in self.backlog.work_items
         ]
+        # A cancelled required item is not success; only one waived with a
+        # recorded reason (its stage left the evidence) may be skipped.
+        settled = all(
+            item.status is WorkStatus.COMPLETED
+            or (item.status is WorkStatus.CANCELLED and _waived(item))
+            for item in work
+        )
+        same_revision = (
+            not require_review
+            or not improvement.review_revision
+            or not improvement.validation_revision
+            or improvement.review_revision == improvement.validation_revision
+        )
         ready = (
             bool(work)
-            and all(item.status in {WorkStatus.COMPLETED, WorkStatus.CANCELLED} for item in work)
+            and settled
             and any(item.status is WorkStatus.COMPLETED for item in work)
             and (not require_review or improvement.review_verdict is ReviewVerdict.COMPLETE)
             and improvement.validation_passed is True
+            and same_revision
         )
         if ready:
             improvement.status = ImprovementStatus.VERIFYING
@@ -400,18 +463,61 @@ class ImprovementCoordinator:
             improvement.updated_at = now_utc()
         return ready
 
-    def observe(self, improvement: Improvement, value: float) -> ImprovementStatus:
-        if improvement.verification is None:
-            improvement.status = ImprovementStatus.VERIFIED
+    def observe(
+        self, improvement: Improvement, observation: Observation | None, value: float
+    ) -> ImprovementStatus:
+        """Count one real reading toward verification, or say why it does
+        not count. Never VERIFIED for want of a plan, an observer or data."""
+        reason = _unusable(improvement, observation)
+        if reason or observation is None:
+            improvement.inconclusive_reason = reason or "no observation"
             return improvement.status
-        improvement.verification.observations.append(value)
-        verdict = improvement.verification.verdict()
-        if verdict is not None:
+        plan = improvement.verification
+        assert plan is not None
+        if not plan.record(observation.observation_id, observation.observer_id, value):
+            return improvement.status  # the same reading, already counted
+        verdict = plan.verdict()
+        if verdict is None:
+            improvement.inconclusive_reason = (
+                f"{len(plan.observation_ids)} of {plan.minimum_observations} observations"
+            )
+        else:
             improvement.status = (
                 ImprovementStatus.VERIFIED if verdict else ImprovementStatus.INEFFECTIVE
             )
+            improvement.inconclusive_reason = ""
         improvement.updated_at = now_utc()
         return improvement.status
+
+    def verify_by_operator(self, improvement: Improvement, actor: str, reason: str) -> None:
+        """A human's verification, recorded as such -- for work no observer
+        can measure, such as a feature checked against its acceptance."""
+        if not actor or actor.startswith(("model", "agent:")):
+            raise ValueError("verification needs a trusted operator identity")
+        if improvement.status is not ImprovementStatus.VERIFYING:
+            raise ValueError(f"{improvement.id} is {improvement.status.value}, not verifying")
+        improvement.status = ImprovementStatus.VERIFIED
+        improvement.verified_by = f"{actor}: {reason}"[:300]
+        improvement.inconclusive_reason = ""
+        improvement.updated_at = now_utc()
+
+
+def _waived(work: WorkItem) -> bool:
+    return any(entry.startswith("waived:") for entry in work.failure_history)
+
+
+def _unusable(improvement: Improvement, observation: Observation | None) -> str:
+    if improvement.verification is None:
+        return "no verification plan: a human has to verify it"
+    if observation is None:
+        return f"no eligible observer for {improvement.source} evidence reported"
+    if not observation.healthy:
+        return f"observer {observation.observer_id} is unhealthy"
+    if improvement.source not in observation.covers:
+        return f"no eligible observer for {improvement.source} evidence"
+    if observation.eligible <= 0:
+        return f"observer {observation.observer_id} processed no eligible requests"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -528,6 +634,13 @@ def work_handle(work: WorkItem) -> Mapping[str, str] | None:
     return None
 
 
+def _covering(observations: Sequence[Observation], source: str) -> Observation | None:
+    """The healthy observation this pass that covers ``source`` evidence,
+    else the first that covers it at all (so its fault can be reported)."""
+    covering = [item for item in observations if source in item.covers]
+    return next((item for item in covering if item.healthy), covering[0] if covering else None)
+
+
 class ImprovementControl:
     """The backlog as the control plane of self-improvement.
 
@@ -627,13 +740,19 @@ class ImprovementControl:
             items[improvement_id].dependencies.append(depends_on)
             items[depends_on].related_items.append(improvement_id)
 
-    async def sync(self, candidates: Sequence[Candidate], present: set[str]) -> None:
+    async def sync(
+        self,
+        candidates: Sequence[Candidate],
+        present: set[str],
+        observations: Sequence[Observation] = (),
+    ) -> None:
         """Merge what the evolver can pick now into the backlog, retire what
-        is no longer evidenced, and take one verification reading.
+        is no longer evidenced, and count this pass's real observations.
 
         ``present`` is every piece of evidence there is now -- including
         targets set aside after too many attempts, which are not
-        ``candidates`` but are certainly not fixed.
+        ``candidates`` but are certainly not fixed. A pass with no
+        observation covering an item measures nothing for it.
         """
         present = present | {candidate.ref for candidate in candidates}
         for item in self.backlog.items.values():
@@ -667,7 +786,13 @@ class ImprovementControl:
                 continue
             gone = item.source_ref not in present
             if item.status is ImprovementStatus.VERIFYING:
-                status = self.coordinator.observe(item, 0.0 if gone else 1.0)
+                observation = _covering(observations, item.source)
+                value = (
+                    observation.values.get(item.source_ref, 0.0 if gone else 1.0)
+                    if observation is not None
+                    else 1.0
+                )
+                status = self.coordinator.observe(item, observation, value)
                 await self._report(item, status)
             elif gone and item.status in {
                 ImprovementStatus.READY,
@@ -681,7 +806,12 @@ class ImprovementControl:
             if item.source in RECURRENCE_SOURCES and item.status is ImprovementStatus.VERIFYING:
                 started = item.verification_started_at or item.updated_at
                 recurred = item.last_seen_at > started
-                await self._report(item, self.coordinator.observe(item, 1.0 if recurred else 0.0))
+                await self._report(
+                    item,
+                    self.coordinator.observe(
+                        item, _covering(observations, item.source), 1.0 if recurred else 0.0
+                    ),
+                )
         await self.save()
 
     # -- delegation -------------------------------------------------------
@@ -733,6 +863,9 @@ class ImprovementControl:
                 and work.status in {WorkStatus.PENDING, WorkStatus.BLOCKED}
             ):
                 work.status = WorkStatus.CANCELLED
+                work.failure_history.append(
+                    "waived: the stage is no longer open in the evidence"
+                )
                 work.updated_at = now_utc()
 
     def _work_of(self, improvement: Improvement) -> list[WorkItem]:
@@ -872,15 +1005,26 @@ class ImprovementControl:
         await self.save()
         return results
 
-    async def record_validation(self, improvement_id: str, *, passed: bool) -> None:
+    async def record_validation(
+        self, improvement_id: str, *, passed: bool, revision: str = ""
+    ) -> None:
         if item := self.backlog.items.get(improvement_id):
-            self.coordinator.record_validation(item, passed=passed)
+            self.coordinator.record_validation(item, passed=passed, revision=revision)
             await self.save()
 
-    async def record_review(self, improvement_id: str, verdict: ReviewVerdict) -> None:
+    async def record_review(
+        self, improvement_id: str, verdict: ReviewVerdict, revision: str = ""
+    ) -> None:
         if item := self.backlog.items.get(improvement_id):
-            self.coordinator.record_review(item, verdict)
+            self.coordinator.record_review(item, verdict, revision)
             await self.save()
+
+    async def verify(self, improvement_id: str, *, actor: str, reason: str) -> Improvement:
+        item = self.backlog.items[improvement_id]
+        self.coordinator.verify_by_operator(item, actor, reason)
+        await self.save()
+        await self._report(item, item.status)
+        return item
 
     async def settle(
         self, executors: Mapping[str, WorkExecutor] | WorkExecutor, present: set[str]

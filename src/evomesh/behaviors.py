@@ -986,7 +986,9 @@ class EvolverBehavior(BDIBehavior):
             pairs.insert(0, (baseline_pick, baseline_candidate(baseline)))
         present = evolver.evidence_refs(baseline)
         await control.settle(GenerationExecutor(evolver.workspace.supervisor), present)
-        await control.sync([candidate for _, candidate in pairs], present)
+        await control.sync(
+            [candidate for _, candidate in pairs], present, evolver.observations(baseline)
+        )
         by_ref = {candidate.ref: pick for pick, candidate in pairs}
         while (chosen := control.choose()) is not None:
             if chosen.source_ref in by_ref:
@@ -1597,7 +1599,9 @@ class EvolverBehavior(BDIBehavior):
         )
         if self._improvements is not None and state.get("improvement_id") and not blocker:
             await self._improvements.record_validation(
-                str(state["improvement_id"]), passed=result.passed
+                str(state["improvement_id"]),
+                passed=result.passed,
+                revision=await evolver.candidate_revision(generation),
             )
         if blocker:
             command = (result.failure() or {}).get("command")
@@ -1795,6 +1799,7 @@ class EvolverBehavior(BDIBehavior):
             await self._improvements.record_review(
                 str(state["improvement_id"]),
                 ReviewVerdict.COMPLETE if verdict else ReviewVerdict.INCOMPLETE,
+                await evolver.candidate_revision(generation),
             )
         if verdict is True:
             await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT})

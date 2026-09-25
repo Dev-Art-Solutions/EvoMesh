@@ -27,6 +27,7 @@ from evomesh.improvements import (
     ImprovementScout,
     ImprovementStatus,
     ImprovementTriage,
+    Observation,
     PriorityFactors,
     ReviewVerdict,
     WorkHandle,
@@ -495,8 +496,11 @@ async def improvement_lifecycle(root: Path) -> ScenarioResult:
     executor.finished.add(work.id)
     await control.settle(executor, present=set())  # the fault stopped being logged
     states.append(item.status.value)
-    for _ in range(3):
-        await control.sync([], set())
+    for reading in range(3):  # three real log readings, the mesh running each time
+        seen = Observation(
+            f"log:{reading}", "runtime_log", frozenset({EVIDENCE_RUNTIME_FAULT}), eligible=1
+        )
+        await control.sync([], set(), [seen])
         states.append(item.status.value)
     unrelated = [entry for entry in backlog.items.values() if entry is not item]
     return _summarize(

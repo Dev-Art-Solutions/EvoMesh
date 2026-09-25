@@ -12,6 +12,7 @@ from evomesh.improvements import (
     ImprovementScout,
     ImprovementStatus,
     ImprovementTriage,
+    Observation,
     PriorityFactors,
     ReviewVerdict,
     VerificationPlan,
@@ -111,8 +112,14 @@ def test_coordinator_enforces_wip_and_closes_verification_loop() -> None:
     coordinator.record_validation(item, passed=True)
     assert coordinator.begin_verification(item)
     assert item.status is ImprovementStatus.VERIFYING
-    assert coordinator.observe(item, 2) is ImprovementStatus.VERIFYING
-    assert coordinator.observe(item, 1) is ImprovementStatus.VERIFIED
+    def reading(name: str) -> Observation:
+        return Observation(name, "retry_meter", frozenset({item.source}))
+
+    assert coordinator.observe(item, reading("r1"), 2) is ImprovementStatus.VERIFYING
+    assert coordinator.observe(item, reading("r1"), 0) is ImprovementStatus.VERIFYING, (
+        "the same reading twice counts once"
+    )
+    assert coordinator.observe(item, reading("r2"), 1) is ImprovementStatus.VERIFIED
 
 
 def test_backlog_round_trip_preserves_entities() -> None:

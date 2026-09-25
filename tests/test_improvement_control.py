@@ -147,6 +147,11 @@ async def test_a_backlog_item_is_worked_step_by_step_then_verified(tmp_path: Pat
     assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
 
     await _open_once(behavior, context, evolver)
+    # A human's backlog item has no automatic observer: it waits, saying why,
+    # until a human checks it against its acceptance (closure plan 15.3).
+    assert item.status is ImprovementStatus.VERIFYING
+    assert "no eligible observer" in item.inconclusive_reason
+    await plane.verify(item.id, actor="operator:iliya", reason="checked the doubled helper")
 
     assert item.status is ImprovementStatus.VERIFIED, (item.status, item.rejection_reason)
     assert all(
@@ -298,11 +303,14 @@ async def test_the_improvement_lifecycle_survives_a_restart(tmp_path: Path) -> N
     assert (project / "src" / "evomesh" / "busy.py").read_text(encoding="utf-8") == doubled
 
     restored = ImprovementBacklog.load(store["backlog"])  # the process restarts here
-    context.services["improvements"] = persisted(restored)
+    plane = persisted(restored)
+    context.services["improvements"] = plane
     await EvolverBehavior(auto_validate=True, auto_promote=True).cycle(context)
 
     item = next(iter(restored.items.values()))
-    assert item.status is ImprovementStatus.VERIFIED, (item.status, item.rejection_reason)
+    assert item.status is ImprovementStatus.VERIFYING, (item.status, item.rejection_reason)
+    await plane.verify(item.id, actor="operator:iliya", reason="acceptance checked")
+    assert item.status is ImprovementStatus.VERIFIED
     work = restored.work_items[item.work_item_ids[0]]
     assert work.status is WorkStatus.COMPLETED
 
