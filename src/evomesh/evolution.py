@@ -62,6 +62,7 @@ from evomesh.codebase import (
     write_planned_steps,
     write_test_task,
 )
+from evomesh.coordination import WorkItem
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
 from evomesh.improvements import (
     EVIDENCE_FAILING_TESTS,
@@ -69,6 +70,7 @@ from evomesh.improvements import (
     EVIDENCE_RUNTIME_FAULT,
     Candidate,
     PriorityFactors,
+    WorkOutcome,
 )
 from evomesh.improvements import Improvement as TrackedImprovement
 from evomesh.models import ModelProvider
@@ -2795,6 +2797,23 @@ class EnvironmentEvolver:
         generation.git_commit = commit
         self.workspace.supervisor.record_candidate(generation)
         return commit
+
+
+class GenerationExecutor:
+    """The candidate-generation pipeline as a WorkExecutor: a work item's
+    generation promoted means completed, discarded means failed."""
+
+    def __init__(self, supervisor: GenerationSupervisor) -> None:
+        self.supervisor = supervisor
+
+    def outcome(self, item: WorkItem) -> WorkOutcome | None:
+        number = item.inputs.get("generation")
+        if not isinstance(number, int):
+            return None
+        decided = self.supervisor.outcome(number)
+        if decided is None:
+            return None
+        return WorkOutcome.COMPLETED if decided == "promoted" else WorkOutcome.FAILED
 
 
 def fault_candidate(fault: RuntimeFault) -> Candidate:

@@ -246,3 +246,56 @@ async def test_sync_judges_waiting_runtime_proposals_again() -> None:
     stale.status = ImprovementStatus.READY  # judged under an older policy
     await plane.sync([], set())
     assert stale.status is ImprovementStatus.TRIAGED
+
+
+ONE_STEP_BACKLOG = (
+    "# Backlog\n\n"
+    "- [ ] Double the helper\n"
+    "    The helper should double what it gets.\n"
+    "    1. [ ] src/evomesh/busy.py `helper` -- return value * 2\n"
+)
+
+
+async def test_the_improvement_lifecycle_survives_a_restart(tmp_path: Path) -> None:
+    """Promoted in one process, verified in the next: nothing the control
+    plane needs is held only in memory (Phase 2 M5 gate)."""
+    root = tmp_path / "project"
+    _seed_package(root, ONE_STEP_BACKLOG)
+    project = await git_project(root)
+    doubled = BUSY_SOURCE.replace("return value", "return value * 2")
+    evolver, context, _ = await evolving(
+        tmp_path,
+        project,
+        [[("src/evomesh/busy.py", doubled)]],
+        ScriptedValidator([passing()]),
+        StubRepairer(),
+    )
+    store: dict[str, object] = {}
+
+    def persisted(backlog: ImprovementBacklog) -> ImprovementControl:
+        async def save() -> None:
+            store["backlog"] = backlog.dump()
+
+        return ImprovementControl(
+            backlog,
+            ImprovementCoordinator(backlog),
+            ImprovementTriage(),
+            ImprovementScout(),
+            save=save,
+            require_review=False,
+        )
+
+    context.services["improvements"] = persisted(ImprovementBacklog())
+    first = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+    for _ in range(4):  # plan, propose, validate, decide -- promoted
+        await first.cycle(context)
+    assert (project / "src" / "evomesh" / "busy.py").read_text(encoding="utf-8") == doubled
+
+    restored = ImprovementBacklog.load(store["backlog"])  # the process restarts here
+    context.services["improvements"] = persisted(restored)
+    await EvolverBehavior(auto_validate=True, auto_promote=True).cycle(context)
+
+    item = next(iter(restored.items.values()))
+    assert item.status is ImprovementStatus.VERIFIED, (item.status, item.rejection_reason)
+    work = restored.work_items[item.work_item_ids[0]]
+    assert work.status is WorkStatus.COMPLETED

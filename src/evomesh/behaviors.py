@@ -49,6 +49,7 @@ from evomesh.evolution import (
     CandidateValidator,
     EnvironmentEvolver,
     Generation,
+    GenerationExecutor,
     GenerationStatus,
     ObjectivePick,
     PlanNode,
@@ -965,7 +966,7 @@ class EvolverBehavior(BDIBehavior):
         if baseline_pick is not None and baseline is not None:
             pairs.insert(0, (baseline_pick, baseline_candidate(baseline)))
         present = evolver.evidence_refs(baseline)
-        await control.settle(evolver.workspace.supervisor.outcome, present)
+        await control.settle(GenerationExecutor(evolver.workspace.supervisor), present)
         await control.sync([candidate for _, candidate in pairs], present)
         by_ref = {candidate.ref: pick for pick, candidate in pairs}
         while (chosen := control.choose()) is not None:

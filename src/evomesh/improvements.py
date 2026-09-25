@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -458,6 +458,22 @@ class Candidate:
 EVOLUTION_OUTCOME_PROMOTED = "promoted"
 
 
+class WorkOutcome(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class WorkExecutor(Protocol):
+    """What carries out an improvement's work item. The control plane
+    decides what is worked and judges the result; an executor only does the
+    work and reports how it ended. The generation pipeline is one executor
+    (evolution.GenerationExecutor), not an architectural dependency."""
+
+    def outcome(self, item: WorkItem) -> WorkOutcome | None:
+        """How ``item`` ended, or ``None`` while it is still running."""
+        ...
+
+
 class ImprovementControl:
     """The backlog as the control plane of self-improvement.
 
@@ -697,20 +713,21 @@ class ImprovementControl:
             self.coordinator.record_review(item, verdict)
             await self.save()
 
-    async def settle(self, outcome: Callable[[int], str | None], present: set[str]) -> None:
-        """Close the work items whose generation has been decided.
+    async def settle(self, executor: WorkExecutor, present: set[str]) -> None:
+        """Close the work items their executor has finished.
 
-        Read from the generation's recorded outcome rather than hooked into
-        each way a generation can end, so none of them can be missed.
+        Read from the executor's recorded outcome rather than hooked into each
+        way a piece of work can end, so none of them can be missed -- and it
+        survives a restart, because nothing here is held in memory.
         """
         for work in list(self.backlog.work_items.values()):
-            if work.status is not WorkStatus.ACTIVE or "generation" not in work.inputs:
+            if work.status is not WorkStatus.ACTIVE:
                 continue
-            result = outcome(int(work.inputs["generation"]))
+            result = executor.outcome(work)
             if result is None:
                 continue
             item = self.backlog.items.get(work.improvement_id or "")
-            if result == EVOLUTION_OUTCOME_PROMOTED:
+            if result is WorkOutcome.COMPLETED:
                 work.status = WorkStatus.COMPLETED
                 work.updated_at = now_utc()
                 if item is None:
@@ -727,7 +744,7 @@ class ImprovementControl:
                     item.status = ImprovementStatus.READY
                 item.updated_at = now_utc()
                 continue
-            work.fail(f"generation {work.inputs['generation']} {result}")
+            work.fail(f"generation {work.inputs.get('generation', '?')} {result.value}")
             work.inputs = {key: value for key, value in work.inputs.items() if key != "generation"}
             if item is None:
                 continue
