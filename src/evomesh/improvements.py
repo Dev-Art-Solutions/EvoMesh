@@ -6,8 +6,8 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
@@ -467,15 +467,65 @@ class WorkOutcome(StrEnum):
     FAILED = "failed"
 
 
-class WorkExecutor(Protocol):
-    """What carries out an improvement's work item. The control plane
-    decides what is worked and judges the result; an executor only does the
-    work and reports how it ended. The generation pipeline is one executor
-    (evolution.GenerationExecutor), not an architectural dependency."""
+class WorkState(StrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    # The executor cannot say: kept visible, never read as success.
+    UNKNOWN = "unknown"
 
-    def outcome(self, item: WorkItem) -> WorkOutcome | None:
-        """How ``item`` ended, or ``None`` while it is still running."""
-        ...
+
+@dataclass(frozen=True)
+class ExecutionScope:
+    """What one piece of work may use: the routed assignee whose identity
+    its jobs run under, the isolated workspace it may change, and the
+    executor's own reference for what it opened there."""
+
+    assignee: str
+    workspace: str
+    reference: str
+
+
+@dataclass
+class WorkInspection:
+    state: WorkState
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+# Where a work item keeps its handle ("generation": from before the seam).
+HANDLE_INPUTS = frozenset({"handle", "generation"})
+# A durable handle is plain strings, stored on the work item itself, so a
+# restart recovers it with the backlog and nothing is held in memory.
+WorkHandle = dict[str, str]
+
+
+class WorkExecutor(Protocol):
+    """What carries out an improvement's work item (closure plan 18.2). The
+    control plane decides what is worked and judges the result; an executor
+    starts it, reports how it stands, and cancels it. The generation
+    pipeline is one executor (evolution.GenerationExecutor), not an
+    architectural dependency."""
+
+    kind: str
+
+    async def submit(self, work: WorkItem, scope: ExecutionScope) -> WorkHandle: ...
+
+    def inspect(self, handle: Mapping[str, str]) -> WorkInspection: ...
+
+    async def request_cancel(self, handle: Mapping[str, str]) -> WorkInspection: ...
+
+
+def work_handle(work: WorkItem) -> Mapping[str, str] | None:
+    """The handle a work item was submitted under; a generation number from
+    before the seam existed reads as a generation handle."""
+    handle = work.inputs.get("handle")
+    if isinstance(handle, dict):
+        return {str(key): str(value) for key, value in handle.items()}
+    number = work.inputs.get("generation")
+    if isinstance(number, int):
+        return {"executor": "generation", "ref": str(number)}
+    return None
 
 
 class ImprovementControl:
@@ -737,14 +787,17 @@ class ImprovementControl:
         improvement: Improvement,
         *,
         objective: str,
-        generation: int,
         route: Callable[[WorkItem], str | None],
+        executor: WorkExecutor,
+        workspace: str,
+        reference: str,
         stage: str | None = None,
     ) -> WorkItem | None:
-        """A bounded work item for one generation, awarded by ``route``
-        (capability routing). A retry reuses the item and its budget. An
-        improvement with a stage plan works the DAG: ``stage`` names the one
-        this generation does, else the first whose dependencies are done."""
+        """A bounded work item, awarded by ``route`` (capability routing) and
+        submitted to ``executor`` under the awarded agent's identity. A retry
+        reuses the item and its budget. An improvement with a stage plan works
+        the DAG: ``stage`` names the one this run does, else the first whose
+        dependencies are done."""
         work: WorkItem | None = None
         if improvement.work_plan:
             self._plan_dag(improvement)
@@ -776,7 +829,9 @@ class ImprovementControl:
                 await self.save()
                 return None
         work.objective = objective
-        work.inputs = {**work.inputs, "generation": generation}
+        work.inputs = {
+            key: value for key, value in work.inputs.items() if key not in HANDLE_INPUTS
+        }
         agent = route(work)
         if agent is None:
             work.status = WorkStatus.BLOCKED
@@ -784,9 +839,38 @@ class ImprovementControl:
             improvement.rejection_reason = "no agent has the capability to implement it"
         else:
             work.assign(agent)
+            handle = await executor.submit(
+                work, ExecutionScope(assignee=agent, workspace=workspace, reference=reference)
+            )
+            work.inputs = {**work.inputs, "handle": dict(handle)}
             work.status = WorkStatus.ACTIVE
         await self.save()
         return work
+
+    async def cancel(
+        self, improvement_id: str, executors: Mapping[str, WorkExecutor], reason: str
+    ) -> list[WorkInspection]:
+        """Stop an improvement's running work through its executor. A
+        cancelled task is not success: the improvement waits, blocked."""
+        item = self.backlog.items.get(improvement_id)
+        if item is None:
+            raise KeyError(improvement_id)
+        results: list[WorkInspection] = []
+        for work in self._work_of(item):
+            if work.status is not WorkStatus.ACTIVE:
+                continue
+            handle = work_handle(work)
+            executor = executors.get(handle["executor"]) if handle else None
+            if handle is not None and executor is not None:
+                results.append(await executor.request_cancel(handle))
+            work.status = WorkStatus.CANCELLED
+            work.failure_history.append(f"cancelled: {reason}")
+            work.updated_at = now_utc()
+        item.status = ImprovementStatus.BLOCKED
+        item.rejection_reason = f"cancelled: {reason}"
+        item.updated_at = now_utc()
+        await self.save()
+        return results
 
     async def record_validation(self, improvement_id: str, *, passed: bool) -> None:
         if item := self.backlog.items.get(improvement_id):
@@ -798,21 +882,31 @@ class ImprovementControl:
             self.coordinator.record_review(item, verdict)
             await self.save()
 
-    async def settle(self, executor: WorkExecutor, present: set[str]) -> None:
+    async def settle(
+        self, executors: Mapping[str, WorkExecutor] | WorkExecutor, present: set[str]
+    ) -> None:
         """Close the work items their executor has finished.
 
-        Read from the executor's recorded outcome rather than hooked into each
-        way a piece of work can end, so none of them can be missed -- and it
-        survives a restart, because nothing here is held in memory.
+        Read from each executor's own record through the handle the work item
+        carries, rather than hooked into each way a piece of work can end, so
+        none of them can be missed -- and it survives a restart, because
+        nothing here is held in memory.
         """
+        by_kind = (
+            dict(executors) if isinstance(executors, Mapping) else {executors.kind: executors}
+        )
         for work in list(self.backlog.work_items.values()):
             if work.status is not WorkStatus.ACTIVE:
                 continue
-            result = executor.outcome(work)
-            if result is None:
+            handle = work_handle(work)
+            executor = by_kind.get(handle["executor"]) if handle else None
+            if handle is None or executor is None:
+                continue
+            inspection = executor.inspect(handle)
+            if inspection.state in {WorkState.PENDING, WorkState.UNKNOWN}:
                 continue
             item = self.backlog.items.get(work.improvement_id or "")
-            if result is WorkOutcome.COMPLETED:
+            if inspection.state is WorkState.COMPLETED:
                 work.status = WorkStatus.COMPLETED
                 work.updated_at = now_utc()
                 if item is None:
@@ -829,8 +923,10 @@ class ImprovementControl:
                     item.status = ImprovementStatus.READY
                 item.updated_at = now_utc()
                 continue
-            work.fail(f"generation {work.inputs.get('generation', '?')} {result.value}")
-            work.inputs = {key: value for key, value in work.inputs.items() if key != "generation"}
+            work.fail(f"{handle['executor']} {handle['ref']} {inspection.state.value}")
+            work.inputs = {
+                key: value for key, value in work.inputs.items() if key not in HANDLE_INPUTS
+            }
             if item is None:
                 continue
             item.review_verdict = None

@@ -942,8 +942,10 @@ class EvolverBehavior(BDIBehavior):
             work = await self._improvements.begin(
                 tracked,
                 objective=objective,
-                generation=generation.number,
                 route=self._route(context),
+                executor=GenerationExecutor(evolver.workspace.supervisor),
+                workspace=str(generation.path),
+                reference=str(generation.number),
                 stage=f"step:{substantive['pick_step']}"
                 if substantive.get("pick_step")
                 else None,

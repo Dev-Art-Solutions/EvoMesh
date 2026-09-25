@@ -26,7 +26,10 @@ from evomesh.improvements import (
     PriorityFactors,
 )
 from tests.fakes import ScriptedValidator, StubRepairer, failing, passing
+from tests.fakes_executor import InlineExecutor
 from tests.test_cycles import BUSY_SOURCE, STEPPED_BACKLOG, _seed_package, evolving, git_project
+
+INLINE = {"executor": InlineExecutor(), "workspace": "ws", "reference": "1"}
 
 
 def control(*, require_review: bool = False) -> tuple[ImprovementControl, list[str]]:
@@ -134,7 +137,9 @@ async def test_a_backlog_item_is_worked_step_by_step_then_verified(tmp_path: Pat
     assert item.source_ref == "item:Double the helper"
     first_work = plane.backlog.work_items[item.work_item_ids[0]]
     assert first_work.assigned_agent_id == context.definition.id
-    assert isinstance(first_work.inputs["generation"], int)
+    handle = first_work.inputs["handle"]
+    assert handle["executor"] == "generation" and handle["ref"].isdigit()
+    assert handle["assignee"] == context.definition.id, "the job runs as the routed agent"
 
     for _ in range(4):  # step 2: settling step 1 puts the item back in line
         await behavior.cycle(context)
@@ -318,7 +323,7 @@ async def test_a_multi_step_improvement_is_a_dependency_dag_of_work_items() -> N
     item = plane.choose()
     assert item is not None and item.work_plan == ["step:1", "step:2", "step:3"]
 
-    first = await plane.begin(item, objective="do step 1", generation=1, route=lambda _: "evolver")
+    first = await plane.begin(item, objective="do step 1", route=lambda _: "evolver", **INLINE)
     assert first is not None and first.inputs["stage"] == "step:1"
     steps = {work.inputs["stage"]: work for work in plane.backlog.work_items.values()}
     assert steps["step:2"].dependencies == [first.id]
@@ -339,5 +344,5 @@ async def test_simple_work_stays_one_work_item() -> None:
     await plane.sync([candidate("item:small")], {"item:small"})
     item = plane.choose()
     assert item is not None and not item.work_plan
-    await plane.begin(item, objective="do it", generation=1, route=lambda _: "evolver")
+    await plane.begin(item, objective="do it", route=lambda _: "evolver", **INLINE)
     assert len(plane.backlog.work_items) == 1

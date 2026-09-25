@@ -7,7 +7,7 @@ import logging
 import re
 import shutil
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -69,8 +69,13 @@ from evomesh.improvements import (
     EVIDENCE_HUMAN_BACKLOG,
     EVIDENCE_RUNTIME_FAULT,
     Candidate,
+    ExecutionScope,
     PriorityFactors,
+    WorkHandle,
+    WorkInspection,
     WorkOutcome,
+    WorkState,
+    work_handle,
 )
 from evomesh.improvements import Improvement as TrackedImprovement
 from evomesh.models import ModelProvider
@@ -2800,20 +2805,53 @@ class EnvironmentEvolver:
 
 
 class GenerationExecutor:
-    """The candidate-generation pipeline as a WorkExecutor: a work item's
-    generation promoted means completed, discarded means failed."""
+    """The candidate-generation pipeline as a WorkExecutor: the work runs in
+    the candidate generation opened for it; promoted means completed,
+    discarded means failed, and cancelling discards the open candidate."""
+
+    kind = "generation"
 
     def __init__(self, supervisor: GenerationSupervisor) -> None:
         self.supervisor = supervisor
 
-    def outcome(self, item: WorkItem) -> WorkOutcome | None:
-        number = item.inputs.get("generation")
-        if not isinstance(number, int):
-            return None
+    async def submit(self, work: WorkItem, scope: ExecutionScope) -> WorkHandle:
+        number = int(scope.reference)
+        if str(number) not in self.supervisor.metadata().get("candidates", {}):
+            raise ValueError(f"generation {number} is not an open candidate")
+        return {
+            "executor": self.kind,
+            "ref": str(number),
+            "assignee": scope.assignee,
+            "workspace": scope.workspace,
+        }
+
+    def inspect(self, handle: Mapping[str, str]) -> WorkInspection:
+        number = int(handle["ref"])
         decided = self.supervisor.outcome(number)
+        evidence = {"generation": number, "outcome": decided}
         if decided is None:
+            return WorkInspection(WorkState.PENDING, evidence)
+        if decided == "promoted":
+            return WorkInspection(WorkState.COMPLETED, evidence)
+        return WorkInspection(WorkState.FAILED, evidence)
+
+    async def request_cancel(self, handle: Mapping[str, str]) -> WorkInspection:
+        number = int(handle["ref"])
+        if self.supervisor.outcome(number) is None:
+            self.supervisor.discard(number)
+            return WorkInspection(WorkState.CANCELLED, {"generation": number})
+        return self.inspect(handle)
+
+    def outcome(self, item: WorkItem) -> WorkOutcome | None:
+        """How ``item`` ended, or ``None`` while it runs (a convenience over
+        :meth:`inspect` for callers that only need the verdict)."""
+        handle = work_handle(item)
+        if handle is None:
             return None
-        return WorkOutcome.COMPLETED if decided == "promoted" else WorkOutcome.FAILED
+        state = self.inspect(handle).state
+        if state is WorkState.COMPLETED:
+            return WorkOutcome.COMPLETED
+        return WorkOutcome.FAILED if state is WorkState.FAILED else None
 
 
 def fault_candidate(fault: RuntimeFault) -> Candidate:

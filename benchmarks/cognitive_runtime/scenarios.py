@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,7 @@ from evomesh.events import EventType
 from evomesh.improvements import (
     EVIDENCE_RUNTIME_FAULT,
     Candidate,
+    ExecutionScope,
     ImprovementBacklog,
     ImprovementControl,
     ImprovementCoordinator,
@@ -28,7 +29,9 @@ from evomesh.improvements import (
     ImprovementTriage,
     PriorityFactors,
     ReviewVerdict,
-    WorkOutcome,
+    WorkHandle,
+    WorkInspection,
+    WorkState,
 )
 from evomesh.models import MockProvider, ModelUnavailableError
 
@@ -431,11 +434,20 @@ async def oversized_memory(
 
 
 class _Executor:
+    kind = "scenario"
+
     def __init__(self) -> None:
         self.finished: set[str] = set()
 
-    def outcome(self, item: WorkItem) -> WorkOutcome | None:
-        return WorkOutcome.COMPLETED if item.id in self.finished else None
+    async def submit(self, work: WorkItem, scope: ExecutionScope) -> WorkHandle:
+        return {"executor": self.kind, "ref": work.id, "assignee": scope.assignee}
+
+    def inspect(self, handle: Mapping[str, str]) -> WorkInspection:
+        done = handle["ref"] in self.finished
+        return WorkInspection(WorkState.COMPLETED if done else WorkState.PENDING)
+
+    async def request_cancel(self, handle: Mapping[str, str]) -> WorkInspection:
+        return WorkInspection(WorkState.CANCELLED)
 
 
 async def improvement_lifecycle(root: Path) -> ScenarioResult:
@@ -468,11 +480,18 @@ async def improvement_lifecycle(root: Path) -> ScenarioResult:
     item = control.choose()
     assert item is not None
     states.append(item.status.value)
-    work = await control.begin(item, objective=item.title, generation=1, route=lambda _: "evolver")
+    executor = _Executor()
+    work = await control.begin(
+        item,
+        objective=item.title,
+        route=lambda _: "evolver",
+        executor=executor,
+        workspace=str(root),
+        reference="1",
+    )
     assert work is not None
     await control.record_review(item.id, ReviewVerdict.COMPLETE)
     await control.record_validation(item.id, passed=True)
-    executor = _Executor()
     executor.finished.add(work.id)
     await control.settle(executor, present=set())  # the fault stopped being logged
     states.append(item.status.value)
