@@ -1731,7 +1731,7 @@ class EnvironmentEvolver:
         )
 
     def substantive_objective(
-        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS
+        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS, *, scout: bool = True
     ) -> ObjectivePick | None:
         """A real behavioral change to make, or ``None`` if there is none,
         rotated by ``seed``: a logged fault first, then a backlog item, then
@@ -1745,7 +1745,7 @@ class EnvironmentEvolver:
         items = [pick for pick, _ in pairs if pick.kind != PICK_RUNTIME_FAULT]
         if items:
             return items[seed % len(items)]
-        return self.scout_pick(seed, scout_cap)
+        return self.scout_pick(seed, scout_cap) if scout else None
 
     @staticmethod
     def _item_pick(item: Improvement, fresh: Callable[[str], bool]) -> ObjectivePick | None:

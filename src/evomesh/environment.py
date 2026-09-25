@@ -183,6 +183,7 @@ class Environment:
             settings.evolution.review_max_seconds,
             settings.evolution.baseline_tests,
             settings.evolution.test_backlog,
+            settings.evolution.scout_when_idle,
         )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(

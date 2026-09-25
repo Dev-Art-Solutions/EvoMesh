@@ -504,6 +504,7 @@ class EvolverBehavior(BDIBehavior):
         review_max_seconds: float | None = None,
         baseline_tests: bool = False,
         test_backlog: bool = True,
+        scout_when_idle: bool = True,
     ) -> None:
         super().__init__()
         self.auto_validate = auto_validate
@@ -546,6 +547,10 @@ class EvolverBehavior(BDIBehavior):
         # an evolver with nothing substantive to do waits instead. On here for
         # the existing pipeline tests, off in settings.
         self.test_backlog = test_backlog
+        # Whether nothing eligible means "go find something" (a scout, the
+        # dead-module backlog) or IDLE. On here for the existing pipeline
+        # tests, off in settings (closure plan 18.1).
+        self.scout_when_idle = scout_when_idle
         # The tree key a human was last told about, so a stall is announced
         # once, not every cycle it lasts.
         self._announced: str = ""
@@ -821,13 +826,22 @@ class EvolverBehavior(BDIBehavior):
                 pick, tracked = await self._prioritized(
                     self._improvements, evolver, baseline_result, baseline_pick
                 )
-                pick = pick or evolver.scout_pick(seed, scout_cap)
+                if pick is None and self.scout_when_idle:
+                    pick = evolver.scout_pick(seed, scout_cap)
             else:
-                pick = baseline_pick or evolver.substantive_objective(seed, scout_cap=scout_cap)
-            target = evolver.backlog_target(seed) if pick is None else None
+                pick = baseline_pick or evolver.substantive_objective(
+                    seed, scout_cap=scout_cap, scout=self.scout_when_idle
+                )
+            # Dead-module maintenance is a suspicion, not evidence: it is
+            # only ever looked for when a human asked for idle exploration.
+            target = (
+                evolver.backlog_target(seed) if pick is None and self.scout_when_idle else None
+            )
             nudge_delete = target is not None and evolver.recent_backlog_streak(target.name) >= 3
             backlog = (
-                evolver.backlog_objective(seed, nudge_delete=nudge_delete) if pick is None else None
+                evolver.backlog_objective(seed, nudge_delete=nudge_delete)
+                if pick is None and self.scout_when_idle
+                else None
             )
             if pick is not None:
                 objective = _with_recent_failure(evolver, pick.objective, (pick.needle,))
@@ -2030,6 +2044,7 @@ def default_behaviors(
     review_max_seconds: float | None = None,
     baseline_tests: bool = False,
     test_backlog: bool = True,
+    scout_when_idle: bool = True,
 ) -> dict[str, Any]:
     return {
         "architect": ArchitectBehavior(),
@@ -2049,6 +2064,7 @@ def default_behaviors(
             review_max_seconds=review_max_seconds,
             baseline_tests=baseline_tests,
             test_backlog=test_backlog,
+            scout_when_idle=scout_when_idle,
         ),
     }
 

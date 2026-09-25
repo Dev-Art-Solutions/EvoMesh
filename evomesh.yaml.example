@@ -76,8 +76,23 @@ evolution:
   # nothing substantive to do (improvements.md empty, no scout target) the
   # evolver waits instead of padding the history with tests.
   test_backlog: false
+  # With no eligible improvement (no failing test, logged fault, open item in
+  # docs/evolution/improvements.md or human objective) the evolver is IDLE and
+  # calls no model. On: it explores instead -- a read-only scout generation,
+  # then the dead-module "wire or delete" backlog.
+  scout_when_idle: false
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
+
+# Typed procedures (plans/EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2.md): shipped and
+# approved definitions live in procedures/. enabled: false is the emergency stop --
+# no new typed execution starts, running ones still settle. collect_traces offers
+# agents' harness jobs json_read/json_write and records verified occurrences as
+# learning traces; a learned procedure is only ever promoted by a human.
+#
+# procedures:
+#   enabled: true
+#   collect_traces: true
 
 # A model that can look at the project before it answers, instead of being handed
 # one prompt and asked to guess. Off by default. Its tools read, search and list;

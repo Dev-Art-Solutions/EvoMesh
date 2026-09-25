@@ -218,6 +218,12 @@ class EvolutionSettings(BaseModel):
     # fallback: with it on, ~14 of every 20 generations were a 5-line test
     # (2026-09-25). Off, an evolver with nothing substantive to do waits.
     test_backlog: bool = False
+    # Off by default (closure plan 18.1). With no eligible, evidenced
+    # improvement -- a failing test, a logged fault, an open item in
+    # docs/evolution/improvements.md, a human's objective -- the Evolver
+    # reports IDLE and spends no model call. On, it goes looking: a
+    # read-only scout generation, then the dead-module backlog.
+    scout_when_idle: bool = False
     objective: str | None = None
 
 
