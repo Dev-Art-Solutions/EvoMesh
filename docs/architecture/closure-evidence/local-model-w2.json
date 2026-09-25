@@ -1,0 +1,682 @@
+{
+  "mode": "local_model_experiment",
+  "workflow": "W2 report_comparison@1 through ProcedureExecutor with real adapters",
+  "recorded_at": "2026-09-25T21:57:57.362306+00:00",
+  "provider": {
+    "kind": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "version": "0.34.2"
+  },
+  "model": {
+    "tag": "ornith-1.5:35b",
+    "digest": "9f3b89b2521908dd2e6f7a11fa368e62c8f89e1075f22604e4d1a76dd1240fcc",
+    "parameter_size": "35.5B",
+    "quantization": "Q4_K_M"
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15"
+  },
+  "profiles": {
+    "constrained-4k": 4096,
+    "larger-32k": 32768
+  },
+  "effective_context_reported_by_server": {
+    "constrained-4k": {
+      "context_length": 4096,
+      "size_vram": 21388706445,
+      "size": 21388706445
+    },
+    "larger-32k": {
+      "context_length": 32768,
+      "size_vram": 22005269133,
+      "size": 22005269133
+    }
+  },
+  "tool_free": true,
+  "output_budget": "provider default (no num_predict set)",
+  "inputs": {
+    "latency": {
+      "first": [
+        {
+          "id": "A1",
+          "text": "p95 checkout latency 420 ms"
+        },
+        {
+          "id": "A2",
+          "text": "error rate 1.2%"
+        }
+      ],
+      "second": [
+        {
+          "id": "B1",
+          "text": "p95 checkout latency 210 ms"
+        },
+        {
+          "id": "B2",
+          "text": "error rate 1.3%"
+        }
+      ]
+    },
+    "inventory": {
+      "first": [
+        {
+          "id": "INV-7",
+          "text": "warehouse Sofia stock 1,200 units"
+        },
+        {
+          "id": "INV-8",
+          "text": "warehouse Plovdiv stock 300 units"
+        }
+      ],
+      "second": [
+        {
+          "id": "INV-9",
+          "text": "warehouse Sofia stock 640 units"
+        },
+        {
+          "id": "INV-10",
+          "text": "warehouse Plovdiv stock 310 units"
+        },
+        {
+          "id": "INV-11",
+          "text": "a new warehouse in Varna holds 500 units"
+        }
+      ]
+    },
+    "support": {
+      "first": [
+        {
+          "id": "S-100",
+          "text": "median first response 9 hours"
+        },
+        {
+          "id": "S-101",
+          "text": "CSAT 71"
+        }
+      ],
+      "second": [
+        {
+          "id": "S-200",
+          "text": "median first response 2 hours"
+        },
+        {
+          "id": "S-201",
+          "text": "CSAT 83"
+        }
+      ]
+    }
+  },
+  "runs_per_input_profile": 3,
+  "denominator": 18,
+  "completed": 18,
+  "first_call_success": 18,
+  "needed_repair": 0,
+  "failed": 0,
+  "rows": [
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "latency",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 537,
+          "input_tokens": 234,
+          "output_tokens": 134,
+          "seconds": 20.6,
+          "error": ""
+        }
+      ],
+      "seconds": 20.76,
+      "cited_ids": [
+        "A1",
+        "B1",
+        "A2",
+        "B2"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "p95 checkout latency improved from 420 ms to 210 ms, roughly halved, indicating better checkout performance and a significant user-facing improvement (relied on A1 and B1). Error rate increased slightly from 1.2% to 1.3%, a marginal but still negative change indicating a small uptick in failures (relied on A2 and B2). Overall, the system got noticeably faster while error rates remained low, though the slight error-rate increase should be monitored to ensure it doesn't trend upward.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "latency",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 565,
+          "input_tokens": 234,
+          "output_tokens": 137,
+          "seconds": 1.09,
+          "error": ""
+        }
+      ],
+      "seconds": 1.24,
+      "cited_ids": [
+        "A1",
+        "B1",
+        "A2",
+        "B2"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "The p95 checkout latency roughly halved from 420 ms to 210 ms, a major performance improvement that materially speeds up checkout. The error rate rose slightly from 1.2% to 1.3%, a marginal but adverse change that, combined with faster responses, suggests a possible trade-off between speed and reliability. Together these shifts indicate the second report reflects a faster checkout experience, so the change matters because latency is now strong while the small error-rate uptick should be monitored.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "latency",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 575,
+          "input_tokens": 234,
+          "output_tokens": 131,
+          "seconds": 1.05,
+          "error": ""
+        }
+      ],
+      "seconds": 1.19,
+      "cited_ids": [
+        "A1",
+        "B1"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "The p95 checkout latency dropped substantially from 420 ms in the first report to 210 ms in the second report, representing a 50% improvement and a strong signal that checkout performance improved. The error rate was essentially flat, rising marginally from 1.2% to 1.3%. The dominant change is the latency reduction; the minor error-rate increase is negligible in comparison. This matters because checkout speed improved dramatically while reliability stayed stable, indicating overall health of the checkout flow improved.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "inventory",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 417,
+          "input_tokens": 265,
+          "output_tokens": 129,
+          "seconds": 1.14,
+          "error": ""
+        }
+      ],
+      "seconds": 1.29,
+      "cited_ids": [
+        "INV-7",
+        "INV-8",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Sofia stock dropped from 1,200 to 640 units, while Plovdiv rose slightly from 300 to 310 units. Additionally, a new Varna warehouse was identified holding 500 units. This matters because it reveals a significant reallocation of inventory from Sofia with a new location added, so total stock should be re-evaluated across all sites.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "inventory",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 793,
+          "input_tokens": 265,
+          "output_tokens": 191,
+          "seconds": 1.41,
+          "error": ""
+        }
+      ],
+      "seconds": 1.56,
+      "cited_ids": [
+        "INV-7",
+        "INV-8",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Between the first and second reports, the Sofia warehouse stock was revised downward from 1,200 to 640 units, and the Plovdiv warehouse slightly increased from 300 to 310 units, indicating data correction or a stock count update. Additionally, the second report introduces an entirely new warehouse in Varna holding 500 units, expanding the tracked inventory footprint. Overall, the total recorded inventory changed from 1,500 units to 1,450 units, a net decrease driven by the Sofia correction. These changes matter because they affect stock accuracy, fulfillment planning, and warehouse capacity as",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "inventory",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 665,
+          "input_tokens": 265,
+          "output_tokens": 172,
+          "seconds": 1.33,
+          "error": ""
+        }
+      ],
+      "seconds": 1.49,
+      "cited_ids": [
+        "INV-7",
+        "INV-8",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "The new report updates the Sofia warehouse stock from 1,200 units to 640 units, a significant decrease of 560 units, while Plovdiv stock slightly rises from 300 to 310 units. Additionally, a new warehouse in Varna is reported to hold 500 units, which was absent in the first report. These changes indicate a redistribution of inventory away from Sofia and into Plovdiv and the new Varna facility. The shift suggests possible restocking at new locations or reallocation across the network. Tracking these movements matters for accurate inventory management and demand fulfillment.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "support",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 501,
+          "input_tokens": 234,
+          "output_tokens": 129,
+          "seconds": 1.21,
+          "error": ""
+        }
+      ],
+      "seconds": 1.37,
+      "cited_ids": [
+        "S-100",
+        "S-101",
+        "S-200",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Median first response time improved from 9 hours to 2 hours between the two reports, a substantial speedup of 7 hours (roughly a 78% reduction). Customer satisfaction also rose, moving from 71 to 83 CSAT points. Together these changes indicate both faster service and higher customer happiness. This matters because quicker responses likely drove the satisfaction gains, suggesting the operational improvements were effective.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "support",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 447,
+          "input_tokens": 234,
+          "output_tokens": 103,
+          "seconds": 0.87,
+          "error": ""
+        }
+      ],
+      "seconds": 1.0,
+      "cited_ids": [
+        "S-100",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Median first response time improved from 9 hours to 2 hours, meaning customers now receive a first reply roughly 4.5x faster. Customer satisfaction also rose from CSAT 71 to 83, an 12-point gain. Both changes indicate the support process is now quicker and customers are happier with it. The improvements likely matter for retention and reduced churn since faster responses drive higher satisfaction.",
+      "artifact_written": true
+    },
+    {
+      "profile": "constrained-4k",
+      "num_ctx": 4096,
+      "input": "support",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 418,
+          "input_tokens": 234,
+          "output_tokens": 117,
+          "seconds": 1.0,
+          "error": ""
+        }
+      ],
+      "seconds": 1.16,
+      "cited_ids": [
+        "S-100",
+        "S-200",
+        "S-101",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Median first response time improved from 9 hours to 2 hours, a significant speedup of over 75%. Customer satisfaction (CSAT) also rose from 71 to 83, a 12-point gain. This matters because faster responses directly accompanied higher customer satisfaction, suggesting the change in response-time handling delivered a better customer experience.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "latency",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 437,
+          "input_tokens": 234,
+          "output_tokens": 112,
+          "seconds": 9.07,
+          "error": ""
+        }
+      ],
+      "seconds": 9.25,
+      "cited_ids": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "p95 checkout latency nearly halved from 420 ms to 210 ms, a major performance improvement that likely improves customer experience and conversion. Error rate rose only marginally from 1.2% to 1.3%, which is negligible and does not offset the latency gains. Overall the system is materially faster with essentially unchanged reliability, indicating the change was beneficial.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "latency",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 514,
+          "input_tokens": 234,
+          "output_tokens": 131,
+          "seconds": 1.08,
+          "error": ""
+        }
+      ],
+      "seconds": 1.23,
+      "cited_ids": [
+        "A1",
+        "B1",
+        "A2",
+        "B2"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Checkout latency dropped by half (p95 from 420 ms to 210 ms), a major improvement that makes the system much faster and more responsive. Error rate rose slightly from 1.2% to 1.3%, a modest deterioration. The net change is favorable: dramatically better performance alongside a negligible uptick in errors. Latency improvement likely reflects a fix or optimization, while the small error increase should be monitored to ensure it does not trend worse.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "latency",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 373,
+          "input_tokens": 234,
+          "output_tokens": 112,
+          "seconds": 0.91,
+          "error": ""
+        }
+      ],
+      "seconds": 1.07,
+      "cited_ids": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "p95 checkout latency halved from 420 ms to 210 ms (B1 vs A1), a significant improvement in checkout performance. Error rate stayed essentially flat, rising slightly from 1.2% to 1.3% (B2 vs A2). Overall, the second report shows the checkout flow is notably faster with no meaningful degradation in reliability.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "inventory",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 585,
+          "input_tokens": 265,
+          "output_tokens": 158,
+          "seconds": 1.31,
+          "error": ""
+        }
+      ],
+      "seconds": 1.45,
+      "cited_ids": [
+        "INV-7",
+        "INV-8",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Inventory counts for Sofia dropped from 1,200 to 640 units while Plovdiv rose modestly from 300 to 310 units, and a newly opened Varna warehouse now holds 500 units. This indicates the company has redistributed stock, drawing down Sofia and opening a new location, which materially shifts where goods are held and available for fulfillment. The changes suggest either shifting demand, consolidation, or fulfillment strategy adjustments that affect logistics and availability.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "inventory",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 496,
+          "input_tokens": 265,
+          "output_tokens": 157,
+          "seconds": 1.23,
+          "error": ""
+        }
+      ],
+      "seconds": 1.38,
+      "cited_ids": [
+        "INV-7",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "The Sofia count changed from 1,200 units to 640 units, a large decrease of 560 units, and Varna stock was reported from 0 to 500 units. The Sofia stock dropped sharply (640 units vs 1,200) suggesting a possible data discrepancy or real depletion. Plovdiv increased slightly from 300 to 310 units. The new Varna warehouse (500 units) expands the total network inventory. Summary changes: Sofia down 560, Plovdiv +10, new Varna +500.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "inventory",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1190,
+          "output_chars": 711,
+          "input_tokens": 265,
+          "output_tokens": 191,
+          "seconds": 1.43,
+          "error": ""
+        }
+      ],
+      "seconds": 1.6,
+      "cited_ids": [
+        "INV-7",
+        "INV-8",
+        "INV-9",
+        "INV-10",
+        "INV-11"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Sofia stock dropped from 1,200 to 640 units while Plovdiv rose modestly from 300 to 310 units, and a brand-new Varna warehouse holding 500 units was added. The Sofia decline suggests significant depletion, possible diversion, or reallocation to the new Varna location, whereas Plovdiv is largely stable. The net total fell from 1,500 to 1,450 units, so overall inventory shrank slightly even as it became more geographically dispersed. These changes warrant investigation into whether the Sofia shortfall is explained by legitimate transfers to Varna or by loss. Monitoring is advised to confirm the ",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "support",
+      "run": 0,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 314,
+          "input_tokens": 234,
+          "output_tokens": 83,
+          "seconds": 0.86,
+          "error": ""
+        }
+      ],
+      "seconds": 1.03,
+      "cited_ids": [
+        "S-100",
+        "S-101",
+        "S-200",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Median first response time dropped from 9 hours to 2 hours, and CSAT rose from 71 to 83. This shows that response times improved substantially while customer satisfaction also increased, suggesting the changes had a positive effect on service quality.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "support",
+      "run": 1,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 490,
+          "input_tokens": 234,
+          "output_tokens": 124,
+          "seconds": 1.03,
+          "error": ""
+        }
+      ],
+      "seconds": 1.18,
+      "cited_ids": [
+        "S-100",
+        "S-101",
+        "S-200",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Between the first and second reports, median first response time dropped from 9 hours to 2 hours, a substantial speedup in responsiveness. CSAT rose from 71 to 83, indicating improved customer satisfaction. The faster response time likely contributed to the higher satisfaction score, though the two metrics are only correlated, not proven causal. Together they signal an overall improvement in support performance.",
+      "artifact_written": true
+    },
+    {
+      "profile": "larger-32k",
+      "num_ctx": 32768,
+      "input": "support",
+      "run": 2,
+      "status": "completed",
+      "code": "",
+      "model_calls": 1,
+      "repairs": 0,
+      "calls": [
+        {
+          "status": "succeeded",
+          "input_chars": 1065,
+          "output_chars": 485,
+          "input_tokens": 234,
+          "output_tokens": 123,
+          "seconds": 1.0,
+          "error": ""
+        }
+      ],
+      "seconds": 1.15,
+      "cited_ids": [
+        "S-100",
+        "S-101",
+        "S-200",
+        "S-201"
+      ],
+      "all_citations_in_inputs": true,
+      "summary": "Response time improved dramatically, with median first response dropping from 9 hours to 2 hours, meaning customers are contacted much faster. Customer satisfaction also rose, with CSAT increasing from 71 to 83, a 12-point gain. This correlation suggests the faster response likely drove higher satisfaction. Together, these shifts indicate the support operation became both quicker and more customer-friendly.",
+      "artifact_written": true
+    }
+  ],
+  "limitations": [
+    "Three held-out inputs and three runs each: an initial report, not statistical proof.",
+    "Checks cover schema validity and that cited ids exist in the inputs; they do not judge whether the summary's analysis is correct.",
+    "A single local model on one machine; nothing here speaks for other models or sizes."
+  ]
+}

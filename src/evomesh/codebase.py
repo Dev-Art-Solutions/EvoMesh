@@ -331,6 +331,8 @@ PROTECTED_PATHS: tuple[str, ...] = (
     "tests/test_idle_evolution.py",
     "tests/test_work_executor.py",
     "tests/test_protected_surface.py",
+    "tests/test_acceptance_manifest.py",
+    "benchmarks/closure/*",
     "evomesh.yaml",
     "evomesh.secrets.yaml",
 )

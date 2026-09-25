@@ -194,3 +194,24 @@ def test_admission_status_values_are_the_plans() -> None:
     assert {item.value for item in AdmissionStatus} == {
         "invalid", "candidate", "validated", "promoted", "degraded", "retired",
     }
+
+
+async def test_t42_diagnostic_retention_never_drops_authoritative_records(
+    tmp_path: Path,
+) -> None:
+    from evomesh.cognitive_services import CognitiveMetrics
+
+    fake = json.dumps({"summary": "x", "evidence_ids": ["F9"]})
+    environment, agent, _, _ = await _mesh(tmp_path, provider=MockProvider([fake, GOOD]))
+    environment.cognition.metrics = CognitiveMetrics(max_records=1)  # a full diagnostic log
+    goal_id = _comparison_goal(agent)
+
+    await _run(environment, agent, goal_id)
+
+    assert agent.mind.goal(goal_id).status is GoalStatus.DONE
+    assert len(environment.cognition.metrics.records) == 1, "diagnostics were bounded"
+    execution = await environment.procedures.executor.for_occurrence(f"{goal_id}#0")
+    assert execution is not None and execution.budget.model_calls == 2, "the ledger was not"
+    operations = await environment.repository.list_procedure_operations(execution.execution_id)
+    assert sum(json.loads(payload)["kind"] == "cognitive" for _, payload in operations) == 2
+    await environment.stop()

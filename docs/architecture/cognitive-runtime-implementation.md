@@ -137,6 +137,32 @@ worked again, and simple work stays a single work item.
 `/improvements` shows the backlog; `depend <id> <on-id>` builds the dependency
 graph (cycles refused) and `epic <id> <name>` groups improvements into epics.
 
+## Typed procedures (architecture closure v2)
+
+Typed procedures are the deterministic path, described in full in
+[typed-procedures.md](typed-procedures.md). In the runtime:
+
+- `BDIReasoner.cycle` first reaps this agent's executions whose goal
+  occurrence closed, then selects: an open execution for the current
+  occurrence is resumed, an admitted procedure comes before recipes, the
+  scheduled shortcut, learned textual plans and model planning, and only a
+  safe no-match falls through (`_typed_intention`).
+- `_execute_typed` advances one step per cycle and completes the goal only
+  when its own success conditions hold against the execution's evidence
+  (`goal_evidence`). The outcome is `evidence_backed`, so it needs no second
+  "worked twice" pass. `Goal.occurrence` advances on each recurring completion
+  and keys operations and budgets.
+- A goal completed by its success conditions at the start of a cycle now
+  publishes `GOAL_COMPLETED` like any other completion. Before this, its
+  dependants, delegated work and traces never heard about it.
+- The Environment owns `procedures` (`ProcedureService`), `procedure_learning`
+  (trace capture) and loads `procedures/` at start. Model calls for
+  cognitive steps go through `CognitiveModelService` with the output schema as
+  `format`; tool effects go through the agent's own `FilesystemPolicy`.
+- Shipped templates `json-archivist` (W1, no model call) and `report-analyst`
+  (W2, one call) declare typed goals, so the path runs from `/agent-template
+  spawn`.
+
 ## Measurements
 
 `python -m benchmarks.cognitive_runtime` drives the real runtime through the
@@ -158,5 +184,10 @@ Use an isolated temp directory on Windows:
 $env:PYTEST_ADDOPTS='--basetemp=<scratch dir> -p no:cacheprovider'
 .\.runtime\baseline-venv\Scripts\python.exe -m pytest -q
 .\.runtime\baseline-venv\Scripts\python.exe -m ruff check .
-.\.runtime\baseline-venv\Scripts\python.exe -m pyright src
+.\.runtime\baseline-venv\Scripts\python.exe -m pyright   # bare: CI checks tests/ too
 ```
+
+`python -m benchmarks.closure.acceptance` runs the closure quality gates at the
+current commit, maps T01-T60 and B1-B12 to their tests, measures B1-B3 and
+writes `docs/architecture/closure-evidence/acceptance.json`.
+`python -m benchmarks.closure.local_model_w2` repeats W2 on a local model.
