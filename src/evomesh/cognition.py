@@ -21,6 +21,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from evomesh.cognitive_services import (
+    CognitiveModelService,
+    CognitiveServiceType,
+    ContextAssembler,
+    ModelInvocationReason,
+    TaskPacket,
+)
 from evomesh.contracts import AgentDefinition, AgentPhase, Goal, Message
 from evomesh.memory import AgentMemory, MemoryBudget, clip
 from evomesh.models import ModelProvider
@@ -201,6 +208,7 @@ class CycleContext:
     # default) rather than read from settings here, because a shared provider
     # instance serves every agent on it and each may need a different window.
     num_ctx: int | None = None
+    cognitive: CognitiveModelService = field(default_factory=CognitiveModelService)
 
     @property
     def goal(self) -> Goal | None:
@@ -209,11 +217,33 @@ class CycleContext:
     def service(self, name: str) -> object | None:
         return self.services.get(name)
 
-    async def think(self, instruction: str, *, goal: Goal | None = None) -> str:
+    async def think(
+        self,
+        instruction: str,
+        *,
+        goal: Goal | None = None,
+        service: CognitiveServiceType = CognitiveServiceType.EXECUTE_STEP,
+        reason: ModelInvocationReason = ModelInvocationReason.PLAN_STEP_REQUIRES_REASONING,
+        relevant_belief_keys: Sequence[str] = (),
+        output_contract: str = "",
+    ) -> str:
         """One budgeted model call carrying identity, memory, context and inbox."""
-        prompt = await self.build_prompt(instruction, goal=goal)
-        raw = await self.provider.generate(
+        target = goal or self.goal
+        prompt = await self.build_prompt(
+            instruction,
+            goal=target,
+            service=service,
+            relevant_belief_keys=relevant_belief_keys,
+            output_contract=output_contract,
+        )
+        raw = await self.cognitive.generate(
+            self.provider,
             prompt,
+            service=service,
+            reason=reason,
+            provider_name=self.definition.provider,
+            agent_id=self.definition.id,
+            goal_id=target.id if target else "",
             system=self.system_prompt(),
             model=self.definition.model_name,
             num_ctx=self.num_ctx,
@@ -229,42 +259,48 @@ class CycleContext:
             600,
         )
 
-    async def build_prompt(self, instruction: str, *, goal: Goal | None = None) -> str:
+    async def build_prompt(
+        self,
+        instruction: str,
+        *,
+        goal: Goal | None = None,
+        service: CognitiveServiceType = CognitiveServiceType.EXECUTE_STEP,
+        relevant_belief_keys: Sequence[str] = (),
+        output_contract: str = "",
+    ) -> str:
         target = goal or self.goal
         memory = await self.memory.read_memory(self.budget.memory_chars)
         notes = await self.memory.read_context(self.budget.context_chars)
-        sections: list[str] = []
-        if target:
-            sections.append(f"GOAL: {target.description}")
-        beliefs = self.render_beliefs()
-        if beliefs:
-            sections.append("BELIEFS (what you currently hold true):\n" + beliefs)
-        plan = self.render_plan()
-        if plan:
-            sections.append("YOUR COMMITTED PLAN:\n" + plan)
-        if self.work.strip():
-            sections.append(
-                "CURRENT WORK (live from the runtime, more current than MEMORY):\n"
-                + clip(self.work.strip(), 700, keep="head")
-            )
-        if self.world:
-            sections.append("WORLD:\n" + clip(self.world, 600, keep="head"))
-        if memory.strip():
-            sections.append("MEMORY (things you already know):\n" + memory)
-        if notes.strip():
-            sections.append("YOUR WORKING NOTES:\n" + notes)
-        if self.inbox:
-            sections.append("INBOX:\n" + self.render_inbox())
-        sections.append(instruction)
-        return clip("\n\n".join(sections), self.budget.prompt_chars)
+        packet = TaskPacket(
+            role=self.definition.name,
+            operation=service,
+            task=instruction,
+            goal=target.description if target else "",
+            beliefs=self.render_beliefs(relevant_belief_keys),
+            intention=self.render_plan(),
+            working=clip(self.work.strip(), 700, keep="head"),
+            artifacts=tuple(target.artifacts) if target else (),
+            recent_failure=target.last_error or "" if target else "",
+            world=clip(self.world, 600, keep="head"),
+            memory=memory.strip(),
+            notes=notes.strip(),
+            inbox=self.render_inbox() if self.inbox else "",
+            output_contract=output_contract,
+        )
+        return ContextAssembler(self.budget.prompt_chars).assemble(packet)
 
-    def render_beliefs(self, limit: int = 12) -> str:
+    def render_beliefs(
+        self, relevant_keys: Sequence[str] = (), limit: int = 12
+    ) -> str:
         """The belief base, freshest last, inside its own budget.
 
         Beliefs go in the prompt ahead of memory because they are what the agent
         holds true *now*; memory is what it learned once.
         """
         beliefs = sorted(self.definition.mind.beliefs, key=lambda item: item.updated_at)
+        if relevant_keys:
+            wanted = frozenset(relevant_keys)
+            beliefs = [item for item in beliefs if item.key in wanted]
         lines = [f"- {item.statement}" for item in beliefs[-limit:]]
         return clip("\n".join(lines), self.budget.beliefs_chars)
 

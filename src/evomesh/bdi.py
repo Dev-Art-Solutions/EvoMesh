@@ -36,6 +36,7 @@ from evomesh.cognition import (
     parse_cycle_reply,
     strip_reasoning,
 )
+from evomesh.cognitive_services import CognitiveServiceType, ModelInvocationReason
 from evomesh.contracts import (
     AgentPhase,
     Belief,
@@ -48,9 +49,11 @@ from evomesh.contracts import (
     MindState,
     PlanStep,
 )
+from evomesh.goal_manager import GoalEvaluationContext, GoalManager
 from evomesh.harness_queue import HarnessGateway
 from evomesh.memory import clip
 from evomesh.models import ModelUnavailableError
+from evomesh.rules import RuleEngine
 
 MAX_PLAN_STEPS = 4
 
@@ -147,6 +150,13 @@ class Desire:
 
 
 @dataclass(frozen=True)
+class PlanStatistics:
+    selected: int = 0
+    succeeded: int = 0
+    failed: int = 0
+
+
+@dataclass(frozen=True)
 class PlanRecipe:
     """A library plan: what it is for, and the steps it expands to.
 
@@ -158,8 +168,39 @@ class PlanRecipe:
     name: str
     steps: tuple[str, ...]
     matches: Callable[[Goal, MindState], bool] = lambda goal, mind: True
+    goal_kind: str | None = None
+    preconditions: tuple[Callable[[Goal, MindState], bool], ...] = ()
     context_keys: tuple[str, ...] = ()
     action: str = "think"
+    provenance: str = "python"
+    statistics: PlanStatistics = field(default_factory=PlanStatistics, compare=False)
+
+    def applicable(self, goal: Goal, mind: MindState) -> bool:
+        if self.goal_kind is not None and goal.kind != self.goal_kind:
+            return False
+        return self.matches(goal, mind) and all(check(goal, mind) for check in self.preconditions)
+
+    def selected(self) -> None:
+        object.__setattr__(
+            self,
+            "statistics",
+            PlanStatistics(
+                selected=self.statistics.selected + 1,
+                succeeded=self.statistics.succeeded,
+                failed=self.statistics.failed,
+            ),
+        )
+
+    def record(self, *, success: bool) -> None:
+        object.__setattr__(
+            self,
+            "statistics",
+            PlanStatistics(
+                selected=self.statistics.selected,
+                succeeded=self.statistics.succeeded + int(success),
+                failed=self.statistics.failed + int(not success),
+            ),
+        )
 
 
 class PlanLibrary:
@@ -171,7 +212,8 @@ class PlanLibrary:
     def select(self, goal: Goal, mind: MindState) -> PlanRecipe | None:
         for recipe in self.recipes:
             try:
-                if recipe.matches(goal, mind):
+                if recipe.applicable(goal, mind):
+                    recipe.selected()
                     return recipe
             except (KeyError, AttributeError, TypeError):
                 continue
@@ -217,7 +259,28 @@ class BDIReasoner:
 
         percepts = await behavior.perceive(context)
         change = mind.revise(percepts)
+        rules = behavior.rule_engine().fire(mind)
+        if rules.derived_beliefs:
+            change = BeliefChange(
+                added=change.added
+                + tuple(
+                    belief.key
+                    for belief in rules.derived_beliefs
+                    if belief.key not in change.keys
+                ),
+                updated=change.updated,
+            )
         self._adopt_desires(mind, await behavior.options(context, change))
+        artifact_root = (
+            Path(context.definition.harness_root)
+            if context.definition.harness_root
+            else None
+        )
+        evaluation = GoalEvaluationContext(artifact_root=artifact_root)
+        manager = GoalManager(mind)
+        for goal in mind.goals:
+            if goal.is_open and (goal.success_conditions or goal.failure_conditions):
+                manager.evaluate(goal, evaluation)
 
         intention = mind.current_intention()
         reason = self.reconsider(intention, mind, change)
@@ -275,7 +338,7 @@ class BDIReasoner:
     async def deliberate(
         self, behavior: BDIBehavior, context: CycleContext, mind: MindState
     ) -> Intention | None:
-        goal = mind.next_goal()
+        goal = GoalManager(mind).next_goal()
         if goal is None:
             for item in mind.intentions:
                 if item.status is IntentionStatus.ACTIVE:
@@ -283,6 +346,7 @@ class BDIReasoner:
             return None
         recipe = behavior.library().select(goal, mind)
         if recipe is not None:
+            mind.record_plan_selected(recipe.name)
             return mind.commit(
                 goal.id,
                 recipe.steps,
@@ -319,7 +383,12 @@ class BDIReasoner:
         tooled = bool(context.definition.harness_root)
         instruction = f"{PLAN_FORMAT}\n{PLAN_TOOL_HINT}" if tooled else PLAN_FORMAT
         try:
-            raw = await context.think(instruction, goal=goal)
+            raw = await context.think(
+                instruction,
+                goal=goal,
+                service=CognitiveServiceType.CREATE_NOVEL_PLAN,
+                reason=ModelInvocationReason.NO_PLAN_MATCH,
+            )
         except (ModelUnavailableError, RuntimeError, ValueError):
             return [goal.description]
         steps = parse_plan(raw, self.max_steps)
@@ -347,13 +416,16 @@ class BDIReasoner:
             result = await behavior.execute(context, intention, step)
         except (ModelUnavailableError, RuntimeError, ValueError) as exc:
             intention.advance(str(exc), failed=True)
+            mind.record_plan_outcome(intention.plan, success=False)
             return CycleOutcome.failed(f"{position} failed: {exc}")
 
         goal = mind.goal(intention.goal_id) if _has_goal(mind, intention) else None
         if result.impossible:
             intention.finish(IntentionStatus.IMPOSSIBLE)
+            mind.record_plan_outcome(intention.plan, success=False)
             if goal is not None and not goal.recurring:
                 goal.status = GoalStatus.BLOCKED
+                goal.blocked_reason = result.impossible
             return CycleOutcome(
                 summary=f"{position} is impossible: {result.impossible}",
                 step=step.description,
@@ -375,8 +447,26 @@ class BDIReasoner:
 
         intention.advance(result.summary, failed=result.failed)
         achieved = result.achieved or intention.exhausted
+        if achieved and goal is not None and goal.success_conditions:
+            root = (
+                Path(context.definition.harness_root)
+                if context.definition.harness_root
+                else None
+            )
+            achieved = (
+                GoalManager(mind).evaluate(
+                    goal, GoalEvaluationContext(artifact_root=root)
+                )
+                is GoalStatus.DONE
+            )
         if achieved:
             intention.finish(IntentionStatus.ACHIEVED)
+            mind.record_plan_outcome(intention.plan, success=not result.failed)
+        elif intention.exhausted:
+            # The procedure finished, but its explicit predicate did not. It
+            # may be reconsidered next cycle; it must not silently certify the
+            # goal merely because there are no steps left.
+            intention.finish(IntentionStatus.DROPPED)
         summary = result.summary or step.description
         if reason is not None and reason != RECONSIDER_NO_INTENTION:
             summary = f"{summary} (re-planned: {reason})"
@@ -431,6 +521,9 @@ class BDIBehavior:
     def library(self) -> PlanLibrary:
         return PlanLibrary()
 
+    def rule_engine(self) -> RuleEngine:
+        return RuleEngine()
+
     async def execute(
         self, context: CycleContext, intention: Intention, step: PlanStep
     ) -> StepResult:
@@ -444,7 +537,12 @@ class BDIBehavior:
             "FACT: <one durable fact worth remembering, or NONE>\n"
             "STATUS: <done, or blocked if the step cannot be done at all>"
         )
-        raw = await context.think(instruction)
+        raw = await context.think(
+            instruction,
+            service=CognitiveServiceType.EXECUTE_STEP,
+            reason=ModelInvocationReason.PLAN_STEP_REQUIRES_REASONING,
+            relevant_belief_keys=intention.context_keys,
+        )
         reply = parse_cycle_reply(raw)
         if reply.blocked:
             return StepResult.blocked(reply.result or "the model reported it is blocked")
@@ -550,7 +648,11 @@ class BDIBehavior:
         )
         if detail := await self.status(context):
             context.work = f"{context.work}\n{detail}".strip()
-        return await context.think(instruction)
+        return await context.think(
+            instruction,
+            service=CognitiveServiceType.CHAT_RESPONSE,
+            reason=ModelInvocationReason.HUMAN_CHAT_REQUIRES_RESPONSE,
+        )
 
     async def _respond_through_harness(
         self, context: CycleContext, message: Message

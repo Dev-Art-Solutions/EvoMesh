@@ -17,7 +17,13 @@ from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
+from evomesh.blackboard import Blackboard
 from evomesh.cognition import AgentBehavior, CycleOutcome
+from evomesh.cognitive_services import (
+    CognitiveModelService,
+    CognitiveServiceType,
+    ModelInvocationReason,
+)
 from evomesh.config import Settings
 from evomesh.contracts import (
     AgentDefinition,
@@ -25,10 +31,20 @@ from evomesh.contracts import (
     AgentRuntimeState,
     AgentStatus,
     FilesystemGrant,
+    GoalStatus,
     Message,
     now_utc,
 )
+from evomesh.coordination import (
+    CapabilityRegistry,
+    ContractNet,
+    Performative,
+    WorkItem,
+    semantic_message,
+)
+from evomesh.events import Event, EventBus, EventType
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
+from evomesh.goal_manager import GoalManager
 from evomesh.harness import HarnessResult, build_runner
 from evomesh.harness_queue import (
     HarnessGateway,
@@ -39,6 +55,12 @@ from evomesh.harness_queue import (
 )
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
+from evomesh.improvements import (
+    ImprovementBacklog,
+    ImprovementCoordinator,
+    ImprovementScout,
+    ImprovementTriage,
+)
 from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
 from evomesh.messaging import MessageBus
@@ -49,6 +71,7 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
+from evomesh.procedural_learning import ProcedureLearner
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
@@ -82,6 +105,23 @@ class Environment:
         self._next_pending_skill_write = 1
         self.agent_templates = AgentTemplateRegistry(self.project_root)
         self.providers = providers or self._build_providers()
+        self.cognition = CognitiveModelService()
+        self.events = EventBus()
+        self.blackboard = Blackboard()
+        self.capabilities = CapabilityRegistry()
+        self.contract_net = ContractNet(self.capabilities)
+        self.procedure_learner = ProcedureLearner()
+        self.improvement_backlog = ImprovementBacklog()
+        self.improvement_scout = ImprovementScout()
+        self.improvement_triage = ImprovementTriage()
+        self.improvement_coordinator = ImprovementCoordinator(self.improvement_backlog)
+        self.events.subscribe(EventType.GOAL_UNBLOCKED, self._wake_event_owner)
+        self.events.subscribe(EventType.MESSAGE_RECEIVED, self._wake_event_owner)
+        self.events.subscribe(EventType.GOAL_COMPLETED, self._unblock_goal_dependents)
+        for event_type in EventType:
+            self.events.subscribe(event_type, self.blackboard.publish_event)
+        self.events.subscribe(EventType.AGENT_STALLED, self._capture_improvement)
+        self.events.subscribe(EventType.AGENT_STALLED, self._assist_stalled_agent)
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
         self.harness_workers: list[HarnessWorker] = []
@@ -171,6 +211,73 @@ class Environment:
         for runtime in self.runtimes.values():
             if isinstance(runtime.behavior, EvolverBehavior):
                 runtime.wake()
+
+    def _wake_event_owner(self, event: Event) -> None:
+        """Wake only the agent whose structured event made work runnable."""
+        if runtime := self.runtimes.get(event.agent_id):
+            runtime.wake()
+
+    async def _unblock_goal_dependents(self, event: Event) -> None:
+        for definition in self.registry.all():
+            for goal in definition.mind.goals:
+                if event.goal_id not in goal.dependency_goal_ids:
+                    continue
+                before = goal.status
+                GoalManager(definition.mind).refresh()
+                if before is GoalStatus.BLOCKED and goal.status is GoalStatus.RUNNABLE:
+                    await self.events.publish(
+                        Event(
+                            EventType.GOAL_UNBLOCKED,
+                            source="goal_manager",
+                            agent_id=definition.id,
+                            goal_id=goal.id,
+                            payload={"dependency_goal_id": event.goal_id},
+                        )
+                    )
+
+    async def _capture_improvement(self, event: Event) -> None:
+        proposal = self.improvement_scout.from_event(event)
+        if proposal is None:
+            return
+        item = self.improvement_backlog.add(proposal)
+        self.improvement_triage.triage(item)
+        await self.repository.save_state(
+            "improvement_backlog_v2", self.improvement_backlog.dump()
+        )
+
+    async def _assist_stalled_agent(self, event: Event) -> None:
+        """Reassign analysis to another capable agent or broadcast a help request."""
+        try:
+            stalled = self.registry.get(event.agent_id)
+        except KeyError:
+            return
+        item = WorkItem(
+            parent_goal_id=event.goal_id,
+            type="assistance",
+            objective=str(event.payload.get("reason") or "Diagnose stalled goal"),
+            required_capabilities=list(stalled.capabilities),
+            inputs={"stalled_agent_id": stalled.id, "event": event.payload},
+            expected_outputs=["recovery proposal"],
+        )
+        bid = self.contract_net.award(
+            item,
+            states=self.runtime_states(),
+            active_work=list(self.blackboard.work_items.values()),
+            exclude_agent_ids={stalled.id},
+        )
+        self.blackboard.publish_work(item)
+        message = semantic_message(
+            Performative.DELEGATE if bid else Performative.HELP_REQUEST,
+            sender_id=stalled.id,
+            recipient_id=bid.agent_id if bid else None,
+            task_id=item.id,
+            goal_id=event.goal_id,
+            payload=item.model_dump(mode="json"),
+            content=item.objective,
+        )
+        if bid is None:
+            message.metadata["broadcast"] = True
+        await self.bus.send(message)
 
     def _on_generation_landed(self, number: int, commit: str) -> None:
         """A generation is now in the tree, and this process is not running it.
@@ -313,6 +420,11 @@ class Environment:
         if self.evolver.workspace.supervisor.sweep_applied():
             await self.evolver.workspace.prune_stale()
         await self.repository.initialize()
+        restored = ImprovementBacklog.load(
+            await self.repository.load_state("improvement_backlog_v2")
+        )
+        self.improvement_backlog.items = restored.items
+        self.improvement_backlog.work_items = restored.work_items
         await self.skills.load()
         await self.tools.load()
         await self.agent_templates.load()
@@ -336,12 +448,14 @@ class Environment:
             self._reconcile(definition, seeded.get(definition.id))
             if definition.id not in known_ids:
                 self.registry.register(definition)
+                self.capabilities.register(definition)
                 self.bus.register(definition.id)
                 await self.repository.save_agent(definition)
                 known_ids.add(definition.id)
         for system_definition in system_definitions:
             if system_definition.id not in known_ids:
                 self.registry.register(system_definition)
+                self.capabilities.register(system_definition)
                 self.bus.register(system_definition.id)
                 await self.repository.save_agent(system_definition)
         self._apply_evolution_settings()
@@ -369,6 +483,8 @@ class Environment:
             definition.autonomy = seed.autonomy
             definition.purpose = definition.purpose or seed.purpose
             definition.identity = definition.identity or seed.identity
+            if not definition.capabilities:
+                definition.capabilities = list(seed.capabilities)
             if definition.status is not AgentStatus.ACTIVE:
                 definition.status = AgentStatus.ACTIVE
             if not definition.mind.goals:
@@ -453,6 +569,7 @@ class Environment:
 
     async def register_agent(self, definition: AgentDefinition) -> None:
         self.registry.register(definition)
+        self.capabilities.register(definition)
         self.bus.register(definition.id)
         await self.repository.save_agent(definition)
         if definition.type != "system":
@@ -535,6 +652,9 @@ class Environment:
             budget=self.budget_for(definition),
             cycle_seconds=self.cycle_seconds_for(definition),
             num_ctx=self.num_ctx_for(definition),
+            cognitive=self.cognition,
+            events=self.events,
+            procedure_learner=self.procedure_learner,
             start_delay=start_delay,
             services=self._services,
             world_context=self._world_snapshot,
@@ -875,6 +995,9 @@ class Environment:
         runner = build_runner(
             provider,
             job.root,
+            cognitive=self.cognition,
+            cognitive_agent_id=job.agent_id,
+            cognitive_task_id=f"harness:{job.number}",
             session=session,
             limits=settings.limits(),
             model=model,
@@ -980,6 +1103,13 @@ class Environment:
             "provider_health": self.provider_health,
             "registry": self.registry,
             "harness": self.harness if self.settings.harness.enabled else None,
+            "events": self.events,
+            "blackboard": self.blackboard,
+            "capabilities": self.capabilities,
+            "contract_net": self.contract_net,
+            "procedure_learner": self.procedure_learner,
+            "improvement_backlog": self.improvement_backlog,
+            "improvement_coordinator": self.improvement_coordinator,
         }
 
     async def configure_agent_model(
@@ -1058,6 +1188,7 @@ class Environment:
         await self.stop_agent(definition.id, persist_status=False)
         await self.permissions.revoke_all(definition.id)
         self.registry.unregister(definition.id)
+        self.capabilities.unregister(definition.id)
         await self.repository.delete_agent(definition.id)
         if wipe_workspace:
             directory = self.memory_for(definition).directory
@@ -1129,7 +1260,16 @@ class Environment:
         if provider is None:
             raise RuntimeError(f"Provider '{name}' is unavailable")
         num_ctx = self.resolve_num_ctx(name, model_name)
-        return await provider.generate(prompt, system=system, model=model_name, num_ctx=num_ctx)
+        return await self.cognition.generate(
+            provider,
+            prompt,
+            service=CognitiveServiceType.DIRECT_INFERENCE,
+            reason=ModelInvocationReason.EXPLICIT_INFERENCE_REQUEST,
+            provider_name=name,
+            system=system,
+            model=model_name,
+            num_ctx=num_ctx,
+        )
 
     def status(self) -> dict[str, object]:
         states = self.runtime_states()
@@ -1143,4 +1283,27 @@ class Environment:
             "provider": self.settings.models.default_provider,
             "provider_ready": self.provider_health[0],
             "provider_message": self.provider_health[1],
+            "cognition": self.cognition.metrics.snapshot(),
+            "events": len(self.events.history),
+            "goals_completed_without_model": sum(
+                event.type is EventType.GOAL_COMPLETED
+                and event.payload.get("model_calls") == 0
+                for event in self.events.history
+            ),
+            "blackboard": {
+                "facts": len(self.blackboard.facts),
+                "artifacts": len(self.blackboard.artifacts),
+                "work_items": len(self.blackboard.work_items),
+            },
+            "improvements": {
+                "total": len(self.improvement_backlog.items),
+                "verified": sum(
+                    item.status.value == "verified"
+                    for item in self.improvement_backlog.items.values()
+                ),
+                "rejected": sum(
+                    item.status.value == "rejected"
+                    for item in self.improvement_backlog.items.values()
+                ),
+            },
         }

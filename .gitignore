@@ -19,7 +19,12 @@ desktop/**/bin/
 desktop/**/obj/
 desktop/**/.vs/
 .runtime/
+build/
 dist/
+temp/
+tmp/
+.temp/
+.tmp/
 
 # A watcher's own remembered state (equity highs, already-reported links) --
 # runtime state like data/ or workspace/, not source.

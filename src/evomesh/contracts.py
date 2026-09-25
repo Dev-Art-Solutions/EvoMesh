@@ -58,22 +58,88 @@ class Autonomy(StrEnum):
 
 class GoalStatus(StrEnum):
     PENDING = "pending"
+    RUNNABLE = "runnable"
     ACTIVE = "active"
     BLOCKED = "blocked"
+    STALLED = "stalled"
     DONE = "done"
+    # The target architecture calls this state "achieved". Keep DONE's wire
+    # value so every agent definition already persisted by EvoMesh remains
+    # readable and existing console/API clients do not need a flag day.
+    ACHIEVED = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
-OPEN_GOAL_STATUSES = frozenset({GoalStatus.PENDING, GoalStatus.ACTIVE, GoalStatus.BLOCKED})
+OPEN_GOAL_STATUSES = frozenset(
+    {GoalStatus.PENDING, GoalStatus.RUNNABLE, GoalStatus.ACTIVE, GoalStatus.BLOCKED}
+)
+
+
+class GoalConditionKind(StrEnum):
+    BELIEF_EQUALS = "belief_equals"
+    ARTIFACT_EXISTS = "artifact_exists"
+    TOOL_RESULT = "tool_result"
+    CHILD_GOALS_COMPLETE = "child_goals_complete"
+    VALIDATOR_PASSES = "validator_passes"
+    HUMAN_APPROVAL = "human_approval"
+
+
+class GoalCondition(BaseModel):
+    """A small, deterministic predicate over structured runtime evidence.
+
+    The intentionally generic ``key``/``value`` pair keeps the first condition
+    vocabulary compact: ``key`` names a belief, tool result, validator or human
+    approval and ``value`` is the expected value. ``path`` is used only by the
+    artifact predicate. More condition types can be added without changing Goal.
+    """
+
+    kind: GoalConditionKind
+    key: str = ""
+    value: Any = True
+    path: str = ""
+
+
+class GoalRetryPolicy(BaseModel):
+    max_attempts: int | None = None
+    backoff_seconds: float = 0.0
+    backoff_multiplier: float = 1.0
+
+
+class GoalUtility(BaseModel):
+    expected_value: float = 0.0
+    estimated_effort: float = 0.0
+    risk: float = 0.0
+    strategic_value: float = 0.0
+
+
+class GoalEvidence(BaseModel):
+    kind: str = "observation"
+    reference: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_utc)
 
 
 class Goal(BaseModel):
     id: str = Field(default_factory=_short_id)
     description: str
+    kind: str = "goal"
+    parameters: dict[str, Any] = Field(default_factory=dict)
     status: GoalStatus = GoalStatus.PENDING
     priority: int = 5
+    utility: GoalUtility = Field(default_factory=GoalUtility)
+    parent_goal_id: str | None = None
+    child_goal_ids: list[str] = Field(default_factory=list)
+    dependency_goal_ids: list[str] = Field(default_factory=list)
+    owner_agent_id: str | None = None
+    delegated_to_agent_id: str | None = None
+    blocked_reason: str | None = None
+    success_conditions: list[GoalCondition] = Field(default_factory=list)
+    failure_conditions: list[GoalCondition] = Field(default_factory=list)
+    deadline: datetime | None = None
     attempts: int = 0
     max_attempts: int = 6
+    retry_policy: GoalRetryPolicy = Field(default_factory=GoalRetryPolicy)
     recurring: bool = False
     # How often this one goal is worth re-checking after it last finished,
     # independent of the agent's own cycle_seconds. An agent's cycle rate is
@@ -106,6 +172,9 @@ class Goal(BaseModel):
     # _apply() (agents.py) keeps only lines that match and announces nothing
     # if none do, rather than forwarding an unfiltered summary.
     report_pattern: str | None = None
+    progress: float = 0.0
+    evidence: list[GoalEvidence] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     last_error: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -124,7 +193,11 @@ class Goal(BaseModel):
             return False
         # attempts is a failure budget, not a cycle counter, so a standing goal
         # such as Guardian's health sweep stays open indefinitely.
-        return self.recurring or self.attempts < self.max_attempts
+        return self.recurring or self.attempts < self.attempt_limit
+
+    @property
+    def attempt_limit(self) -> int:
+        return self.retry_policy.max_attempts or self.max_attempts
 
     def note(self, text: str, *, keep: int = 8) -> None:
         cleaned = text.strip()
@@ -248,6 +321,36 @@ class Intention(BaseModel):
         return "\n".join(step.render() for step in self.steps) or "(no steps)"
 
 
+class PlanUsage(BaseModel):
+    selected: int = 0
+    succeeded: int = 0
+    failed: int = 0
+
+
+class MemoryEpisode(BaseModel):
+    """Structured history, separate from revisable semantic beliefs."""
+
+    kind: str
+    summary: str
+    goal_id: str = ""
+    agent_id: str = ""
+    outcome: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class LearnedProcedure(BaseModel):
+    """Reusable procedural knowledge retained after successful execution."""
+
+    name: str
+    trigger: str
+    steps: list[str] = Field(default_factory=list)
+    successes: int = 0
+    failures: int = 0
+    source_goal_id: str = ""
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
 @dataclass(frozen=True)
 class BeliefChange:
     """What belief revision actually changed this cycle."""
@@ -318,12 +421,17 @@ class MindState(BaseModel):
     beliefs: list[Belief] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
     intentions: list[Intention] = Field(default_factory=list)
+    plan_statistics: dict[str, PlanUsage] = Field(default_factory=dict)
+    episodes: list[MemoryEpisode] = Field(default_factory=list)
+    procedures: dict[str, LearnedProcedure] = Field(default_factory=dict)
 
     def open_goals(self) -> list[Goal]:
-        return sorted(
-            (goal for goal in self.goals if goal.is_open),
-            key=lambda goal: (goal.priority, goal.created_at),
-        )
+        # Imported lazily to keep the persisted contracts independent from the
+        # service that operates on them. GoalManager is now the single place
+        # that knows whether dependencies make an otherwise-open goal runnable.
+        from evomesh.goal_manager import GoalManager
+
+        return GoalManager(self).runnable_goals()
 
     def next_goal(self) -> Goal | None:
         return next(iter(self.open_goals()), None)
@@ -344,10 +452,27 @@ class MindState(BaseModel):
         cron_expression: str | None = None,
         notify: bool = False,
         report_pattern: str | None = None,
+        kind: str = "goal",
+        parameters: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        dependency_goal_ids: Sequence[str] = (),
+        success_conditions: Sequence[GoalCondition] = (),
+        failure_conditions: Sequence[GoalCondition] = (),
+        deadline: datetime | None = None,
+        owner_agent_id: str | None = None,
     ) -> Goal:
+        parent = self.goal(parent_goal_id) if parent_goal_id is not None else None
         goal = Goal(
             description=description.strip(),
+            kind=kind,
+            parameters=dict(parameters or {}),
             priority=priority,
+            parent_goal_id=parent_goal_id,
+            dependency_goal_ids=list(dependency_goal_ids),
+            success_conditions=list(success_conditions),
+            failure_conditions=list(failure_conditions),
+            deadline=deadline,
+            owner_agent_id=owner_agent_id,
             recurring=recurring,
             interval_seconds=interval_seconds,
             cron=cron_expression,
@@ -362,6 +487,9 @@ class MindState(BaseModel):
             # this must not fire the moment it is created.
             goal.next_attempt_at = cron.next_after(cron_expression, now_utc())
         self.goals.append(goal)
+        if parent is not None:
+            if goal.id not in parent.child_goal_ids:
+                parent.child_goal_ids.append(goal.id)
         return goal
 
     # -- beliefs --------------------------------------------------------
@@ -449,6 +577,25 @@ class MindState(BaseModel):
         """Commit to a single ad-hoc step. Kept for callers that have no plan."""
         return self.commit(goal_id, [step], keep=keep)
 
+    def record_plan_selected(self, name: str) -> None:
+        usage = self.plan_statistics.setdefault(name, PlanUsage())
+        usage.selected += 1
+
+    def record_plan_outcome(self, name: str, *, success: bool) -> None:
+        usage = self.plan_statistics.setdefault(name, PlanUsage())
+        if success:
+            usage.succeeded += 1
+        else:
+            usage.failed += 1
+
+    # -- episodic and procedural memory --------------------------------
+
+    def record_episode(self, episode: MemoryEpisode, *, keep: int = 100) -> None:
+        self.episodes = [*self.episodes, episode][-keep:]
+
+    def remember_procedure(self, procedure: LearnedProcedure) -> None:
+        self.procedures[procedure.name] = procedure
+
 
 class AgentDefinition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -463,6 +610,7 @@ class AgentDefinition(BaseModel):
     model_name: str = "qwen3"
     mind: MindState = Field(default_factory=MindState)
     skills: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
     # The custom tools (tools/<name>/TOOL.md) this agent's harness jobs are
     # offered. None is the old behavior -- every allowed custom tool -- kept
     # for an agent that never said, except a system agent, which gets none.
@@ -585,10 +733,16 @@ class Message(BaseModel):
     recipient_id: str | None
     conversation_id: str = Field(default_factory=lambda: str(uuid4()))
     correlation_id: str | None = None
+    reply_to: str | None = None
     type: str = "text"
     content: str
+    performative: str | None = None
+    goal_id: str | None = None
+    task_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=now_utc)
+    expires_at: datetime | None = None
 
 
 class FilesystemGrant(BaseModel):

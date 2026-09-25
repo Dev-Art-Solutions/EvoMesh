@@ -13,6 +13,11 @@ from typing import Any
 from evomesh import cron
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.cognition import AgentBehavior, CycleContext, CycleOutcome, strip_reasoning
+from evomesh.cognitive_services import (
+    CognitiveModelService,
+    CognitiveServiceType,
+    ModelInvocationReason,
+)
 from evomesh.contracts import (
     AgentDefinition,
     AgentPhase,
@@ -21,12 +26,18 @@ from evomesh.contracts import (
     Autonomy,
     Goal,
     GoalStatus,
+    MemoryEpisode,
     Message,
     now_utc,
 )
+from evomesh.coordination import Performative, WorkItem, semantic_message
+from evomesh.events import Event, EventBus, EventType
+from evomesh.goal_manager import GoalManager
 from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, ModelUnavailableError
+from evomesh.procedural_learning import ExecutionTrace, ProcedureLearner
+from evomesh.progress import ProgressTracker
 from evomesh.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -157,6 +168,9 @@ class AgentRuntime:
     # num_ctx change restarts the runtime, so re-resolving mid-life would only
     # ever return what this already holds.
     num_ctx: int | None = None
+    cognitive: CognitiveModelService = field(default_factory=CognitiveModelService)
+    events: EventBus = field(default_factory=EventBus)
+    procedure_learner: ProcedureLearner = field(default_factory=ProcedureLearner)
     start_delay: float = 0.0
     services: Callable[[], dict[str, Any]] = dict
     world_context: Callable[[], str] = lambda: ""
@@ -179,6 +193,7 @@ class AgentRuntime:
     _last_cycle_started: float = field(default=-math.inf, init=False)
     _last_cycle_finished: float = field(default=0.0, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+    _progress: ProgressTracker = field(default_factory=ProgressTracker, init=False)
 
     def __post_init__(self) -> None:
         self.state = AgentRuntimeState(
@@ -238,6 +253,19 @@ class AgentRuntime:
 
     async def _handle(self, incoming: Message) -> None:
         self._inbox = [*self._inbox, incoming][-MAX_INBOX_HISTORY:]
+        await self.events.publish(
+            Event(
+                EventType.HUMAN_FEEDBACK_RECEIVED
+                if incoming.sender_id == "human"
+                else EventType.MESSAGE_RECEIVED,
+                source=incoming.sender_id,
+                agent_id=self.definition.id,
+                payload={"message_id": incoming.id},
+            )
+        )
+        if incoming.type == "acl" and incoming.performative:
+            if await self._handle_acl(incoming):
+                return
         if incoming.metadata.get("broadcast") and incoming.sender_id != "human":
             # Ambient chatter informs the next cycle; it does not deserve a reply.
             return
@@ -273,6 +301,68 @@ class AgentRuntime:
         await self.bus.send(outgoing)
         if self.on_response:
             self.on_response(outgoing)
+
+    async def _handle_acl(self, incoming: Message) -> bool:
+        """Handle runtime coordination envelopes without language interpretation."""
+        try:
+            performative = Performative(incoming.performative or "")
+        except ValueError:
+            return False
+        if performative is Performative.DELEGATE:
+            try:
+                item = WorkItem.model_validate(incoming.payload)
+            except ValueError:
+                reply, detail = Performative.REJECT, "invalid work item"
+            else:
+                missing = set(item.required_capabilities) - set(
+                    self.definition.capabilities
+                )
+                if missing:
+                    reply = Performative.REJECT
+                    detail = "missing capabilities: " + ", ".join(sorted(missing))
+                else:
+                    if not any(
+                        goal.parameters.get("work_item_id") == item.id and goal.is_open
+                        for goal in self.definition.mind.goals
+                    ):
+                        self.definition.mind.add_goal(
+                            item.objective,
+                            kind="delegated_work",
+                            parameters={"work_item_id": item.id},
+                            owner_agent_id=self.definition.id,
+                            priority=4,
+                        )
+                        await self.repository.save_agent(self.definition)
+                    reply, detail = Performative.ACCEPT, "accepted"
+                    self.wake()
+            await self.bus.send(
+                semantic_message(
+                    reply,
+                    sender_id=self.definition.id,
+                    recipient_id=incoming.sender_id,
+                    task_id=incoming.task_id or "",
+                    goal_id=incoming.goal_id or "",
+                    payload={"detail": detail},
+                    content=detail,
+                )
+            )
+            return True
+        if performative in {
+            Performative.ACCEPT,
+            Performative.REJECT,
+            Performative.RESULT,
+            Performative.FAILURE,
+            Performative.HELP_REQUEST,
+            Performative.INFORM,
+        }:
+            if performative in {
+                Performative.RESULT,
+                Performative.FAILURE,
+                Performative.HELP_REQUEST,
+            }:
+                self.wake()
+            return True
+        return False
 
     # -- proactive path -------------------------------------------------
 
@@ -359,13 +449,36 @@ class AgentRuntime:
         self.state.last_error = outcome.error
         if goal is not None:
             if outcome.error:
-                goal.attempts += 1
-                goal.last_error = outcome.error
-                if not goal.recurring and goal.attempts >= goal.max_attempts:
-                    goal.status = GoalStatus.FAILED
+                GoalManager(self.definition.mind).record_failure(goal, outcome.error)
+                await self.events.publish(
+                    Event(
+                        EventType.TASK_FAILED,
+                        source=self.behavior.name,
+                        agent_id=self.definition.id,
+                        goal_id=goal.id,
+                        payload={"reason": outcome.error},
+                    )
+                )
             elif outcome.worked:
                 goal.status = GoalStatus.ACTIVE
                 goal.last_error = None
+            progress = self._progress.observe(goal, outcome)
+            if progress.stalled:
+                goal.status = GoalStatus.STALLED
+                goal.blocked_reason = progress.reason
+                await self.events.publish(
+                    Event(
+                        EventType.AGENT_STALLED,
+                        source="progress_tracker",
+                        agent_id=self.definition.id,
+                        goal_id=goal.id,
+                        payload={
+                            "reason": progress.reason,
+                            "signature": progress.signature,
+                            "repeats": progress.repeats,
+                        },
+                    )
+                )
             if outcome.step:
                 # Intentions belong to the BDI reasoner; recording one here
                 # would drop the agent's commitment on every single cycle.
@@ -383,6 +496,43 @@ class AgentRuntime:
             if outcome.goal_done and not goal.recurring:
                 if worked_before:
                     goal.status = GoalStatus.DONE
+                    self._progress.clear(goal.id)
+                    intention = next(
+                        (
+                            item
+                            for item in reversed(self.definition.mind.intentions)
+                            if item.goal_id == goal.id
+                        ),
+                        None,
+                    )
+                    if intention is not None and intention.steps:
+                        trace = ExecutionTrace(
+                            goal_type=goal.kind,
+                            context_signature=",".join(sorted(intention.context_keys)),
+                            plan_name=intention.plan,
+                            steps=[step.description for step in intention.steps],
+                            agents=[self.definition.id],
+                            succeeded=True,
+                        )
+                        self.procedure_learner.record(trace)
+                        self.procedure_learner.promote(
+                            self.definition.mind, trace.pattern
+                        )
+                    await self.events.publish(
+                        Event(
+                            EventType.GOAL_COMPLETED,
+                            source=self.behavior.name,
+                            agent_id=self.definition.id,
+                            goal_id=goal.id,
+                            payload={
+                                "model_calls": sum(
+                                    call.goal_id == goal.id
+                                    for call in self.cognitive.metrics.records
+                                ),
+                                "plan": intention.plan if intention else "",
+                            },
+                        )
+                    )
                 else:
                     # Small models rubber-stamp DONE the first time they read a
                     # goal. Make one show its work twice before the goal closes.
@@ -480,6 +630,20 @@ class AgentRuntime:
             # Writing it into the belief base too stacks a keyless near-duplicate
             # beside the structured belief the behavior already perceives.
             await self.memory.remember(outcome.fact, source=self.behavior.name)
+        self.definition.mind.record_episode(
+            MemoryEpisode(
+                kind="cycle",
+                summary=outcome.summary,
+                goal_id=goal.id if goal else "",
+                agent_id=self.definition.id,
+                outcome=(
+                    "failed"
+                    if outcome.error
+                    else "completed" if outcome.goal_done else "progress"
+                ),
+                metadata={"step": outcome.step, "worked": outcome.worked},
+            )
+        )
         await self._write_context(outcome, goal)
         await self.memory.compact(self._summarize)
         self.definition.touch()
@@ -540,7 +704,9 @@ class AgentRuntime:
         # Confidence: Medium"), so "extract the lines that already match"
         # found none, every cycle, and real signals never reached a human.
         # The regex still filters whatever comes back.
-        raw = await self.provider.generate(
+        goal = self.definition.mind.next_goal()
+        raw = await self.cognitive.generate(
+            self.provider,
             "The TEXT below is an agent's report. Rewrite each item it says it is "
             "REPORTING as exactly one line matching FORMAT. Leave out anything it "
             "held back, skipped, rated below its bar, or had already reported, and "
@@ -549,6 +715,11 @@ class AgentRuntime:
             f"FORMAT (regex): {report_pattern}\n\n"
             f"TEXT:\n{raw}\n\n"
             "If TEXT reports nothing, output nothing.",
+            service=CognitiveServiceType.FORMAT_REPORT,
+            reason=ModelInvocationReason.DETERMINISTIC_FORMAT_REJECTED,
+            provider_name=self.definition.provider,
+            agent_id=self.definition.id,
+            goal_id=goal.id if goal else "",
             system=(
                 "You are a strict reformatter, not an assistant. You never explain, "
                 "apologize, or add commentary -- you output only report lines in the "
@@ -560,9 +731,16 @@ class AgentRuntime:
         return strip_reasoning(raw)
 
     async def _summarize(self, text: str) -> str:
-        raw = await self.provider.generate(
+        goal = self.definition.mind.next_goal()
+        raw = await self.cognitive.generate(
+            self.provider,
             f"Compress these notes into at most 5 short bullet facts. Keep only what is "
             f"still true and useful.\n\n{text}",
+            service=CognitiveServiceType.SUMMARIZE_MEMORY,
+            reason=ModelInvocationReason.MEMORY_BUDGET_EXCEEDED,
+            provider_name=self.definition.provider,
+            agent_id=self.definition.id,
+            goal_id=goal.id if goal else "",
             system="You compress an agent's long-term memory. Output bullets only.",
             model=self.definition.model_name,
             num_ctx=self.num_ctx,
@@ -582,6 +760,7 @@ class AgentRuntime:
             services=self.services(),
             work=self._work_summary(),
             num_ctx=self.num_ctx,
+            cognitive=self.cognitive,
         )
 
     def _work_summary(self) -> str:
@@ -644,6 +823,13 @@ SYSTEM_AGENTS: tuple[tuple[str, str, str, str, Autonomy], ...] = (
     ),
 )
 
+SYSTEM_CAPABILITIES: dict[str, list[str]] = {
+    "architect": ["design.architecture", "work.decompose", "agent.define"],
+    "guardian": ["runtime.observe", "improvement.propose", "health.verify"],
+    "evaluator": ["diff.review", "acceptance.verify", "tests.run", "validation.report"],
+    "evolver": ["improvement.coordinate", "code.read", "code.edit", "tests.write"],
+}
+
 
 def system_agent_definitions(
     provider: str,
@@ -671,6 +857,7 @@ def system_agent_definitions(
             model_name=chosen[1],
             num_ctx=chosen[2],
             autonomy=autonomy,
+            capabilities=SYSTEM_CAPABILITIES[agent_id],
             status=AgentStatus.ACTIVE,
         )
         definition.mind.add_goal(goal, priority=3, recurring=True)

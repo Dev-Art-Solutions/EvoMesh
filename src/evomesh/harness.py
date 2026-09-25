@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from evomesh.cognition import strip_reasoning
+from evomesh.cognitive_services import (
+    CognitiveModelService,
+    CognitiveServiceType,
+    ModelInvocationReason,
+)
 from evomesh.harness_session import HarnessSession
 from evomesh.harness_tools import (
     ALL_TOOLS,
@@ -377,6 +382,9 @@ class HarnessRunner:
     # live 2026-09-25: a discarded generation's job ran on for minutes and
     # held the only background lane while the next generation waited.
     stop: Callable[[], str] | None = None
+    cognitive: CognitiveModelService = field(default_factory=CognitiveModelService)
+    cognitive_agent_id: str = ""
+    cognitive_task_id: str = ""
     _self_check_attempts: int = field(default=0, init=False, repr=False)
     _self_check_last_output: str = field(default="", init=False, repr=False)
     # A separate flag from the output string above: a check can fail (a
@@ -568,8 +576,13 @@ class HarnessRunner:
         """
         if native:
             try:
-                turn = await self.provider.chat(
+                turn = await self.cognitive.chat(
+                    self.provider,
                     messages,
+                    service=CognitiveServiceType.TOOL_LOOP,
+                    reason=ModelInvocationReason.TOOL_SELECTION_REQUIRES_MODEL,
+                    agent_id=self.cognitive_agent_id,
+                    task_id=self.cognitive_task_id,
                     tools=self.registry.schemas(),
                     system=self.system,
                     model=self.model,
@@ -582,8 +595,13 @@ class HarnessRunner:
         text_system = TEXT_SYSTEM + (
             TEXT_SYSTEM_STRUCTURED_SUFFIX if self.structured_fallback else ""
         )
-        answer = await self.provider.generate(
+        answer = await self.cognitive.generate(
+            self.provider,
             self._render(messages),
+            service=CognitiveServiceType.TOOL_LOOP,
+            reason=ModelInvocationReason.TOOL_SELECTION_REQUIRES_MODEL,
+            agent_id=self.cognitive_agent_id,
+            task_id=self.cognitive_task_id,
             system=f"{text_system}\n\nTools:\n{self.registry.describe()}",
             model=self.model,
             num_ctx=self.num_ctx,
@@ -849,6 +867,9 @@ def build_runner(
     self_check_max_attempts: int = 2,
     structured_fallback: bool = False,
     stop: Callable[[], str] | None = None,
+    cognitive: CognitiveModelService | None = None,
+    cognitive_agent_id: str = "",
+    cognitive_task_id: str = "",
 ) -> HarnessRunner:
     """Assemble a job. Read-only unless the caller asks for both halves.
 
@@ -893,6 +914,9 @@ def build_runner(
     return HarnessRunner(
         provider=provider,
         context=context,
+        cognitive=cognitive or CognitiveModelService(),
+        cognitive_agent_id=cognitive_agent_id,
+        cognitive_task_id=cognitive_task_id,
         registry=ToolRegistry(tools),
         session=session or HarnessSession(None),
         model=model,
