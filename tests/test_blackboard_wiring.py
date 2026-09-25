@@ -4,10 +4,11 @@ actually comes back as a structured result."""
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
-from evomesh.contracts import AgentDefinition, AgentStatus, Belief
+from evomesh.contracts import AgentDefinition, AgentStatus, Belief, now_utc
 from evomesh.coordination import DELEGATED_GOAL_KIND, Performative, WorkItem, WorkStatus
 from evomesh.environment import Environment
 from evomesh.events import Event, EventType
@@ -130,3 +131,46 @@ async def test_a_stall_is_diagnosed_by_the_guardian_and_the_result_comes_back(
     ), "the stalled agent received the diagnosis as a RESULT"
     assert len(provider.calls) == calls_before, "diagnosis needed no model call"
     await environment.stop()
+
+
+def test_fact_respects_the_at_argument_for_future_and_expired() -> None:
+    board = Blackboard()
+    board.publish_fact(
+        WorldFact(
+            key="greeting",
+            value="hello",
+            source="test",
+            created_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+    )
+
+    # A fact that only exists after `at` is not visible before it exists.
+    assert board.fact("greeting", at=datetime(2024, 1, 1, tzinfo=UTC)) is None
+    # ...and is visible from the moment it exists onward.
+    greeting = board.fact("greeting", at=datetime(2025, 1, 1, tzinfo=UTC))
+    assert greeting is not None
+    assert greeting.value == "hello"
+    # ...and still visible at the current time (the no-`at` default).
+    greeting_now = board.fact("greeting")
+    assert greeting_now is not None
+    assert greeting_now.value == "hello"
+
+    # A fact whose lifetime ended at `expires_at` is gone at/after that moment.
+    expires = now_utc() + timedelta(days=30)
+    board.publish_fact(
+        WorldFact(
+            key="temp",
+            value=42,
+            source="test",
+            created_at=now_utc() - timedelta(days=1),
+            expires_at=expires,
+        )
+    )
+    temp_now = board.fact("temp")
+    assert temp_now is not None
+    assert temp_now.value == 42  # now (well before expiry)
+    temp_just_before = board.fact("temp", at=expires - timedelta(seconds=1))
+    assert temp_just_before is not None
+    assert temp_just_before.value == 42
+    assert board.fact("temp", at=expires) is None
+    assert board.fact("temp", at=expires + timedelta(seconds=1)) is None

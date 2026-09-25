@@ -102,9 +102,15 @@ class Blackboard:
         self.events = [*self.events, event][-self.max_events :]
 
     def fact(self, key: str, *, at: datetime | None = None) -> WorldFact | None:
-        fact = self.facts.get(key)
         moment = at or now_utc()
-        return None if fact and fact.expires_at and fact.expires_at <= moment else fact
+        fact = self.facts.get(key)
+        if fact is None:
+            return None
+        if fact.created_at > moment:
+            return None
+        if fact.expires_at and fact.expires_at <= moment:
+            return None
+        return fact
 
     def work_history(self) -> dict[object, tuple[int, int]]:
         """Successes and failures per ``(agent, work type, capabilities)``
