@@ -26,10 +26,6 @@ class AgentPhase(StrEnum):
         return _LABELS[self.value]
 
 
-# ``PhaseLabel`` is the public alias used by tests and renderers.
-PhaseLabel = AgentPhase
-
-
 _LABELS: dict[str, str] = {
     "offline": "Offline",
     "starting": "Starting",
