@@ -27,9 +27,14 @@ called from the running mesh, not only from tests.
 or failure, to `ProcedureLearner` as an `ExecutionTrace`, persisted (bounded)
 in `MindState.execution_traces`. Three identical clean successes for the same
 goal promote a `LearnedProcedure`; before a planning call the reasoner reuses
-the procedure learned for that goal, so the call is not made. A procedure that
-fails as often as half its successes is forgotten. `/procedures <agent>` shows
-learned and pending patterns; `approve` promotes one early, `forget` drops one.
+the procedure learned for that goal, so the call is not made. Procedure identity
+also records parameter types, required capabilities, context predicates and
+success predicates. Reuse requires schema and capability compatibility and
+records uses/model calls saved. Confidence, duration and validator outcomes
+survive serialization. Repeated execution failure, validation regression or a
+missing required capability moves the procedure to `DEGRADED`, preserving its
+audit history while preventing reuse. `/procedures <agent>` shows learned and
+pending patterns; `approve` promotes one early, `forget` drops one.
 
 ## Selective model use
 

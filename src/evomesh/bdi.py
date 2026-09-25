@@ -453,7 +453,9 @@ class BDIReasoner:
             # full goal, not a paraphrase that dropped the part naming the
             # tool.
             return mind.commit(goal.id, [goal.description], plan="ad-hoc")
-        procedure = self.learner.match(mind, goal)
+        procedure = self.learner.match(
+            mind, goal, capabilities=context.definition.capabilities
+        )
         if procedure is not None:
             # A plan this agent already made for this exact goal, and saw
             # succeed repeatedly: reusing it is the planning call not paid.
@@ -480,6 +482,9 @@ class BDIReasoner:
                 plan_name=intention.plan,
                 steps=[step.description for step in intention.steps],
                 agents=[context.definition.id],
+                goal_parameters=dict(goal.parameters),
+                capabilities=list(context.definition.capabilities),
+                success_conditions=list(goal.success_conditions),
                 succeeded=succeeded,
             ),
         )

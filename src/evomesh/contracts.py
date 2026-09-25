@@ -344,6 +344,15 @@ class MemoryEpisode(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class ProcedureStatus(StrEnum):
+    OBSERVED = "observed"
+    CANDIDATE = "candidate"
+    VALIDATED = "validated"
+    PROMOTED = "promoted"
+    DEGRADED = "degraded"
+    RETIRED = "retired"
+
+
 class LearnedProcedure(BaseModel):
     """Reusable procedural knowledge retained after successful execution.
 
@@ -360,7 +369,19 @@ class LearnedProcedure(BaseModel):
     source_goal_id: str = ""
     pattern: str = ""
     goal_kind: str = ""
+    parameter_schema: dict[str, str] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list)
+    context_predicates: dict[str, Any] = Field(default_factory=dict)
+    success_conditions: list[GoalCondition] = Field(default_factory=list)
+    status: ProcedureStatus = ProcedureStatus.PROMOTED
     approved: bool = False
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    uses: int = 0
+    model_calls_saved: int = 0
+    total_duration_seconds: float = 0.0
+    validator_passes: int = 0
+    validator_failures: int = 0
+    last_used_at: datetime | None = None
     updated_at: datetime = Field(default_factory=now_utc)
 
 
@@ -375,9 +396,14 @@ class ExecutionTrace(BaseModel):
     steps: list[str]
     tools: list[str] = Field(default_factory=list)
     agents: list[str] = Field(default_factory=list)
+    goal_parameters: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    context_predicates: dict[str, Any] = Field(default_factory=dict)
+    success_conditions: list[GoalCondition] = Field(default_factory=list)
     succeeded: bool
     model_calls: int = 0
     duration_seconds: float = 0.0
+    validator_passed: bool | None = None
     created_at: datetime = Field(default_factory=now_utc)
 
     @property
