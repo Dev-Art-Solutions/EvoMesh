@@ -325,9 +325,14 @@ class BDIReasoner:
         )
         evaluation = GoalEvaluationContext(artifact_root=artifact_root)
         manager = GoalManager(mind)
+        completed: list[Goal] = []
         for goal in mind.goals:
             if goal.is_open and (goal.success_conditions or goal.failure_conditions):
+                occurrence = goal.occurrence
                 manager.evaluate(goal, evaluation)
+                if goal.status is GoalStatus.DONE or goal.occurrence != occurrence:
+                    completed.append(goal)
+        await self._announce_completions(context, mind, completed)
 
         typed = context.service("procedures")
         if typed is not None:
@@ -343,6 +348,34 @@ class BDIReasoner:
         if step is None:
             return CycleOutcome.idle("The committed plan has no runnable step.")
         return await self._execute(behavior, context, mind, intention, step, reason)
+
+    @staticmethod
+    async def _announce_completions(
+        context: CycleContext, mind: MindState, goals: Sequence[Goal]
+    ) -> None:
+        """A goal its own success conditions completed is as complete as one
+        a cycle reported: its dependants, delegated work and learning traces
+        hear about it the same way."""
+        events = context.service("events")
+        if not isinstance(events, EventBus):
+            return
+        for goal in goals:
+            intention = next(
+                (item for item in reversed(mind.intentions) if item.goal_id == goal.id), None
+            )
+            await events.publish(
+                Event(
+                    EventType.GOAL_COMPLETED,
+                    source="goal_manager",
+                    agent_id=context.definition.id,
+                    goal_id=goal.id,
+                    payload={
+                        "basis": "success_conditions",
+                        "plan": intention.plan if intention else "",
+                        "summary": "its success conditions hold",
+                    },
+                )
+            )
 
     # -- rules -------------------------------------------------------------
 

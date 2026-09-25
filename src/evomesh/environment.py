@@ -76,7 +76,7 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
-from evomesh.procedure_host import build_procedure_service
+from evomesh.procedure_host import ProcedureLearning, build_procedure_service
 from evomesh.procedure_runtime import occurrence_id
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
@@ -128,6 +128,7 @@ class Environment:
         # Typed procedures (closure plan): selection, durable execution and
         # admission. Definitions ship under procedures/ and load at start().
         self.procedures = build_procedure_service(self)
+        self.procedure_learning = ProcedureLearning(self)
         self.improvement_backlog = ImprovementBacklog()
         self.improvement_scout = ImprovementScout()
         self.improvement_triage = ImprovementTriage()
@@ -153,6 +154,8 @@ class Environment:
         self.events.subscribe(EventType.BELIEF_CHANGED, self._publish_belief_fact)
         self.events.subscribe(EventType.GOAL_CREATED, self._start_delegated_work)
         self.events.subscribe(EventType.GOAL_COMPLETED, self._finish_delegated_work)
+        self.events.subscribe(EventType.GOAL_COMPLETED, self._record_procedure_trace)
+        self.events.subscribe(EventType.TASK_FAILED, self._drop_procedure_trace)
         self.events.subscribe(EventType.TASK_FAILED, self._fail_delegated_work)
         self.runtimes: dict[str, AgentRuntime] = {}
         self.harness_queue = HarnessQueue(settings.harness.max_queue)
@@ -490,6 +493,22 @@ class Environment:
             )
         )
         await self._save_blackboard()
+
+    async def _record_procedure_trace(self, event: Event) -> None:
+        if not event.goal_id or not self._has(event.agent_id):
+            return
+        definition = self.registry.get(event.agent_id)
+        goal = next((item for item in definition.mind.goals if item.id == event.goal_id), None)
+        if goal is not None:
+            await self.procedure_learning.goal_completed(definition, goal)
+
+    async def _drop_procedure_trace(self, event: Event) -> None:
+        if not event.goal_id or not self._has(event.agent_id):
+            return
+        definition = self.registry.get(event.agent_id)
+        goal = next((item for item in definition.mind.goals if item.id == event.goal_id), None)
+        if goal is not None and goal.status is GoalStatus.FAILED:
+            self.procedure_learning.goal_failed(goal.id)
 
     async def _settle_typed_child(
         self, work_id: str, executor_id: str, status: str, goal: Goal, summary: str
@@ -1364,7 +1383,15 @@ class Environment:
                 else None
             ),
             skills_root=self.skills.root,
-            custom_tools=custom_tools + await self.active_mcp_tools(job.agent_id or ""),
+            custom_tools=custom_tools
+            + await self.active_mcp_tools(job.agent_id or "")
+            + (
+                self.procedure_learning.tools_for(
+                    job.agent_id, task_id=f"harness:{job.number}", allow_write=job.allow_write
+                )
+                if job.agent_id and self._has(job.agent_id)
+                else ()
+            ),
             self_check_command=self_check_command,
             self_check_max_attempts=self_check_max_attempts,
             structured_fallback=settings.structured_fallback,

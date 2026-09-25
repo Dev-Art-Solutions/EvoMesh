@@ -160,6 +160,20 @@ class RuntimeSettings(BaseModel):
         )
 
 
+class ProcedureSettings(BaseModel):
+    """Typed procedures (architecture closure plan v2). Two switches only.
+
+    ``enabled`` admits new typed executions; turning it off is the emergency
+    stop -- executions already running still settle, pause or wait for
+    reconciliation, and goals fall back to the legacy path. ``collect_traces``
+    offers agents' harness jobs the contract-backed json tools and records
+    verified occurrences as learning traces. Promotion is always manual.
+    """
+
+    enabled: bool = True
+    collect_traces: bool = True
+
+
 class EvolutionSettings(BaseModel):
     autonomous: bool = True
     cycle_seconds: int = 300
@@ -408,6 +422,7 @@ class Settings(BaseModel):
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     evolution: EvolutionSettings = Field(default_factory=EvolutionSettings)
     harness: HarnessSettings = Field(default_factory=HarnessSettings)
+    procedures: ProcedureSettings = Field(default_factory=ProcedureSettings)
     scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)

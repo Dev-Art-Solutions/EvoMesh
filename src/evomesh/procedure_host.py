@@ -14,15 +14,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from evomesh.cognitive_services import CognitiveServiceType, ModelInvocationReason
+from evomesh.contracts import AgentDefinition, Goal
 from evomesh.coordination import Performative, WorkItem, semantic_message
-from evomesh.harness_tools import ToolContext
+from evomesh.goal_manager import GoalEvaluationContext, GoalManager
+from evomesh.harness_tools import Tool, ToolContext
 from evomesh.permissions import PermissionDeniedError
 from evomesh.procedure_runtime import (
+    ProcedureExecution,
     ProcedureExecutor,
     ProcedureRegistry,
     ProcedureService,
     core_catalog,
+    occurrence_id,
 )
+from evomesh.procedure_traces import TraceRecorder, typed_harness_tools
 
 if TYPE_CHECKING:
     from evomesh.environment import Environment
@@ -175,5 +180,84 @@ class EnvironmentProcedureHost:
 def build_procedure_service(environment: Environment) -> ProcedureService:
     catalog = core_catalog()
     registry = ProcedureRegistry(environment.repository, catalog)
+    registry.enabled = environment.settings.procedures.enabled
     executor = ProcedureExecutor(environment.repository, registry)
     return ProcedureService(registry, executor, EnvironmentProcedureHost(environment))
+
+
+class ProcedureLearning:
+    """Trace capture for one mesh: tools for agents' harness jobs, and the
+    trace a verified occurrence leaves behind (closure plan 16.1)."""
+
+    def __init__(self, environment: Environment) -> None:
+        self.environment = environment
+        self.recorder = TraceRecorder(environment.repository)
+        self.task_ids: dict[str, set[str]] = {}
+
+    def served(self, agent_id: str) -> tuple[str, str] | None:
+        """The goal occurrence an agent's harness job is working for: the
+        one its current intention serves. A typed execution needs no trace."""
+        registry = self.environment.registry
+        try:
+            mind = registry.get(agent_id).mind
+        except KeyError:
+            return None
+        intention = mind.current_intention()
+        if intention is None or intention.execution_id or intention.plan.startswith("typed:"):
+            return None
+        goal = next((item for item in mind.goals if item.id == intention.goal_id), None)
+        if goal is None or not goal.is_open:
+            return None
+        return goal.id, occurrence_id(goal)
+
+    def tools_for(self, agent_id: str, *, task_id: str, allow_write: bool) -> tuple[Tool, ...]:
+        if not self.environment.settings.procedures.collect_traces:
+            return ()
+
+        def served() -> tuple[str, str] | None:
+            current = self.served(agent_id)
+            if current is not None:
+                self.task_ids.setdefault(current[1], set()).add(task_id)
+            return current
+
+        return typed_harness_tools(self.recorder, agent_id, served, allow_write=allow_write)
+
+    async def goal_completed(self, agent: AgentDefinition, goal: Goal) -> list[str]:
+        """Store a trace for each pending occurrence of ``goal``. Its basis is
+        the goal's own success conditions, re-checked now against the files
+        they name; a goal without any has no authoritative evidence."""
+        pending = [
+            key for key, item in self.recorder.pending.items() if item["goal_id"] == goal.id
+        ]
+        if not pending:
+            return []
+        manager = GoalManager(agent.mind)
+        root = (
+            Path(agent.harness_root)
+            if agent.harness_root
+            else self.environment.default_harness_root(agent)
+        )
+        context = GoalEvaluationContext(artifact_root=root)
+        conditions = list(goal.success_conditions)
+        met = [item for item in conditions if manager.condition_met(item, context)]
+        basis = (
+            [f"{item.kind.value}:{item.key or item.path}" for item in met]
+            if conditions and len(met) == len(conditions)
+            else []
+        )
+        tasks = set().union(*(self.task_ids.pop(key, set()) for key in pending))
+        calls = sum(
+            1
+            for record in self.environment.cognition.metrics.records
+            if record.agent_id == agent.id
+            and (record.goal_id == goal.id or record.task_id in tasks)
+        )
+        traces = await self.recorder.finalize(goal, basis=basis, model_calls=calls)
+        return [trace.trace_id for trace in traces]
+
+    def goal_failed(self, goal_id: str) -> None:
+        self.recorder.discard(goal_id)
+
+
+def execution_label(execution: ProcedureExecution) -> str:
+    return f"{execution.procedure_id}@{execution.revision} {execution.status.value}"

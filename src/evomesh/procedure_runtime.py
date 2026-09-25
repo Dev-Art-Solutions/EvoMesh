@@ -72,6 +72,8 @@ _ADVANCING: set[str] = set()
 RECEIPTS_DIR = ".evomesh-receipts"
 MAX_JSON_READ_BYTES = 256 * 1024
 RECONCILIATION_DECISIONS = frozenset({"recheck", "not_applied", "fail"})
+# Failures that show the procedure itself is wrong, not its environment.
+PROCEDURE_DEFECTS = frozenset({"VALIDATION_FAILED", "OUTPUT_SCHEMA_INVALID"})
 # Beside the shipped definitions: the reviewed approvals, bound to digests.
 ADMISSIONS_FILE = "admissions.json"
 
@@ -1496,7 +1498,20 @@ class ProcedureExecutor:
             }
         )
         await self._commit(version, execution)
+        await self._degrade_on_defect(execution, code, message)
         return StepOutcome("failed", execution.current_step_id, code, message)
+
+    async def _degrade_on_defect(
+        self, execution: ProcedureExecution, code: str, message: str
+    ) -> None:
+        """A failure the procedure itself caused stops its selection (plan
+        16.5); an environmental one (a denied path, a busy peer) does not."""
+        if code not in PROCEDURE_DEFECTS:
+            return
+        key = f"{execution.procedure_id}@{execution.revision}"
+        admission = self.registry.admissions.get(key)
+        if admission is not None and admission.status is AdmissionStatus.PROMOTED:
+            await self.registry.degrade(key, f"{code} in {execution.execution_id}: {message}"[:300])
 
     def _advance_to(
         self, execution: ProcedureExecution, step_id: str, target: str, result: Any
@@ -2004,6 +2019,7 @@ class ProcedureExecutor:
             execution.status = ExecStatus.FAILED
             execution.status_reason = "VALIDATION_FAILED"
             await self._commit(version, execution)
+            await self._degrade_on_defect(execution, "VALIDATION_FAILED", outcome.reason)
             return StepOutcome(
                 "failed", step.id, "VALIDATION_FAILED", outcome.reason, evidence=[evidence]
             )
