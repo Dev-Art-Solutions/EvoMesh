@@ -111,7 +111,8 @@ the line below the title.
     >             except TimeoutError:
     >                 logger.warning("Watcher command timed out: %s", self._argv)
     1. [ ] src/evomesh/watchers.py `AgentWatcher._loop` -- add `exc=e` to the timeout log so the `TimeoutError` (with its traceback/cause) is recorded.
-- [ ] Delete the lock file in SingletonLock.release()
+- [-] Delete the lock file in SingletonLock.release()
+    Rejected 2026-09-25: the lock is flock/msvcrt on a file whose existence means nothing. Unlinking it lets a restarting process that already holds it open lock an orphaned inode while a third creates a fresh file (two meshes on POSIX), and on Windows unlink of an open file raises PermissionError.
     The singleton lock writes the file at self._path (`.runtime/evomesh.lock` from config, created via `self._path.mkdir(parents=True, exist_ok=True)` then `self._path.write_bytes(b"\0")` in acquire()), but release() only unlocks and closes the file handle — it never unlinks the file, so the lock file lingers forever after each process exits.
     > `self._path.write_bytes(b"\0")`
     > `handle.close()`
