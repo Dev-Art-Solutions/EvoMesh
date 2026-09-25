@@ -12,6 +12,7 @@ from evomesh.contracts import (
     MemoryEpisode,
     MindState,
 )
+from evomesh.coordination import DELEGATED_GOAL_KIND, WorkItem, WorkStatus
 from evomesh.environment import Environment
 from evomesh.events import Event, EventBus, EventType
 from evomesh.models import MockProvider
@@ -28,6 +29,34 @@ async def test_event_bus_dispatches_in_order_and_bounds_history() -> None:
 
     assert handled == ["a", "b", "c"]
     assert [event.goal_id for event in bus.history] == ["b", "c"]
+
+
+async def test_event_bus_filters_irrelevant_events_before_dispatch() -> None:
+    bus = EventBus()
+    handled: list[str] = []
+    bus.subscribe(
+        EventType.MESSAGE_RECEIVED,
+        lambda event: handled.append(event.agent_id),
+        predicate=lambda event: event.agent_id == "wanted",
+    )
+
+    await bus.publish(Event(EventType.MESSAGE_RECEIVED, "test", agent_id="other"))
+    await bus.publish(Event(EventType.MESSAGE_RECEIVED, "test", agent_id="wanted"))
+
+    assert handled == ["wanted"]
+
+
+async def test_event_bus_coalesces_an_immediate_duplicate() -> None:
+    bus = EventBus(dedup_window_seconds=1.0)
+    handled: list[str] = []
+    bus.subscribe(EventType.GOAL_UNBLOCKED, lambda event: handled.append(event.goal_id))
+    event = Event(EventType.GOAL_UNBLOCKED, "test", goal_id="goal-1")
+
+    await bus.publish(event)
+    await bus.publish(event)
+
+    assert handled == ["goal-1"]
+    assert len(bus.history) == 1
 
 
 def test_progress_tracker_marks_repeated_failure_stalled() -> None:
@@ -99,6 +128,42 @@ async def test_a_repeated_stall_does_not_delegate_the_same_help_twice(tmp_path: 
         item for item in environment.blackboard.work_items.values() if item.type == "assistance"
     ]
     assert len(assistance) == 1
+    await environment.stop()
+
+
+async def test_assistance_causation_loop_escalates_without_new_work(tmp_path: Path) -> None:
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    stalled = AgentDefinition(name="Looping", purpose="Help", capabilities=["health.verify"])
+    origin = WorkItem(
+        parent_goal_id="parent",
+        objective="diagnose",
+        assigned_agent_id=stalled.id,
+        causation_chain=[stalled.id],
+        delegation_depth=1,
+    )
+    origin.status = WorkStatus.ACTIVE
+    goal = stalled.mind.add_goal(
+        "delegated diagnosis",
+        kind=DELEGATED_GOAL_KIND,
+        parameters={"work_item_id": origin.id},
+    )
+    await environment.register_agent(stalled)
+    environment.blackboard.publish_work(origin)
+
+    await environment.events.publish(
+        Event(
+            EventType.AGENT_STALLED,
+            "progress_tracker",
+            agent_id=stalled.id,
+            goal_id=goal.id,
+            payload={"reason": "reciprocal help"},
+        )
+    )
+
+    assert origin.status is WorkStatus.NEEDS_HUMAN
+    assert list(environment.blackboard.work_items) == [origin.id]
     await environment.stop()
 
 

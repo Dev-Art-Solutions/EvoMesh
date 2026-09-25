@@ -360,7 +360,10 @@ class ImprovementCoordinator:
             for item_id in improvement.work_item_ids
             if item_id in self.backlog.work_items
         ]
-        if any(item.status is WorkStatus.FAILED for item in work):
+        if any(
+            item.status in {WorkStatus.FAILED, WorkStatus.NEEDS_HUMAN}
+            for item in work
+        ):
             improvement.status = ImprovementStatus.NEEDS_HUMAN
             improvement.rejection_reason = "a work item exhausted its attempt budget"
             improvement.updated_at = now_utc()

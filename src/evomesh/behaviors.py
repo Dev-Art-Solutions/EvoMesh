@@ -959,6 +959,7 @@ class EvolverBehavior(BDIBehavior):
                 active_work=list(board.work_items.values())
                 if isinstance(board, Blackboard)
                 else [],
+                history=board.work_history() if isinstance(board, Blackboard) else None,
             )
             return (
                 context.definition.id

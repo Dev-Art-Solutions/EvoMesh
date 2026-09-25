@@ -218,7 +218,11 @@ class AgentRuntime:
         await self.repository.save_agent(self.definition)
         self.bus.register(self.definition.id)
         for event_type in EventType:
-            self.events.subscribe(event_type, self._collect_event)
+            self.events.subscribe(
+                event_type,
+                self._collect_event,
+                predicate=self._event_is_relevant,
+            )
         self._tasks = [
             asyncio.create_task(self._message_loop(), name=f"agent:{self.definition.slug}:inbox"),
             asyncio.create_task(self._cycle_loop(), name=f"agent:{self.definition.slug}:cycle"),
@@ -260,6 +264,12 @@ class AgentRuntime:
         payload = {"value": event.goal_id or True, **event.payload, "source": event.source}
         kind = str(event.payload.get("type")) if event.type is EventType.RULE_EVENT else ""
         self._pending_events.append(RuntimeEvent(kind or event.type.value, payload))
+
+    def _event_is_relevant(self, event: Event) -> bool:
+        return (
+            event.agent_id == self.definition.id
+            and event.source not in {"bdi", "rules"}
+        )
 
     # -- reactive path --------------------------------------------------
 
@@ -515,6 +525,9 @@ class AgentRuntime:
             progress = self._progress.observe(goal, outcome)
             if progress.stalled:
                 manager.mark_stalled(goal, progress.reason)
+                # Counting restarts after the pause, so the same goal can be
+                # recognised as stalled again rather than never again.
+                self._progress.clear(goal.id)
                 await self.events.publish(
                     Event(
                         EventType.AGENT_STALLED,

@@ -144,6 +144,8 @@ class Goal(BaseModel):
     deadline: datetime | None = None
     attempts: int = 0
     max_attempts: int = 6
+    # How many times progress detection declared this goal stalled.
+    stalls: int = 0
     retry_policy: GoalRetryPolicy = Field(default_factory=GoalRetryPolicy)
     recurring: bool = False
     # How often this one goal is worth re-checking after it last finished,

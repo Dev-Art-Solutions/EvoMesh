@@ -138,6 +138,7 @@ class Environment:
         )
         self.events.subscribe(EventType.GOAL_UNBLOCKED, self._wake_event_owner)
         self.events.subscribe(EventType.MESSAGE_RECEIVED, self._wake_event_owner)
+        self.events.subscribe(EventType.TASK_COMPLETED, self._wake_event_owner)
         self.events.subscribe(EventType.GOAL_COMPLETED, self._unblock_goal_dependents)
         for event_type in EventType:
             self.events.subscribe(event_type, self.blackboard.publish_event)
@@ -276,6 +277,28 @@ class Environment:
             stalled = self.registry.get(event.agent_id)
         except KeyError:
             return
+        origin: WorkItem | None = None
+        stalled_goal = next(
+            (goal for goal in stalled.mind.goals if goal.id == event.goal_id), None
+        )
+        if stalled_goal is not None:
+            origin = self.blackboard.work_items.get(
+                str(stalled_goal.parameters.get("work_item_id") or "")
+            )
+        chain = list(origin.causation_chain) if origin is not None else []
+        reentered = stalled.id in chain
+        if not reentered:
+            chain.append(stalled.id)
+        depth = (origin.delegation_depth + 1) if origin is not None else 1
+        max_depth = origin.budget.max_delegation_depth if origin is not None else 3
+        if origin is not None and (
+            depth > max_depth or reentered
+        ):
+            origin.status = WorkStatus.NEEDS_HUMAN
+            origin.failure_history.append("assistance causation loop or depth limit")
+            origin.updated_at = now_utc()
+            await self._save_blackboard()
+            return
         now = now_utc()
         for work in self.blackboard.open_work():
             if work.type != "assistance" or work.inputs.get("stalled_agent_id") != stalled.id:
@@ -292,6 +315,7 @@ class Environment:
         item = WorkItem(
             parent_goal_id=event.goal_id,
             type="assistance",
+            requester_agent_id=stalled.id,
             objective=(
                 f"Diagnose why {stalled.name} is stalled: "
                 f"{event.payload.get('reason') or 'no progress'}"
@@ -302,13 +326,23 @@ class Environment:
             required_capabilities=[ASSISTANCE_CAPABILITY],
             inputs={"stalled_agent_id": stalled.id, "event": event.payload},
             expected_outputs=["diagnosis"],
+            cause_work_item_id=origin.id if origin is not None else None,
+            causation_chain=chain,
+            delegation_depth=depth,
         )
         bid = self.contract_net.award(
             item,
             states=self.runtime_states(),
             active_work=list(self.blackboard.work_items.values()),
+            history=self.blackboard.work_history(),
             exclude_agent_ids={stalled.id},
         )
+        if bid is None and origin is not None:
+            origin.status = WorkStatus.NEEDS_HUMAN
+            origin.failure_history.append("no loop-free assistance route")
+            origin.updated_at = now_utc()
+            await self._save_blackboard()
+            return
         self.blackboard.publish_work(item)
         message = semantic_message(
             Performative.DELEGATE if bid else Performative.HELP_REQUEST,
@@ -325,6 +359,32 @@ class Environment:
         await self._save_blackboard()
 
     # -- shared world state ---------------------------------------------
+
+    def _reconcile_work_after_restart(self) -> None:
+        """Delegated work that was assigned or active when the mesh stopped:
+        still owned by an open delegated goal -> it carries on; otherwise it is
+        closed explicitly instead of sitting ACTIVE forever or being redone.
+
+        Only delegated work is judged here -- an improvement's work item is
+        settled from its generation's recorded outcome by ImprovementControl.
+        """
+        open_goal_work = {
+            str(goal.parameters.get("work_item_id"))
+            for definition in self.registry.all()
+            for goal in definition.mind.goals
+            if goal.kind == DELEGATED_GOAL_KIND and goal.is_open
+        }
+        for work in self.blackboard.open_work():
+            if work.improvement_id is not None or work.status not in {
+                WorkStatus.ASSIGNED,
+                WorkStatus.ACTIVE,
+            }:
+                continue
+            if work.id in open_goal_work:
+                continue
+            work.status = WorkStatus.CANCELLED
+            work.failure_history.append("no live owner after restart")
+            work.updated_at = now_utc()
 
     async def _save_blackboard(self) -> None:
         await self.repository.save_state("blackboard", self.blackboard.dump())
@@ -383,10 +443,16 @@ class Environment:
         summary = str(event.payload.get("summary") or goal.last_error or "done")
         work.status = WorkStatus.COMPLETED
         work.updated_at = now_utc()
+        work.result_fact_key = f"work.{work.id}.result"
+        work.result_artifact_keys = [
+            str(key) for key in event.payload.get("artifact_keys", [])
+        ]
         self.blackboard.publish_fact(
-            WorldFact(key=f"work.{work.id}.result", value=summary, source=definition.name)
+            WorldFact(key=work.result_fact_key, value=summary, source=definition.name)
         )
-        requester = str(goal.parameters.get("requester_id") or "")
+        requester = str(
+            work.requester_agent_id or goal.parameters.get("requester_id") or ""
+        )
         if requester:
             await self.bus.send(
                 semantic_message(
@@ -625,6 +691,8 @@ class Environment:
                 self.capabilities.register(system_definition)
                 self.bus.register(system_definition.id)
                 await self.repository.save_agent(system_definition)
+        # After the registry is populated: ownership is read from agents' goals.
+        self._reconcile_work_after_restart()
         self._apply_evolution_settings()
         provider = self.providers.get(default_name)
         if provider:

@@ -30,7 +30,14 @@ class ArtifactRecord(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
-TERMINAL_WORK = frozenset({WorkStatus.COMPLETED, WorkStatus.FAILED, WorkStatus.CANCELLED})
+TERMINAL_WORK = frozenset(
+    {
+        WorkStatus.COMPLETED,
+        WorkStatus.FAILED,
+        WorkStatus.NEEDS_HUMAN,
+        WorkStatus.CANCELLED,
+    }
+)
 
 
 class Blackboard:
@@ -47,8 +54,10 @@ class Blackboard:
         max_facts: int = 200,
         max_artifacts: int = 200,
         max_work: int = 200,
+        max_fact_versions: int = 8,
     ) -> None:
         self.facts: dict[str, WorldFact] = {}
+        self.fact_history: dict[str, list[WorldFact]] = {}
         self.artifacts: dict[str, ArtifactRecord] = {}
         self.work_items: dict[str, WorkItem] = {}
         self.events: list[Event] = []
@@ -56,12 +65,23 @@ class Blackboard:
         self.max_facts = max_facts
         self.max_artifacts = max_artifacts
         self.max_work = max_work
+        self.max_fact_versions = max(2, max_fact_versions)
 
     def publish_fact(self, fact: WorldFact) -> None:
+        versions = self.fact_history.setdefault(fact.key, [])
+        if not versions or versions[-1].model_dump() != fact.model_dump():
+            versions.append(fact)
+            self.fact_history[fact.key] = versions[-self.max_fact_versions :]
         self.facts.pop(fact.key, None)
         self.facts[fact.key] = fact
         while len(self.facts) > self.max_facts:
-            self.facts.pop(next(iter(self.facts)))
+            expired_key = next(iter(self.facts))
+            self.facts.pop(expired_key)
+            self.fact_history.pop(expired_key, None)
+
+    def fact_versions(self, key: str) -> tuple[WorldFact, ...]:
+        """All retained claims for a key, including conflicting sources."""
+        return tuple(self.fact_history.get(key, ()))
 
     def publish_artifact(self, artifact: ArtifactRecord) -> None:
         self.artifacts.pop(artifact.key, None)
@@ -85,6 +105,26 @@ class Blackboard:
         fact = self.facts.get(key)
         moment = at or now_utc()
         return None if fact and fact.expires_at and fact.expires_at <= moment else fact
+
+    def work_history(self) -> dict[object, tuple[int, int]]:
+        """Successes and failures per ``(agent, work type, capabilities)``
+        from finished work, the evidence Contract Net ranks bidders by."""
+        history: dict[object, tuple[int, int]] = {}
+        for item in self.work_items.values():
+            if item.assigned_agent_id is None or item.status not in TERMINAL_WORK:
+                continue
+            if item.status is WorkStatus.CANCELLED:
+                continue
+            key = (
+                item.assigned_agent_id,
+                item.type,
+                ",".join(sorted(item.required_capabilities)),
+            )
+            ok, failed = history.get(key, (0, 0))
+            history[key] = (
+                (ok + 1, failed) if item.status is WorkStatus.COMPLETED else (ok, failed + 1)
+            )
+        return history
 
     def open_work(self) -> list[WorkItem]:
         return [item for item in self.work_items.values() if item.status not in TERMINAL_WORK]
@@ -114,6 +154,11 @@ class Blackboard:
     def dump(self) -> dict[str, Any]:
         return {
             "facts": [item.model_dump(mode="json") for item in self.facts.values()],
+            "fact_history": [
+                item.model_dump(mode="json")
+                for versions in self.fact_history.values()
+                for item in versions
+            ],
             "artifacts": [item.model_dump(mode="json") for item in self.artifacts.values()],
             "work_items": [item.model_dump(mode="json") for item in self.work_items.values()],
         }
@@ -123,8 +168,9 @@ class Blackboard:
         malformed is skipped rather than failing the boot."""
         if not isinstance(payload, dict):
             return
-        self.facts, self.artifacts, self.work_items = {}, {}, {}
-        for raw in payload.get("facts", []):
+        self.facts, self.fact_history, self.artifacts, self.work_items = {}, {}, {}, {}
+        stored_facts = payload.get("fact_history") or payload.get("facts", [])
+        for raw in stored_facts:
             with suppress(ValueError):
                 self.publish_fact(WorldFact.model_validate(raw))
         for raw in payload.get("artifacts", []):

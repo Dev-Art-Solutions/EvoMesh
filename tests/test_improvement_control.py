@@ -181,7 +181,7 @@ async def test_exhausted_attempts_escalate_to_a_human_once(tmp_path: Path) -> No
     item = next(iter(plane.backlog.items.values()))
     assert item.status is ImprovementStatus.NEEDS_HUMAN
     work = plane.backlog.work_items[item.work_item_ids[0]]
-    assert work.status is WorkStatus.FAILED and work.attempts == 3
+    assert work.status is WorkStatus.NEEDS_HUMAN and work.attempts == 3
     assert sum("needs_human" in text for text in announced) == 1
 
 

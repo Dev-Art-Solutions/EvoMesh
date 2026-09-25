@@ -39,6 +39,7 @@ class WorkStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     FAILED = "failed"
+    NEEDS_HUMAN = "needs_human"
     CANCELLED = "cancelled"
 
 
@@ -46,12 +47,14 @@ class WorkBudget(BaseModel):
     max_attempts: int = 3
     max_model_calls: int | None = None
     max_seconds: float | None = None
+    max_delegation_depth: int = 3
 
 
 class WorkItem(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex[:10])
     parent_goal_id: str
     improvement_id: str | None = None
+    requester_agent_id: str | None = None
     type: str = "task"
     objective: str
     required_capabilities: list[str] = Field(default_factory=list)
@@ -59,6 +62,12 @@ class WorkItem(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     success_conditions: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
+    deadline: datetime | None = None
+    result_fact_key: str | None = None
+    result_artifact_keys: list[str] = Field(default_factory=list)
+    cause_work_item_id: str | None = None
+    causation_chain: list[str] = Field(default_factory=list)
+    delegation_depth: int = 0
     assigned_agent_id: str | None = None
     status: WorkStatus = WorkStatus.PENDING
     attempts: int = 0
@@ -76,7 +85,7 @@ class WorkItem(BaseModel):
         self.attempts += 1
         self.failure_history.append(reason)
         self.status = (
-            WorkStatus.FAILED
+            WorkStatus.NEEDS_HUMAN
             if self.attempts >= self.budget.max_attempts
             else WorkStatus.PENDING
         )
@@ -150,9 +159,14 @@ class ContractNet:
         *,
         states: dict[str, AgentRuntimeState] | None = None,
         active_work: list[WorkItem] | None = None,
-        history: dict[str, tuple[int, int]] | None = None,
+        history: dict[object, tuple[int, int]] | None = None,
         exclude_agent_ids: set[str] | None = None,
     ) -> list[Bid]:
+        if item.deadline is not None and now_utc() >= item.deadline:
+            item.status = WorkStatus.NEEDS_HUMAN
+            item.failure_history.append("work deadline expired before assignment")
+            item.updated_at = now_utc()
+            return []
         states = states or {}
         active_work = active_work or []
         history = history or {}
@@ -169,7 +183,10 @@ class ContractNet:
                 and work.status in {WorkStatus.ASSIGNED, WorkStatus.ACTIVE}
                 for work in active_work
             )
-            successes, failures = history.get(agent.id, (0, 0))
+            capability_key = ",".join(sorted(item.required_capabilities))
+            successes, failures = history.get(
+                (agent.id, item.type, capability_key), history.get(agent.id, (0, 0))
+            )
             success_rate = successes / (successes + failures) if successes + failures else 0.5
             availability = 0.0 if states.get(agent.id) is None else 0.1
             score = match * 0.65 + success_rate * 0.25 + availability - load * 0.1

@@ -73,6 +73,14 @@ class UtilityGoalScoringPolicy:
         )
 
 
+# A stalled goal pauses this long (doubling per stall, capped) before it
+# runs again, so help can arrive and the same inference is not repeated.
+STALL_COOLDOWN_SECONDS = 300.0
+STALL_COOLDOWN_MAX_SECONDS = 3600.0
+# A one-shot goal that stalls this many times has failed.
+STALL_LIMIT = 3
+
+
 class GoalGraphError(ValueError):
     pass
 
@@ -268,6 +276,11 @@ class GoalManager:
                 goal.updated_at = at
                 continue
             if goal.status is GoalStatus.STALLED:
+                # A stall is a pause for help or a changed world, not an end:
+                # found in review, a stalled goal was never selected again, so
+                # an agent's standing goal would have died on its first stall.
+                if goal.next_attempt_at is None or at >= goal.next_attempt_at:
+                    self.transition(goal, GoalStatus.RUNNABLE, at=at)
                 continue
             due = goal.next_attempt_at is None or at >= goal.next_attempt_at
             attempts_left = goal.recurring or goal.attempts < goal.attempt_limit
@@ -444,6 +457,19 @@ class GoalManager:
         self.transition(goal, GoalStatus.BLOCKED, reason=reason, at=at)
 
     def mark_stalled(self, goal: Goal, reason: str, *, at: datetime | None = None) -> None:
+        """Pause a stalled goal, then let it run again; a one-shot goal that
+        stalls ``STALL_LIMIT`` times fails instead of repeating the same work."""
+        at = at or now_utc()
+        goal.stalls += 1
+        goal.last_error = reason
+        if not goal.recurring and goal.stalls >= STALL_LIMIT:
+            self.transition(goal, GoalStatus.FAILED, at=at)
+            goal.blocked_reason = "stalled"
+            return
+        cooldown = min(
+            STALL_COOLDOWN_MAX_SECONDS, STALL_COOLDOWN_SECONDS * 2 ** (goal.stalls - 1)
+        )
+        goal.next_attempt_at = at + timedelta(seconds=cooldown)
         self.transition(goal, GoalStatus.STALLED, reason=reason, at=at)
 
     def cancel(self, goal: Goal, reason: str = "cancelled", *, at: datetime | None = None) -> None:

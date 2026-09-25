@@ -83,8 +83,32 @@ def test_work_item_retries_are_bounded_and_reassignable() -> None:
     assert item.assigned_agent_id is None
     item.assign("second")
     item.fail("invalid output")
-    assert item.status is WorkStatus.FAILED
+    assert item.status is WorkStatus.NEEDS_HUMAN
     assert item.failure_history == ["timeout", "invalid output"]
+
+
+def test_contract_net_history_is_capability_and_task_specific() -> None:
+    registry = CapabilityRegistry()
+    first = agent("First", ["code.edit", "research"])
+    second = agent("Second", ["code.edit", "research"])
+    registry.register(first)
+    registry.register(second)
+    item = WorkItem(
+        parent_goal_id="g",
+        type="implementation",
+        objective="fix",
+        required_capabilities=["code.edit"],
+    )
+    history: dict[object, tuple[int, int]] = {
+        (first.id, "implementation", "code.edit"): (0, 5),
+        (second.id, "implementation", "code.edit"): (5, 0),
+        # Unrelated research success must not rescue the first bidder.
+        (first.id, "research", "research"): (100, 0),
+    }
+
+    bids = ContractNet(registry).bids(item, history=history)
+
+    assert bids[0].agent_id == second.id
 
 
 def test_semantic_message_has_machine_readable_envelope() -> None:
@@ -118,6 +142,27 @@ def test_blackboard_tracks_provenance_and_omits_expired_facts() -> None:
     assert "provider.ready" in projection["Facts"]
     assert "stale" not in projection["Facts"]
     assert "report.md" in projection["Artifacts"]
+
+
+def test_blackboard_preserves_conflicting_fact_versions_and_restart() -> None:
+    board = Blackboard()
+    board.publish_fact(WorldFact(key="provider.ready", value=True, source="a"))
+    board.publish_fact(WorldFact(key="provider.ready", value=False, source="b"))
+
+    versions = board.fact_versions("provider.ready")
+    assert [(item.source, item.value) for item in versions] == [
+        ("a", True),
+        ("b", False),
+    ]
+    current = board.fact("provider.ready")
+    assert current is not None and current.source == "b"
+
+    restored = Blackboard()
+    restored.load(board.dump())
+    assert [(item.source, item.value) for item in restored.fact_versions("provider.ready")] == [
+        ("a", True),
+        ("b", False),
+    ]
 
 
 async def test_delegation_envelope_creates_goal_without_a_model_call(
