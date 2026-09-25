@@ -778,3 +778,33 @@ def test_a_rejected_item_is_closed_and_not_proposed_again(tmp_path: Path) -> Non
 
     assert [item.title for item in open_improvements(tmp_path)] == ["Real work"]
     assert done_improvements(tmp_path) == ["Log the timeout's exception"]
+
+
+def test_vet_drops_an_item_built_on_an_attribute_the_code_never_had(tmp_path: Path) -> None:
+    """Found live 2026-09-25: gen 1518 built an item on `param.annotation`,
+    a field ToolParameter never had -- `param` is no module, so the
+    module.symbol check let it through."""
+    _live_package(tmp_path)
+    (tmp_path / "src" / "evomesh" / "busy.py").write_text(
+        '"""Does the real work."""\n\nimport httpx\n\n\ndef helper(value):\n    return value\n',
+        encoding="utf-8",
+    )
+    item = REAL_ITEM.replace("Cache helper's result", "{title}")
+    said = {
+        "Invented": "reads `value.annotation` and is recomputed",
+        "Real": "returns `helper.value` and is recomputed",
+        "Library": "catches `httpx.ReadTimeout`, is recomputed",
+    }
+    _write_backlog(
+        tmp_path,
+        "".join(
+            item.format(title=title).replace("is recomputed", text)
+            for title, text in said.items()
+        ),
+    )
+
+    kept, dropped = vet_new_improvements([], tmp_path)
+
+    assert sorted(entry.title for entry in kept) == ["Library", "Real"]
+    reasons = {entry.title: reason for entry, reason in dropped}
+    assert "value.annotation" in reasons["Invented"]

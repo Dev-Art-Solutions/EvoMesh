@@ -1197,6 +1197,42 @@ def _misquoted(root: Path, item: Improvement, quotes: list[str]) -> list[str]:
     return [code for code in quotes if not any(code in line for line in lines)]
 
 
+_ATTRIBUTE_SPAN = re.compile(r"^([a-z_]\w*)\.([A-Za-z_]\w*)(?:\(\))?$")
+_IMPORTED_NAME = re.compile(r"^\s*(?:import|from)\s+(\w+)", re.MULTILINE)
+
+
+def _unknown_attributes(root: Path, item: Improvement) -> list[str]:
+    """Backticked ``thing.attribute`` spans in the item's detail (what the code
+    does *today*) whose attribute is not a word anywhere in the files the item
+    names. Found live 2026-09-25: a scout built its whole item on
+    `param.annotation`, a field ToolParameter never had -- the module.symbol
+    check misses it because `param` is not a module. Imported names (httpx,
+    asyncio, ...) and project modules (checked by fabricated_references) are
+    skipped."""
+    words: set[str] = set()
+    imported: set[str] = set()
+    for path in item.source_paths:
+        file = root / path
+        if file.is_file():
+            text = file.read_text(encoding="utf-8", errors="replace")
+            words.update(re.findall(r"\w+", text))
+            imported.update(_IMPORTED_NAME.findall(text))
+    if not words:
+        return []
+    modules = {module.name for module in survey(root)}
+    unknown: list[str] = []
+    for span in _BACKTICK_RE.findall(item.detail):
+        match = _ATTRIBUTE_SPAN.match(span.strip())
+        if match is None:
+            continue
+        owner, attribute = match.groups()
+        if owner in modules or owner in imported or attribute == "py":
+            continue
+        if attribute not in words and span not in unknown:
+            unknown.append(span)
+    return unknown
+
+
 def _unanchored(root: Path, item: Improvement) -> list[str]:
     return [
         f"{step.path} `{step.symbol}`"
@@ -1256,6 +1292,11 @@ def vet_new_improvements(
             reason = f"it names functions that do not exist ({', '.join(missing)})"
         elif fabricated := fabricated_references(text, root):
             reason = f"it names symbols that do not exist ({', '.join(fabricated)})"
+        elif invented := _unknown_attributes(root, item):
+            reason = (
+                "it describes attributes its files never mention "
+                f"({', '.join(invented)}): read the code, do not recall it"
+            )
         elif not (quotes := _quotes(item)):
             reason = (
                 "it quotes no code: the line that shows the problem, copied from the "
