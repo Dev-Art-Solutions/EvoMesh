@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from evomesh.behaviors import EvolverBehavior
 from evomesh.cognition import CycleContext
 from evomesh.coordination import WorkStatus
@@ -181,3 +183,32 @@ async def test_exhausted_attempts_escalate_to_a_human_once(tmp_path: Path) -> No
     work = plane.backlog.work_items[item.work_item_ids[0]]
     assert work.status is WorkStatus.FAILED and work.attempts == 3
     assert sum("needs_human" in text for text in announced) == 1
+
+
+async def test_scope_creep_becomes_a_proposal_ready_on_a_second_report() -> None:
+    plane, _ = control()
+    first = await plane.propose_discovery(
+        "retry loop in src/evomesh/models.py never backs off", generation=5, job=1
+    )
+    assert first is not None and first.status is ImprovementStatus.TRIAGED
+    assert first.component == "src/evomesh/models.py"
+    again = await plane.propose_discovery(
+        "Retry loop in src/evomesh/models.py never  backs off", generation=9, job=4
+    )
+    assert again is first and first.status is ImprovementStatus.READY
+    await plane.sync([], set())
+    assert first.status is ImprovementStatus.READY, "a discovery is not retired by sync"
+
+
+async def test_a_dependency_holds_an_improvement_until_the_other_is_verified() -> None:
+    plane, _ = control()
+    await plane.sync([candidate("item:base"), candidate("item:top", impact=5)], set())
+    items = {item.source_ref: item for item in plane.backlog.items.values()}
+    base, top = items["item:base"], items["item:top"]
+    plane.set_dependency(top.id, base.id)
+    with pytest.raises(ValueError, match="cycle"):
+        plane.set_dependency(base.id, top.id)
+    top.epic = "reliability"
+
+    assert plane.choose() is base, "the higher score waits for its dependency"
+    assert "epic reliability: 0/1 verified" in plane.summary()

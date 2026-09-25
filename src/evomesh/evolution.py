@@ -148,6 +148,9 @@ HARNESS_RULES = "\n".join(
         "found. A real, small, imperfect edit beats an unlimited search for a "
         "perfect one that runs out of steps and lands nothing.",
         "- Stay inside this directory. It is a disposable copy, not the running mesh.",
+        "- Noticed a different problem on the way? Do not fix it here -- "
+        "that is scope creep. Name it on its own line starting exactly with "
+        "'PROPOSAL:' (what is wrong, and in which file); it goes to the backlog.",
         "- End your final answer with one sentence starting exactly with "
         "'RATIONALE:' explaining what you changed and why -- it is the only "
         "record of your reasoning that survives into this generation's history.",

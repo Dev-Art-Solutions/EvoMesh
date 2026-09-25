@@ -61,7 +61,7 @@ from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
 from evomesh.improvements import (
     NOT_PICKABLE_NOW,
-    RUNTIME_SOURCE,
+    RECURRENCE_SOURCES,
     ImprovementControl,
     ImprovementStatus,
     ReviewVerdict,
@@ -932,7 +932,7 @@ class EvolverBehavior(BDIBehavior):
         while (chosen := control.choose()) is not None:
             if chosen.source_ref in by_ref:
                 return by_ref[chosen.source_ref], chosen
-            if chosen.source == RUNTIME_SOURCE:
+            if chosen.source in RECURRENCE_SOURCES:
                 return evolver.improvement_pick(chosen), chosen
             # Still evidenced, but set aside for now (attempted too often
             # recently): not this generation's work.
@@ -1393,6 +1393,14 @@ class EvolverBehavior(BDIBehavior):
             )
         answer = job.result.answer.strip() if job.result else job.detail
         rationale = _extract_rationale(answer)
+        if self._improvements is not None:
+            for line in answer.splitlines():
+                if line.strip().upper().startswith("PROPOSAL:"):
+                    await self._improvements.propose_discovery(
+                        line.strip()[len("PROPOSAL:") :],
+                        generation=generation.number,
+                        job=job.number,
+                    )
         recorder = record or evolver.record_harness_changes
         standing_objective = str(state.get("objective", ""))
         record_objective = record_key if record_key is not None else standing_objective

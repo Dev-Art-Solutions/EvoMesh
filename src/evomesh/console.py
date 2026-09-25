@@ -82,7 +82,9 @@ HELP = """Commands:
   /memory <agent>               Show the agent's memory.md
   /procedures <agent> [approve <pattern>|forget <name>]
                                 Learned procedures and repeated plans; approve one early
-  /rules <agent> [add <json>|remove <name>|clear]
+  /improvements [release <id>|depend <id> <on-id>|epic <id> <name>]
+                                The evidence-backed backlog steering evolution
+  /rules <agent> [add '<json>'|remove <name>|clear]
                                 The agent's own forward-chaining rules
   /context <agent>|world        Show context.md
   /grant <agent> <path> <mode>  Grant read or write access
@@ -960,8 +962,23 @@ class ConsoleChannel:
                     work.status = WorkStatus.CANCELLED
             await control.save()
             return f"Improvement {item.id} is ready to be worked again."
+        if len(parts) == 4 and parts[1] in {"depend", "epic"}:
+            item = control.backlog.items.get(parts[2])
+            if item is None:
+                return f"No improvement {parts[2]}."
+            if parts[1] == "epic":
+                item.epic = parts[3]
+                message = f"Improvement {item.id} is part of epic {parts[3]}."
+            else:
+                try:
+                    control.set_dependency(item.id, parts[3])
+                except ValueError as exc:
+                    return f"Refused: {exc}"
+                message = f"Improvement {item.id} now waits for {parts[3]} to be verified."
+            await control.save()
+            return message
         if len(parts) != 1:
-            return "Usage: /improvements [release <id>]"
+            return "Usage: /improvements [release <id>|depend <id> <on-id>|epic <id> <name>]"
         return control.summary()
 
     async def _command_rules(self, parts: list[str]) -> str:

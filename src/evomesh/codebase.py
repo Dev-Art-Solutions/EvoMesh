@@ -1587,6 +1587,9 @@ def _step_rules(path: str) -> str:
             "- Never create a new module under src/evomesh/: nothing would import it.",
             "- Do not run ruff, pyright or pytest: validation runs them once you stop. "
             "`shell` is a bare python with none of them installed.",
+            "- Noticed a different problem on the way? Do not fix it here -- "
+            "that is scope creep. Name it on its own line starting exactly with "
+            "'PROPOSAL:' (what is wrong, and in which file); it goes to the backlog.",
             "- End with one line starting exactly with 'RATIONALE:' saying what you "
             "changed and why.",
         )

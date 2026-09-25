@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,8 @@ from evomesh.events import Event, EventType
 
 logger = logging.getLogger(__name__)
 
+SOURCE_FILE = re.compile(r"src/evomesh/[A-Za-z0-9_]+\.py")
+
 # Evidence kinds a candidate improvement can come from.
 EVIDENCE_FAILING_TESTS = "failing_tests"
 EVIDENCE_RUNTIME_FAULT = "runtime_fault"
@@ -27,6 +30,13 @@ EVIDENCE_HUMAN_BACKLOG = "human_backlog"
 EVIDENCE_RUNTIME_EVENT = "runtime_event"
 # Improvement.source of a proposal the scout made from a runtime event.
 RUNTIME_SOURCE = "runtime"
+# Improvement.source of something a job noticed outside its own objective.
+DISCOVERY_SOURCE = "discovery"
+# A discovery is worked once a second, independent job reports it too
+# (or a human releases it): one model's aside is not evidence enough.
+DISCOVERY_READY_OCCURRENCES = 2
+# Sources that no file-level evidence backs: measured by recurrence.
+RECURRENCE_SOURCES = frozenset({RUNTIME_SOURCE, DISCOVERY_SOURCE})
 
 # A runtime-event proposal becomes workable only once it has recurred this
 # often: one stall is weather, three of the same is a problem.
@@ -130,6 +140,8 @@ class Improvement(BaseModel):
     # title, a runtime event): its identity across proposals, and what
     # verification checks is gone.
     source_ref: str = ""
+    # The epic this improvement belongs to (Epic -> Improvement -> WorkItem).
+    epic: str = ""
     occurrences: int = 1
     last_seen_at: datetime = Field(default_factory=now_utc)
     verification_started_at: datetime | None = None
@@ -217,7 +229,7 @@ class ImprovementScout:
             problem=reason,
             evidence=[
                 Evidence(
-                    kind="runtime_event",
+                    kind=EVIDENCE_RUNTIME_EVENT,
                     reference=f"{event.type.value}:{event.goal_id}",
                     value=event.payload,
                     source=event.source,
@@ -248,6 +260,14 @@ class ImprovementTriage:
         ):
             improvement.status = ImprovementStatus.REJECTED
             improvement.rejection_reason = "environmental, not a code problem"
+        elif (
+            improvement.source == DISCOVERY_SOURCE
+            and improvement.occurrences < DISCOVERY_READY_OCCURRENCES
+        ):
+            improvement.status = ImprovementStatus.TRIAGED
+            improvement.rejection_reason = (
+                "reported once; ready when another job reports it or a human releases it"
+            )
         elif from_runtime and improvement.occurrences < RUNTIME_EVENT_READY_OCCURRENCES:
             improvement.status = ImprovementStatus.TRIAGED
             improvement.rejection_reason = (
@@ -417,7 +437,6 @@ class Candidate:
 
 
 EVOLUTION_OUTCOME_PROMOTED = "promoted"
-EVOLUTION_OUTCOME_DISCARDED = "discarded"
 
 
 class ImprovementControl:
@@ -463,6 +482,62 @@ class ImprovementControl:
         await self.save()
         return item
 
+    async def propose_discovery(
+        self, text: str, *, generation: int, job: int
+    ) -> Improvement | None:
+        """Scope creep, captured instead of acted on: a problem a job noticed
+        outside its objective becomes a proposal, never an edit."""
+        text = " ".join(text.split())
+        if len(text) < 12:
+            return None
+        item = self.backlog.add(
+            Improvement(
+                title=text[:120],
+                problem=text,
+                evidence=[
+                    Evidence(
+                        kind=DISCOVERY_SOURCE,
+                        reference=f"generation {generation} job {job}",
+                        value=text,
+                        source="harness",
+                    )
+                ],
+                component=next(iter(SOURCE_FILE.findall(text)), "evomesh"),
+                category=DISCOVERY_SOURCE,
+                factors=PriorityFactors(confidence=0.5),
+                source=DISCOVERY_SOURCE,
+                created_by="harness job",
+                source_ref=f"{DISCOVERY_SOURCE}:{text.lower()}",
+                success_criteria=["No later job reports the same problem."],
+                verification=VerificationPlan(
+                    metric="re-reported", baseline=1.0, target=0.0, minimum_observations=3
+                ),
+            )
+        )
+        if item.status in {ImprovementStatus.PROPOSED, ImprovementStatus.TRIAGED}:
+            self.triage.triage(item)
+        await self.save()
+        return item
+
+    def set_dependency(self, improvement_id: str, depends_on: str) -> None:
+        """``improvement_id`` waits until ``depends_on`` is VERIFIED; refused
+        when either is unknown or the dependency would close a cycle."""
+        items = self.backlog.items
+        if improvement_id not in items or depends_on not in items:
+            raise ValueError("both improvements must exist")
+        seen: set[str] = set()
+        pending = [depends_on]
+        while pending:
+            current = pending.pop()
+            if current == improvement_id:
+                raise ValueError("that dependency would make a cycle")
+            if current not in seen:
+                seen.add(current)
+                pending.extend(items[current].dependencies if current in items else ())
+        if depends_on not in items[improvement_id].dependencies:
+            items[improvement_id].dependencies.append(depends_on)
+            items[depends_on].related_items.append(improvement_id)
+
     async def sync(self, candidates: Sequence[Candidate], present: set[str]) -> None:
         """Merge what the evolver can pick now into the backlog, retire what
         is no longer evidenced, and take one verification reading.
@@ -490,7 +565,7 @@ class ImprovementControl:
                 item.status = ImprovementStatus.READY
                 item.rejection_reason = ""
         for item in list(self.backlog.items.values()):
-            if item.source == RUNTIME_SOURCE or not item.source_ref:
+            if item.source in RECURRENCE_SOURCES or not item.source_ref:
                 continue
             gone = item.source_ref not in present
             if item.status is ImprovementStatus.VERIFYING:
@@ -505,7 +580,7 @@ class ImprovementControl:
                 item.rejection_reason = "evidence no longer present"
                 item.updated_at = now_utc()
         for item in self.backlog.items.values():
-            if item.source == RUNTIME_SOURCE and item.status is ImprovementStatus.VERIFYING:
+            if item.source in RECURRENCE_SOURCES and item.status is ImprovementStatus.VERIFYING:
                 started = item.verification_started_at or item.updated_at
                 recurred = item.last_seen_at > started
                 await self._report(item, self.coordinator.observe(item, 1.0 if recurred else 0.0))
@@ -638,11 +713,20 @@ class ImprovementControl:
         for item in self.backlog.items.values():
             counts[item.status.value] = counts.get(item.status.value, 0) + 1
         lines = [", ".join(f"{key}: {value}" for key, value in sorted(counts.items())) or "empty"]
+        epics: dict[str, list[Improvement]] = {}
+        for item in self.backlog.items.values():
+            if item.epic:
+                epics.setdefault(item.epic, []).append(item)
+        for name, members in sorted(epics.items()):
+            done = sum(item.status is ImprovementStatus.VERIFIED for item in members)
+            lines.append(f"epic {name}: {done}/{len(members)} verified")
         for item in sorted(self.backlog.items.values(), key=lambda entry: -entry.factors.score)[
             :10
         ]:
             lines.append(
                 f"  {item.id} [{item.status.value}] score {item.factors.score:.2f} "
-                f"{item.title}" + (f" -- {item.rejection_reason}" if item.rejection_reason else "")
+                f"{item.title}"
+                + (f" (after {', '.join(item.dependencies)})" if item.dependencies else "")
+                + (f" -- {item.rejection_reason}" if item.rejection_reason else "")
             )
         return "\n".join(lines)
