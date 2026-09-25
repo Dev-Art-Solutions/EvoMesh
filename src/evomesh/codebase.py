@@ -342,6 +342,10 @@ _MODULE_SYMBOL_RE = re.compile(
     r"^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?$"
 )
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
+# `name.<suffix>` in backticks is a file name, never a symbol.
+FILE_SUFFIXES = frozenset(
+    {"py", "md", "json", "jsonl", "yaml", "yml", "toml", "txt", "log", "db", "lock", "cfg", "ini"}
+)
 
 
 def fabricated_references(text: str, root: Path) -> list[str]:
@@ -367,9 +371,11 @@ def fabricated_references(text: str, root: Path) -> list[str]:
         if match is None:
             continue
         module_name, symbol = match.group(1), match.group(2)
-        if symbol == "py":
+        if symbol in FILE_SUFFIXES:
             # `cycles.py` -- naming the file itself, not a symbol in it. This
-            # is how a plan almost always refers to a module by name.
+            # is how a plan almost always refers to a module by name. Found
+            # live 2026-09-25: `memory.md` (an agent's memory file) dropped a
+            # scouted item as a made-up `memory` symbol.
             continue
         module = modules.get(module_name)
         if module is None or symbol in module.all_names:
@@ -1226,7 +1232,7 @@ def _unknown_attributes(root: Path, item: Improvement) -> list[str]:
         if match is None:
             continue
         owner, attribute = match.groups()
-        if owner in modules or owner in imported or attribute == "py":
+        if owner in modules or owner in imported or attribute in FILE_SUFFIXES:
             continue
         if attribute not in words and span not in unknown:
             unknown.append(span)

@@ -28,6 +28,14 @@ def test_fabricated_references_leaves_a_real_reference_alone(project_root):
     ) == []
 
 
+def test_a_file_named_after_a_module_is_not_a_made_up_symbol(project_root):
+    """Found live: `memory.md` dropped a scouted item as a fake `memory` symbol."""
+    assert fabricated_references("lands in `memory.md` and `codebase.json`", project_root) == []
+    assert fabricated_references("calls `memory.no_such_thing`", project_root) == [
+        "memory.no_such_thing"
+    ]
+
+
 def test_survey_reports_the_load_bearing_modules(project_root):
     modules = {module.name for module in survey(project_root)}
     assert "codebase" in modules
