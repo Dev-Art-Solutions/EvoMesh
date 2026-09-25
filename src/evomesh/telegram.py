@@ -346,7 +346,11 @@ class TelegramChannel:
         if self._client is None:
             raise TelegramError("the Telegram client is not open")
         url = f"{FILE_ROOT}/bot{self.settings.token.strip()}/{file_path}"
-        response = await self._client.get(url)
+        try:
+            response = await self._client.get(url)
+        except httpx.HTTPError as exc:
+            logger.warning("Could not download the file: %s", exc)
+            raise TelegramError("downloading the file failed", retry_after=5) from exc
         if response.status_code >= 400:
             raise TelegramError(f"downloading the file failed with HTTP {response.status_code}")
         destination = scratch / (suggested_name or Path(file_path).name or "attachment")
