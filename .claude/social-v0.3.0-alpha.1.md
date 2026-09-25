@@ -6,7 +6,7 @@ Docs: https://evomesh.devart.solutions/#bdi
 
 ## X / Twitter
 
-EvoMesh 0.3: agents that stop paying the model for what they already know. Plans that worked become procedures, reused with no planning call. Self-improvement starts from evidence and ends with a measurement: a landed fix is "verified" only when the problem stays gone.
+EvoMesh 0.3: plans that worked become procedures, reused with no model call. Self-improvement starts from evidence, and a landed fix counts as verified only once the problem stays gone.
 
 https://blog.devart.solutions/blog/evomesh-0-3-the-cognitive-runtime
 
