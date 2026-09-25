@@ -1,0 +1,12 @@
+[
+  {
+    "procedure_id": "local_json_snapshot",
+    "revision": 1,
+    "digest": "ea468618dd8fd2ce7126ca1b44343488a998b1ce359649b7006ee83b0736c40b",
+    "goal_kinds": [
+      "local_json_snapshot"
+    ],
+    "approved_by": "operator:iliya",
+    "note": "W1 reference procedure; reviewed with the closure plan v2 change."
+  }
+]

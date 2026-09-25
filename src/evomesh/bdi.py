@@ -62,6 +62,7 @@ from evomesh.procedural_learning import (
     ProcedureLearner,
     goal_signature,
 )
+from evomesh.procedures import canonical_json
 from evomesh.rules import (
     BELIEF_CHANGED_EVENT,
     RuleEffect,
@@ -74,6 +75,25 @@ from evomesh.rules import (
 logger = logging.getLogger(__name__)
 
 MAX_PLAN_STEPS = 4
+
+# Typed failures that end the goal: retrying the same decision cannot help,
+# and legacy reasoning must not route around it (closure plan 13.5).
+TERMINAL_TYPED_FAILURES = frozenset(
+    {
+        "PERMISSION_DENIED",
+        "BUDGET_EXHAUSTED",
+        "ADMISSION_REVOKED",
+        "DEFINITION_UNAVAILABLE",
+        "CONTRACT_CHANGED",
+        "OPERATION_CONFLICT",
+        "DESTINATION_CONFLICT",
+        "VALIDATION_FAILED",
+        "UNEXPECTED_TOOL_CALL",
+        "CONTEXT_BUDGET_EXCEEDED",
+        "DELEGATION_DEPTH_EXCEEDED",
+        "NO_ELIGIBLE_PEER",
+    }
+)
 
 PLAN_FORMAT = (
     "Break this goal into 2 to 4 short steps that can each be done one at a time.\n"
@@ -430,6 +450,9 @@ class BDIReasoner:
                 if item.status is IntentionStatus.ACTIVE:
                     item.finish(IntentionStatus.DROPPED)
             return None
+        typed = await self._typed_intention(context, mind, goal)
+        if typed is not None:
+            return typed if typed.goal_id else None
         recipe = behavior.library().select(goal, mind)
         if recipe is not None:
             mind.record_plan_selected(recipe.name)
@@ -489,6 +512,125 @@ class BDIReasoner:
             ),
         )
 
+    async def _typed_intention(
+        self, context: CycleContext, mind: MindState, goal: Goal
+    ) -> Intention | None:
+        """Selection precedence (closure plan 12.1): an open execution for
+        this occurrence is resumed; an admitted typed procedure for the goal's
+        kind comes before behavior recipes, the scheduled shortcut, learned
+        textual plans and model planning. Only a safe no-match falls through;
+        a denied, invalid or unapproved binding fails the goal instead of
+        letting legacy reasoning route around it.
+
+        Returns None to fall through, or an Intention; one with an empty
+        goal_id means "this goal was just failed, choose nothing now"."""
+        service = context.service("procedures")
+        if service is None:
+            return None
+        execution, match = await service.begin(goal, context.definition)  # type: ignore[attr-defined]
+        if execution is not None:
+            intention = mind.commit(
+                goal.id,
+                [f"run typed procedure {execution.procedure_id}@{execution.revision}"],
+                plan=f"typed:{execution.procedure_id}@{execution.revision}",
+            )
+            intention.execution_id = execution.execution_id
+            mind.record_plan_selected(intention.plan)
+            return intention
+        if match is None or match.selection.value in {"no_match", "incompatible_procedure"}:
+            return None
+        GoalManager(mind).transition(goal, GoalStatus.FAILED, human_override=True)
+        goal.last_error = f"{match.selection.value}: {'; '.join(match.reasons)[:300]}"
+        return Intention(goal_id="")
+
+    async def _execute_typed(
+        self, context: CycleContext, mind: MindState, intention: Intention
+    ) -> CycleOutcome:
+        """One typed step. No model call unless the step is cognitive; goal
+        completion is decided from trusted evidence, not the graph ending."""
+        service = context.service("procedures")
+        execution_id = intention.execution_id or ""
+        goal = mind.goal(intention.goal_id) if _has_goal(mind, intention) else None
+        if service is None:
+            return CycleOutcome.failed("typed execution is unavailable")
+        if goal is None or not goal.is_open:
+            await service.cancel(execution_id, "the goal closed")  # type: ignore[attr-defined]
+            intention.finish(IntentionStatus.DROPPED)
+            return CycleOutcome.idle("the goal closed; its typed execution was cancelled")
+        outcome = await service.advance(execution_id)  # type: ignore[attr-defined]
+        label = f"typed {intention.plan.removeprefix('typed:')} step {outcome.step_id}"
+        if outcome.kind == "advanced":
+            return CycleOutcome(
+                summary=f"{label}: done", step=label, worked=True, again=True,
+                phase=AgentPhase.ACTING,
+            )
+        if outcome.kind in {"waiting", "busy", "needs_reconciliation"}:
+            return CycleOutcome(
+                summary=f"{label}: {outcome.code} {outcome.message}".strip(),
+                step=label,
+                worked=True,
+                phase=AgentPhase.WAITING_HUMAN
+                if outcome.kind == "needs_reconciliation"
+                else AgentPhase.ACTING,
+            )
+        if outcome.kind == "cancelled":
+            intention.finish(IntentionStatus.DROPPED)
+            return CycleOutcome.idle(f"{label}: cancelled")
+        manager = GoalManager(mind)
+        if outcome.kind == "failed":
+            intention.finish(IntentionStatus.IMPOSSIBLE)
+            mind.record_plan_outcome(intention.plan, success=False)
+            if outcome.code in TERMINAL_TYPED_FAILURES:
+                manager.transition(goal, GoalStatus.FAILED, human_override=True)
+                goal.last_error = f"{outcome.code}: {outcome.message}"[:300]
+            return CycleOutcome(
+                summary=f"{label} failed: {outcome.code} {outcome.message}",
+                step=label,
+                error=f"{outcome.code}: {outcome.message}"[:300],
+                worked=True,
+            )
+        execution = await service.execution(execution_id)  # type: ignore[attr-defined]
+        from evomesh.procedure_runtime import goal_evidence
+
+        validators, tools = goal_evidence(execution)
+        root = Path(context.definition.harness_root) if context.definition.harness_root else None
+        evidence = GoalEvaluationContext(
+            artifact_root=root, tool_results=tools, validator_results=validators
+        )
+        if goal.failure_conditions and any(
+            manager.condition_met(item, evidence) for item in goal.failure_conditions
+        ):
+            unmet = True
+        elif goal.success_conditions:
+            unmet = not all(
+                manager.condition_met(item, evidence) for item in goal.success_conditions
+            )
+        else:
+            unmet = False
+            # No trusted goal contract: accepted for compatibility, labelled
+            # so it is never taken as strong proof or learned from.
+            await service.label(execution_id, "legacy_completion")  # type: ignore[attr-defined]
+        if unmet:
+            intention.finish(IntentionStatus.IMPOSSIBLE)
+            mind.record_plan_outcome(intention.plan, success=False)
+            manager.transition(goal, GoalStatus.FAILED, human_override=True)
+            goal.last_error = "POSTCONDITION_UNSATISFIED"
+            return CycleOutcome(
+                summary=f"{label}: the procedure finished but the goal's conditions do not hold",
+                step=label,
+                error="POSTCONDITION_UNSATISFIED",
+                worked=True,
+            )
+        intention.finish(IntentionStatus.ACHIEVED)
+        mind.record_plan_outcome(intention.plan, success=True)
+        return CycleOutcome(
+            summary=f"{label}: completed {canonical_json(outcome.result or {})[:300]}",
+            step=label,
+            goal_done=True,
+            evidence_backed=True,
+            worked=True,
+        )
+
     async def _plan_with_model(self, context: CycleContext, goal: Goal) -> list[str]:
         """One planning call per goal. A model that is down still yields a plan.
 
@@ -531,6 +673,8 @@ class BDIReasoner:
         step: PlanStep,
         reason: str | None,
     ) -> CycleOutcome:
+        if intention.execution_id:
+            return await self._execute_typed(context, mind, intention)
         position = f"step {intention.cursor + 1}/{len(intention.steps)}"
         try:
             result = await behavior.execute(context, intention, step)

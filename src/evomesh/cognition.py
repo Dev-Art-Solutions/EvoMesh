@@ -171,6 +171,9 @@ class CycleOutcome:
     phase: AgentPhase = AgentPhase.IDLE
     error: str | None = None
     worked: bool = False
+    # Completion proved by trusted evidence (a typed procedure's validators),
+    # not by a model's say-so: it needs no second pass to be believed.
+    evidence_backed: bool = False
     # The next cycle has work that waits on nothing -- run it now instead of a
     # whole cycle_seconds later (see AgentRuntime.wake).
     again: bool = False

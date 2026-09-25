@@ -387,6 +387,11 @@ class AgentRuntime:
                                 "work_type": item.type,
                                 "requester_id": incoming.sender_id,
                                 "inputs": dict(item.inputs),
+                                # Loop and depth guards travel with the work
+                                # so a typed child can delegate further only
+                                # inside the root's envelope.
+                                "causation_chain": list(item.causation_chain),
+                                "delegation_depth": item.delegation_depth,
                             },
                             owner_agent_id=self.definition.id,
                             # Ahead of a standing goal (3): someone is waiting
@@ -520,7 +525,7 @@ class AgentRuntime:
             # done during a minute-long model call): the cycle's result must
             # not reopen it. Found live: a dropped goal came back ACTIVE.
             goal = None
-        worked_before = bool(goal.notes) if goal else False
+        worked_before = (bool(goal.notes) or outcome.evidence_backed) if goal else False
         self.state.cycles += 1
         self.state.last_cycle_at = now_utc()
         self.state.last_outcome = outcome.summary

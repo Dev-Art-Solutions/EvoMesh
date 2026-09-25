@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "procedure_id": "local_json_snapshot",
+  "revision": 1,
+  "name": "Create a validated local JSON snapshot",
+  "entry_step_id": "read_source",
+  "goal_kind": "local_json_snapshot",
+  "parameter_schema": {
+    "type": "object",
+    "properties": {
+      "source": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "destination": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "required": [
+      "source",
+      "destination"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "artifact_id": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "digest": {
+        "type": "string",
+        "maxLength": 100
+      }
+    },
+    "required": [
+      "artifact_id",
+      "digest"
+    ],
+    "additionalProperties": false
+  },
+  "required_capabilities": [
+    "artifact.read",
+    "artifact.write"
+  ],
+  "preconditions": [],
+  "context_dependencies": [],
+  "steps": [
+    {
+      "id": "read_source",
+      "kind": "tool",
+      "adapter": "core.json_read",
+      "contract_version": 1,
+      "arguments": {
+        "path": {
+          "ref": {
+            "scope": "goal",
+            "path": [
+              "parameters",
+              "source"
+            ]
+          }
+        }
+      },
+      "next": "write_snapshot"
+    },
+    {
+      "id": "write_snapshot",
+      "kind": "tool",
+      "adapter": "core.json_write",
+      "contract_version": 1,
+      "arguments": {
+        "path": {
+          "ref": {
+            "scope": "goal",
+            "path": [
+              "parameters",
+              "destination"
+            ]
+          }
+        },
+        "value": {
+          "ref": {
+            "scope": "result",
+            "path": [
+              "read_source",
+              "value"
+            ]
+          }
+        }
+      },
+      "next": "check_snapshot"
+    },
+    {
+      "id": "check_snapshot",
+      "kind": "validate",
+      "check": "artifact_matches_source",
+      "arguments": {
+        "artifact_id": {
+          "ref": {
+            "scope": "result",
+            "path": [
+              "write_snapshot",
+              "artifact_id"
+            ]
+          }
+        },
+        "source_step": {
+          "literal": "read_source"
+        }
+      },
+      "next": "done"
+    },
+    {
+      "id": "done",
+      "kind": "complete",
+      "result": {
+        "artifact_id": {
+          "ref": {
+            "scope": "result",
+            "path": [
+              "write_snapshot",
+              "artifact_id"
+            ]
+          }
+        },
+        "digest": {
+          "ref": {
+            "scope": "result",
+            "path": [
+              "write_snapshot",
+              "digest"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

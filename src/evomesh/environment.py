@@ -76,6 +76,8 @@ from evomesh.models import (
     OpenAICompatibleProvider,
 )
 from evomesh.permissions import FilesystemPolicy
+from evomesh.procedure_host import build_procedure_service
+from evomesh.procedure_runtime import occurrence_id
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
@@ -123,6 +125,9 @@ class Environment:
         self.blackboard = Blackboard()
         self.capabilities = CapabilityRegistry()
         self.contract_net = ContractNet(self.capabilities)
+        # Typed procedures (closure plan): selection, durable execution and
+        # admission. Definitions ship under procedures/ and load at start().
+        self.procedures = build_procedure_service(self)
         self.improvement_backlog = ImprovementBacklog()
         self.improvement_scout = ImprovementScout()
         self.improvement_triage = ImprovementTriage()
@@ -450,6 +455,7 @@ class Environment:
             return
         definition, goal, work = found
         summary = str(event.payload.get("summary") or goal.last_error or "done")
+        await self._settle_typed_child(work.id, definition.id, "completed", goal, summary)
         work.status = WorkStatus.COMPLETED
         work.updated_at = now_utc()
         work.result_fact_key = f"work.{work.id}.result"
@@ -485,6 +491,30 @@ class Environment:
         )
         await self._save_blackboard()
 
+    async def _settle_typed_child(
+        self, work_id: str, executor_id: str, status: str, goal: Goal, summary: str
+    ) -> None:
+        """Record a child's outcome on the typed parent that created it (a
+        no-op for work no procedure delegated), then wake the parent."""
+        result: Any = summary
+        evidence: list[dict[str, Any]] = []
+        child = await self.procedures.executor.for_occurrence(occurrence_id(goal))
+        if child is not None:
+            # A typed child answers with its validated output and evidence,
+            # not a prose summary.
+            if child.output is not None:
+                result = child.output
+            evidence = [item for item in child.evidence if item.get("kind") == "validator"]
+        settled = await self.procedures.executor.settle_child(
+            work_id, status=status, executor_id=executor_id, result=result, evidence=evidence
+        )
+        if not settled:
+            return
+        parent = self.blackboard.work_items.get(work_id)
+        requester = parent.requester_agent_id if parent is not None else None
+        if requester and requester in self.runtimes:
+            self.runtimes[requester].wake()
+
     def _close_assistance_for(self, event: Event) -> None:
         """The stalled goal finished after all: help for it is moot."""
         for work in self.blackboard.open_work():
@@ -504,6 +534,7 @@ class Environment:
         if goal.status is not GoalStatus.FAILED:
             return
         reason = str(event.payload.get("reason") or "failed")
+        await self._settle_typed_child(work.id, definition.id, "failed", goal, reason)
         work.fail(reason)
         requester = str(goal.parameters.get("requester_id") or "")
         if requester:
@@ -661,6 +692,9 @@ class Environment:
         if self.evolver.workspace.supervisor.sweep_applied():
             await self.evolver.workspace.prune_stale()
         await self.repository.initialize()
+        await self.procedures.registry.load()
+        for problem in await self.procedures.registry.install(self.project_root / "procedures"):
+            logger.warning("shipped procedure not admitted: %s", problem)
         restored = ImprovementBacklog.load(
             await self.repository.load_state("improvement_backlog_v2")
         )
@@ -1438,6 +1472,7 @@ class Environment:
             "capabilities": self.capabilities,
             "contract_net": self.contract_net,
             "improvements": self.improvements,
+            "procedures": self.procedures,
         }
 
     async def configure_agent_model(

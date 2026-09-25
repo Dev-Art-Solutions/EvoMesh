@@ -146,6 +146,9 @@ class Goal(BaseModel):
     max_attempts: int = 6
     # How many times progress detection declared this goal stalled.
     stalls: int = 0
+    # Which occurrence of a recurring goal this is; each completion starts
+    # a new one, with its own operation keys and budget.
+    occurrence: int = 0
     retry_policy: GoalRetryPolicy = Field(default_factory=GoalRetryPolicy)
     recurring: bool = False
     # How often this one goal is worth re-checking after it last finished,
@@ -289,6 +292,9 @@ class Intention(BaseModel):
     cursor: int = 0
     status: IntentionStatus = IntentionStatus.ACTIVE
     context_keys: list[str] = Field(default_factory=list)
+    # A typed procedure execution this intention runs (closure plan 12.2);
+    # None for the legacy textual plans.
+    execution_id: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 

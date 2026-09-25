@@ -34,7 +34,39 @@ MIGRATIONS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL
     );
     INSERT OR IGNORE INTO schema_version(version) VALUES (1);
+    """,
+    # 2: typed procedures (architecture closure v2). Additive: nothing above
+    # is altered, so an older database migrates by gaining these tables.
     """
+    CREATE TABLE IF NOT EXISTS procedure_definitions(
+        procedure_id TEXT NOT NULL, revision INTEGER NOT NULL,
+        digest TEXT NOT NULL, content TEXT NOT NULL,
+        PRIMARY KEY(procedure_id, revision)
+    );
+    CREATE TABLE IF NOT EXISTS procedure_admissions(
+        procedure_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(procedure_id, revision)
+    );
+    CREATE TABLE IF NOT EXISTS procedure_executions(
+        execution_id TEXT PRIMARY KEY, occurrence_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL, status TEXT NOT NULL,
+        version INTEGER NOT NULL, payload TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS procedure_one_open_execution
+        ON procedure_executions(occurrence_id)
+        WHERE status NOT IN ('completed', 'failed', 'cancelled');
+    CREATE TABLE IF NOT EXISTS procedure_operations(
+        operation_key TEXT PRIMARY KEY, execution_id TEXT NOT NULL,
+        state TEXT NOT NULL, payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS procedure_operations_by_execution
+        ON procedure_operations(execution_id);
+    CREATE TABLE IF NOT EXISTS procedure_traces(
+        trace_id TEXT PRIMARY KEY, goal_kind TEXT NOT NULL,
+        occurrence_id TEXT NOT NULL UNIQUE, payload TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO schema_version(version) VALUES (2);
+    """,
 ]
 
 
@@ -138,6 +170,206 @@ class SQLiteRepository:
         await self._write(
             [("INSERT INTO mutation_history(payload) VALUES (?)", (json.dumps(payload),))]
         )
+
+    # -- typed procedures ---------------------------------------------------
+    #
+    # Narrow operations, each one transaction. Definition content is written
+    # once per (procedure_id, revision); an execution moves only by
+    # compare-and-swap on its version, together with the operation records
+    # that transition settles (plan 6.5, 11.4).
+
+    async def insert_procedure_definition(
+        self, procedure_id: str, revision: int, digest: str, content: str
+    ) -> bool:
+        """Store immutable content. True if stored or already identical;
+        False if that revision exists with a different digest."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT digest FROM procedure_definitions WHERE procedure_id = ? AND revision = ?",
+                (procedure_id, revision),
+            )
+            row = await cursor.fetchone()
+            if row is not None:
+                await db.rollback()
+                return str(row[0]) == digest
+            await db.execute(
+                "INSERT INTO procedure_definitions(procedure_id, revision, digest, content) "
+                "VALUES (?, ?, ?, ?)",
+                (procedure_id, revision, digest, content),
+            )
+            await db.commit()
+            return True
+
+    async def load_procedure_definitions(self) -> list[tuple[str, int, str, str]]:
+        rows = await self._all(
+            "SELECT procedure_id, revision, digest, content FROM procedure_definitions"
+        )
+        return [(str(row[0]), int(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+    async def save_procedure_admission(
+        self, procedure_id: str, revision: int, payload: str
+    ) -> None:
+        await self._write(
+            [
+                (
+                    "INSERT INTO procedure_admissions(procedure_id, revision, payload) "
+                    "VALUES (?, ?, ?) ON CONFLICT(procedure_id, revision) "
+                    "DO UPDATE SET payload = excluded.payload",
+                    (procedure_id, revision, payload),
+                )
+            ]
+        )
+
+    async def load_procedure_admissions(self) -> list[str]:
+        rows = await self._all("SELECT payload FROM procedure_admissions")
+        return [str(row[0]) for row in rows]
+
+    async def create_procedure_execution(
+        self, execution_id: str, occurrence_id: str, agent_id: str, status: str, payload: str
+    ) -> bool:
+        """False when the occurrence already has an open execution."""
+        try:
+            await self._write(
+                [
+                    (
+                        "INSERT INTO procedure_executions"
+                        "(execution_id, occurrence_id, agent_id, status, version, payload) "
+                        "VALUES (?, ?, ?, ?, 1, ?)",
+                        (execution_id, occurrence_id, agent_id, status, payload),
+                    )
+                ]
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    async def load_procedure_execution(self, execution_id: str) -> tuple[int, str] | None:
+        rows = await self._all(
+            "SELECT version, payload FROM procedure_executions WHERE execution_id = ?",
+            (execution_id,),
+        )
+        return (int(rows[0][0]), str(rows[0][1])) if rows else None
+
+    async def list_procedure_executions(
+        self, *, occurrence_id: str | None = None, open_only: bool = False
+    ) -> list[tuple[int, str]]:
+        sql = "SELECT version, payload FROM procedure_executions WHERE 1 = 1"
+        parameters: list[object] = []
+        if occurrence_id is not None:
+            sql += " AND occurrence_id = ?"
+            parameters.append(occurrence_id)
+        if open_only:
+            sql += " AND status NOT IN ('completed', 'failed', 'cancelled')"
+        rows = await self._all(sql + " ORDER BY rowid", tuple(parameters))
+        return [(int(row[0]), str(row[1])) for row in rows]
+
+    async def commit_procedure_transition(
+        self,
+        execution_id: str,
+        expected_version: int,
+        status: str,
+        payload: str,
+        operations: Sequence[tuple[str, str, str, str | None]] = (),
+    ) -> bool:
+        """Atomically move an execution from ``expected_version`` and write
+        its operation records ``(key, state, payload, expected_state)``.
+
+        ``expected_state`` None means the record must not exist yet; "*" means
+        any. Any mismatch rolls the whole transition back and returns False,
+        which is how two competing advances end with exactly one dispatch.
+        """
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "UPDATE procedure_executions SET status = ?, payload = ?, version = version + 1 "
+                "WHERE execution_id = ? AND version = ?",
+                (status, payload, execution_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return False
+            for key, state, record, expected_state in operations:
+                current = await db.execute(
+                    "SELECT state FROM procedure_operations WHERE operation_key = ?", (key,)
+                )
+                row = await current.fetchone()
+                if expected_state is None and row is not None:
+                    await db.rollback()
+                    return False
+                if expected_state not in (None, "*") and (
+                    row is None or str(row[0]) != expected_state
+                ):
+                    await db.rollback()
+                    return False
+                await db.execute(
+                    "INSERT INTO procedure_operations(operation_key, execution_id, state, payload) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(operation_key) DO UPDATE SET "
+                    "state = excluded.state, payload = excluded.payload",
+                    (key, execution_id, state, record),
+                )
+            await db.commit()
+            return True
+
+    async def load_procedure_operation(self, operation_key: str) -> tuple[str, str] | None:
+        rows = await self._all(
+            "SELECT state, payload FROM procedure_operations WHERE operation_key = ?",
+            (operation_key,),
+        )
+        return (str(rows[0][0]), str(rows[0][1])) if rows else None
+
+    async def list_procedure_operations(self, execution_id: str) -> list[tuple[str, str]]:
+        rows = await self._all(
+            "SELECT state, payload FROM procedure_operations WHERE execution_id = ? ORDER BY rowid",
+            (execution_id,),
+        )
+        return [(str(row[0]), str(row[1])) for row in rows]
+
+    async def update_procedure_operation(
+        self, operation_key: str, expected_state: str, state: str, payload: str
+    ) -> bool:
+        """Settle one operation record outside an execution transition (a
+        child work result arriving), only from ``expected_state``."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "UPDATE procedure_operations SET state = ?, payload = ? "
+                "WHERE operation_key = ? AND state = ?",
+                (state, payload, operation_key, expected_state),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return False
+            await db.commit()
+            return True
+
+    async def insert_procedure_trace(
+        self, trace_id: str, goal_kind: str, occurrence_id: str, payload: str
+    ) -> bool:
+        """False for a trace or occurrence already recorded (no double count)."""
+        try:
+            await self._write(
+                [
+                    (
+                        "INSERT INTO procedure_traces(trace_id, goal_kind, occurrence_id, payload) "
+                        "VALUES (?, ?, ?, ?)",
+                        (trace_id, goal_kind, occurrence_id, payload),
+                    )
+                ]
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    async def list_procedure_traces(self, goal_kind: str | None = None) -> list[str]:
+        if goal_kind is None:
+            rows = await self._all("SELECT payload FROM procedure_traces ORDER BY rowid")
+        else:
+            rows = await self._all(
+                "SELECT payload FROM procedure_traces WHERE goal_kind = ? ORDER BY rowid",
+                (goal_kind,),
+            )
+        return [str(row[0]) for row in rows]
 
     async def _upsert(
         self, table: str, key_column: str, key: str, value_column: str, value: str

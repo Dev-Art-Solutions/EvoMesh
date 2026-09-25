@@ -428,6 +428,7 @@ class GoalManager:
         if goal.status is GoalStatus.PENDING:
             self.refresh(at=at)
         if goal.recurring:
+            goal.occurrence += 1
             if goal.cron:
                 goal.next_attempt_at = cron.next_after(goal.cron, at)
             elif goal.interval_seconds:
