@@ -36,7 +36,14 @@ learned and pending patterns; `approve` promotes one early, `forget` drops one.
 `CognitiveModelService` is the only runtime boundary that calls a provider. Each
 call carries a cognitive operation and reason plus agent, goal and task IDs,
 sizes, duration and outcome. `TaskPacket`/`ContextAssembler` build the bounded
-prompt. `/status` exposes aggregate call telemetry.
+prompt. Required task, goal and output-contract sections receive space before
+optional evidence. Every section has an explicit priority/budget and produces
+an out-of-prompt provenance record with available/included characters and
+truncation state. Memory and working notes are selected by task/goal terms with
+only a small recent fallback; inbox history is included only for chat and
+unstructured-input operations. The 4k/8k regression scenarios deliberately
+use oversized irrelevant context and prove required sections remain intact.
+`/status` exposes aggregate call telemetry.
 
 ## Memory, events and the blackboard
 

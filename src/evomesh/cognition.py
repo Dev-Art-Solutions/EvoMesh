@@ -25,6 +25,7 @@ from evomesh.cognitive_services import (
     CognitiveModelService,
     CognitiveServiceType,
     ContextAssembler,
+    ContextSelectionRecord,
     ModelInvocationReason,
     TaskPacket,
 )
@@ -213,6 +214,7 @@ class CycleContext:
     # Structured events addressed to this agent since its last cycle, the
     # input the rule engine reacts to without a model call.
     events: tuple[RuntimeEvent, ...] = ()
+    last_context_provenance: tuple[ContextSelectionRecord, ...] = ()
 
     @property
     def goal(self) -> Goal | None:
@@ -273,8 +275,31 @@ class CycleContext:
         output_contract: str = "",
     ) -> str:
         target = goal or self.goal
-        memory = await self.memory.read_memory(self.budget.memory_chars)
-        notes = await self.memory.read_context(self.budget.context_chars)
+        query = " ".join(
+            part
+            for part in (
+                instruction,
+                target.description if target else "",
+                " ".join(relevant_belief_keys),
+            )
+            if part
+        )
+        memory = self.select_relevant_text(
+            await self.memory.read_memory(self.budget.memory_chars * 4),
+            query,
+            self.budget.memory_chars,
+            recent_fallback=4,
+        )
+        notes = self.select_relevant_text(
+            await self.memory.read_context(self.budget.context_chars * 3),
+            query,
+            self.budget.context_chars,
+            recent_fallback=2,
+        )
+        include_inbox = service in {
+            CognitiveServiceType.CHAT_RESPONSE,
+            CognitiveServiceType.INTERPRET_UNSTRUCTURED_INPUT,
+        }
         packet = TaskPacket(
             role=self.definition.name,
             operation=service,
@@ -288,10 +313,38 @@ class CycleContext:
             world=clip(self.world, 600, keep="head"),
             memory=memory.strip(),
             notes=notes.strip(),
-            inbox=self.render_inbox() if self.inbox else "",
+            inbox=self.render_inbox() if self.inbox and include_inbox else "",
             output_contract=output_contract,
         )
-        return ContextAssembler(self.budget.prompt_chars).assemble(packet)
+        assembly = ContextAssembler(self.budget.prompt_chars).assemble_with_provenance(packet)
+        self.last_context_provenance = assembly.provenance
+        return assembly.text
+
+    @staticmethod
+    def select_relevant_text(
+        text: str,
+        query: str,
+        budget: int,
+        *,
+        recent_fallback: int = 0,
+    ) -> str:
+        """Select matching lines, with a tiny recent fallback for legacy notes."""
+        if not text or budget <= 0:
+            return ""
+        terms = {
+            token
+            for token in re.findall(r"[a-z0-9_.-]{3,}", query.lower())
+            if token not in {"the", "and", "for", "with", "this", "that", "step"}
+        }
+        lines = [line for line in text.splitlines() if line.strip()]
+        selected = [
+            line for line in lines if terms and any(term in line.lower() for term in terms)
+        ]
+        if recent_fallback:
+            for line in reversed(lines[-recent_fallback:]):
+                if line not in selected:
+                    selected.append(line)
+        return clip("\n".join(selected), budget)
 
     def render_beliefs(
         self, relevant_keys: Sequence[str] = (), limit: int = 12

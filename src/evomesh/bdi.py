@@ -502,6 +502,7 @@ class BDIReasoner:
                 goal=goal,
                 service=CognitiveServiceType.CREATE_NOVEL_PLAN,
                 reason=ModelInvocationReason.NO_PLAN_MATCH,
+                output_contract="A numbered list of 1-8 executable plan steps only.",
             )
         except (ModelUnavailableError, RuntimeError, ValueError):
             return [goal.description]
@@ -690,6 +691,7 @@ class BDIBehavior:
             service=CognitiveServiceType.EXECUTE_STEP,
             reason=ModelInvocationReason.PLAN_STEP_REQUIRES_REASONING,
             relevant_belief_keys=intention.context_keys,
+            output_contract="Exactly RESULT, FACT, and STATUS lines.",
         )
         reply = parse_cycle_reply(raw)
         if reply.blocked:
@@ -800,6 +802,7 @@ class BDIBehavior:
             instruction,
             service=CognitiveServiceType.CHAT_RESPONSE,
             reason=ModelInvocationReason.HUMAN_CHAT_REQUIRES_RESPONSE,
+            output_contract="A direct answer of at most four sentences; optional FILE line.",
         )
 
     async def _respond_through_harness(

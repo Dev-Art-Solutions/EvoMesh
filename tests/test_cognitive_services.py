@@ -127,6 +127,34 @@ def test_task_packet_is_labelled_and_hard_budgeted() -> None:
 
     assert rendered.startswith("GOAL: Choose the relevant differences")
     assert len(rendered) <= 160
+    assert "TASK:" in rendered
+    assert "OUTPUT CONTRACT:" in rendered
+
+
+@pytest.mark.parametrize("budget", [4000, 8000])
+def test_required_sections_survive_oversized_context_with_provenance(budget: int) -> None:
+    packet = TaskPacket(
+        role="Researcher",
+        operation=CognitiveServiceType.SYNTHESIZE_EVIDENCE,
+        task="Decide the release verdict",
+        goal="Ship only verified code",
+        beliefs="irrelevant belief\n" * 2000,
+        memory="stale memory\n" * 2000,
+        notes="old note\n" * 2000,
+        inbox="old message\n" * 2000,
+        output_contract='{"verdict": "pass|fail"}',
+    )
+
+    assembly = ContextAssembler(budget).assemble_with_provenance(packet)
+
+    assert len(assembly.text) <= budget
+    assert "Ship only verified code" in assembly.text
+    assert "Decide the release verdict" in assembly.text
+    assert '{"verdict": "pass|fail"}' in assembly.text
+    records = {record.source: record for record in assembly.provenance}
+    assert records["task"].required
+    assert records["memory"].truncated
+    assert records["memory"].included_chars < records["memory"].available_chars
 
 
 async def test_cycle_context_records_narrow_service_and_filters_beliefs(
@@ -162,3 +190,34 @@ async def test_cycle_context_records_narrow_service_and_filters_beliefs(
     record = context.cognitive.metrics.records[0]
     assert record.service is CognitiveServiceType.INTERPRET_UNSTRUCTURED_INPUT
     assert record.agent_id == definition.id
+
+
+async def test_cycle_context_selects_relevant_memory_and_records_provenance(
+    tmp_path: Path,
+) -> None:
+    definition = AgentDefinition(name="Worker", purpose="Work")
+    goal = definition.mind.add_goal("Investigate release checksum")
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    for index in range(80):
+        await memory.remember(f"unrelated weather observation {index}")
+    await memory.remember("release checksum is sha256:abc123")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(),
+        memory=memory,
+        budget=MemoryBudget(memory_chars=500, prompt_chars=1200),
+    )
+
+    prompt = await context.build_prompt(
+        "Verify the checksum",
+        goal=goal,
+        output_contract="Return VERIFIED or REJECTED",
+    )
+
+    assert "sha256:abc123" in prompt
+    assert "weather observation 0" not in prompt
+    assert "Return VERIFIED or REJECTED" in prompt
+    provenance = {item.source: item for item in context.last_context_provenance}
+    assert provenance["task"].required
+    assert provenance["output_contract"].required

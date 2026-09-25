@@ -127,34 +127,102 @@ class TaskPacket:
     output_contract: str = ""
 
     def sections(self) -> list[str]:
-        sections: list[str] = []
+        return [section.render() for section in self.section_specs()]
+
+    def section_specs(self) -> list[ContextSection]:
+        sections: list[ContextSection] = []
         if self.goal:
-            sections.append(f"GOAL: {self.goal}")
+            sections.append(ContextSection("goal", "GOAL", self.goal, 1, True, 0.16))
         if self.beliefs:
-            sections.append("BELIEFS (what you currently hold true):\n" + self.beliefs)
+            sections.append(ContextSection("beliefs", "BELIEFS", self.beliefs, 4, False, 0.12))
         if self.intention:
-            sections.append("YOUR COMMITTED PLAN:\n" + self.intention)
-        if self.working:
             sections.append(
-                "CURRENT WORK (live from the runtime, more current than MEMORY):\n"
-                + self.working
+                ContextSection(
+                    "intention", "YOUR COMMITTED PLAN", self.intention, 2, False, 0.12
+                )
             )
+        if self.working:
+            sections.append(ContextSection("working", "CURRENT WORK", self.working, 3, False, 0.10))
         if self.artifacts:
-            sections.append("RELEVANT ARTIFACTS:\n" + "\n".join(self.artifacts))
+            sections.append(
+                ContextSection(
+                    "artifacts",
+                    "RELEVANT ARTIFACTS",
+                    "\n".join(self.artifacts),
+                    5,
+                    False,
+                    0.08,
+                )
+            )
         if self.recent_failure:
-            sections.append("RECENT FAILURE:\n" + self.recent_failure)
+            sections.append(
+                ContextSection(
+                    "recent_failure",
+                    "RECENT FAILURE",
+                    self.recent_failure,
+                    6,
+                    False,
+                    0.08,
+                )
+            )
         if self.world:
-            sections.append("WORLD:\n" + self.world)
+            sections.append(ContextSection("world", "WORLD", self.world, 8, False, 0.06))
         if self.memory:
-            sections.append("MEMORY (things you already know):\n" + self.memory)
+            sections.append(
+                ContextSection("memory", "RELEVANT MEMORY", self.memory, 9, False, 0.10)
+            )
         if self.notes:
-            sections.append("YOUR WORKING NOTES:\n" + self.notes)
+            sections.append(
+                ContextSection(
+                    "notes", "RELEVANT WORKING NOTES", self.notes, 7, False, 0.08
+                )
+            )
         if self.inbox:
-            sections.append("INBOX:\n" + self.inbox)
-        sections.append(self.task)
+            sections.append(ContextSection("inbox", "RELEVANT INBOX", self.inbox, 10, False, 0.05))
+        sections.append(ContextSection("task", "TASK", self.task, 0, True, 0.30))
         if self.output_contract:
-            sections.append("OUTPUT CONTRACT:\n" + self.output_contract)
+            sections.append(
+                ContextSection(
+                    "output_contract",
+                    "OUTPUT CONTRACT",
+                    self.output_contract,
+                    0,
+                    True,
+                    0.20,
+                )
+            )
         return sections
+
+
+@dataclass(frozen=True)
+class ContextSection:
+    source: str
+    label: str
+    content: str
+    priority: int
+    required: bool
+    budget_fraction: float
+
+    def render(self, content: str | None = None) -> str:
+        selected = self.content if content is None else content
+        if self.source == "goal":
+            return f"{self.label}: {selected}"
+        return f"{self.label}:\n{selected}"
+
+
+class ContextSelectionRecord(BaseModel):
+    source: str
+    reason: str
+    available_chars: int
+    included_chars: int
+    truncated: bool
+    required: bool
+
+
+@dataclass(frozen=True)
+class ContextAssembly:
+    text: str
+    provenance: tuple[ContextSelectionRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -162,19 +230,86 @@ class ContextAssembler:
     max_chars: int
 
     def assemble(self, packet: TaskPacket) -> str:
-        sections = packet.sections()
-        rendered = "\n\n".join(sections)
-        if len(rendered) <= self.max_chars:
-            return rendered
-        # A task packet is not a log: clipping its tail can remove the goal and
-        # leave the model with evidence but no objective.  Preserve the goal at
-        # the front, then spend the remaining budget on the most recent fields.
-        prefix = sections[0]
-        if len(prefix) >= self.max_chars:
-            return prefix[: self.max_chars]
-        remaining = self.max_chars - len(prefix) - 2
-        tail = clip("\n\n".join(sections[1:]), remaining)
-        return f"{prefix}\n\n{tail}"[: self.max_chars]
+        return self.assemble_with_provenance(packet).text
+
+    def assemble_with_provenance(self, packet: TaskPacket) -> ContextAssembly:
+        if self.max_chars < 1:
+            return ContextAssembly("", ())
+        specs = packet.section_specs()
+        allocations: dict[str, int] = {}
+        remaining = max(0, self.max_chars - (2 * max(0, len(specs) - 1)))
+
+        # Reserve labelled space for the task, goal and output contract before
+        # optional history. Their contents may be clipped, but never disappear.
+        required = sorted(
+            (item for item in specs if item.required), key=lambda item: item.priority
+        )
+        required_full_cost = sum(
+            len(section.label) + 2 + len(section.content) for section in required
+        )
+        if required_full_cost <= remaining:
+            for section in required:
+                allocation = len(section.label) + 2 + len(section.content)
+                allocations[section.source] = allocation
+                remaining -= allocation
+        else:
+            for section in required:
+                label_cost = len(section.label) + 2
+                desired = min(
+                    len(section.content),
+                    max(24, round(self.max_chars * section.budget_fraction)),
+                )
+                allocation = min(remaining, label_cost + desired)
+                allocations[section.source] = allocation
+                remaining -= allocation
+
+        optional = sorted(
+            (item for item in specs if not item.required), key=lambda item: item.priority
+        )
+        for section in optional:
+            if remaining <= len(section.label) + 2:
+                allocations[section.source] = 0
+                continue
+            desired = len(section.label) + 2 + min(
+                len(section.content), max(16, round(self.max_chars * section.budget_fraction))
+            )
+            allocation = min(remaining, desired)
+            allocations[section.source] = allocation
+            remaining -= allocation
+
+        required_order = {"goal": 0, "task": 1, "output_contract": 2}
+        output_specs = sorted(
+            specs,
+            key=lambda item: (
+                0 if item.required else 1,
+                required_order.get(item.source, item.priority),
+            ),
+        )
+        rendered: list[str] = []
+        provenance: list[ContextSelectionRecord] = []
+        for section in output_specs:
+            allocation = allocations.get(section.source, 0)
+            label_cost = len(section.label) + 2
+            content_budget = max(0, allocation - label_cost)
+            selected = clip(section.content, content_budget, keep="head")
+            if allocation > 0:
+                rendered.append(section.render(selected))
+            provenance.append(
+                ContextSelectionRecord(
+                    source=section.source,
+                    reason=(
+                        "required cognitive contract"
+                        if section.required
+                        else f"priority {section.priority}"
+                    ),
+                    available_chars=len(section.content),
+                    included_chars=len(selected),
+                    truncated=len(selected) < len(section.content),
+                    required=section.required,
+                )
+            )
+        text = "\n\n".join(rendered)[: self.max_chars]
+        return ContextAssembly(text, tuple(provenance))
 
 
 @dataclass
