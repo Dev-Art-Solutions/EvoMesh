@@ -1635,6 +1635,9 @@ class Environment:
             "improvements": {
                 "total": len(self.improvement_backlog.items),
                 **Counter(item.status.value for item in self.improvement_backlog.items.values()),
+                "work_items": Counter(
+                    work.status.value for work in self.improvement_backlog.work_items.values()
+                ),
             },
             # Open goals nobody has touched for an hour: work that is
             # neither progressing nor failing loudly enough to be a stall.
