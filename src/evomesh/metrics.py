@@ -1,13 +1,11 @@
 """Lightweight metrics for evaluating EvoMesh outputs."""
 
+import math
 from collections.abc import Iterable
 
 
 def _sum(values: Iterable[float]) -> float:
-    total = 0.0
-    for value in values:
-        total += value
-    return total
+    return math.fsum(values)
 
 
 def mean(values: Iterable[float]) -> float:
