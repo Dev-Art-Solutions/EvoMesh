@@ -167,3 +167,9 @@ the line below the title.
     `parse()` only accepts integers via `_parse_field`; a valid cron string using names like `0 9 * * MON` raises `InvalidCronError`. I confirmed this at runtime: `is_valid_cron_expression("0 9 * * 1")` → True, but `is_valid_cron_expression("0 9 * * MON")` → False (and `"0 0 1 JAN *"` → False). The standard cron grammar (`* /` already supported) includes alphabetic month and weekday names, so this input is valid yet currently rejected.
     >                         raise InvalidCronError(f"unrecognised {name} field: {field!r}")
     1. [x] src/evomesh/cron.py `_parse_field` -- expand the accepted token set by translating named month (`JAN`/`FAB`... and abbreviations) and day-of-week (`MON`... `SUN`) names to their integer codes before the range/step handling, so `0 9 * * MON`, `0 0 1 JAN *`, and `0 9 * * MON-FRI` all parse.
+- [ ] Implement time-based lookup in `Blackboard.fact` using its `at` argument
+    `Blackboard.fact` has an `at:` parameter and there are `WorldFact` facts carrying `expires_at`, so the method's signature documents time-based lookup, but its body reads only `self.facts.get(key)` and never consults `at` — a fact that should not exist yet at time `at` is still returned.
+    > `def fact(self, key: str, *, at: datetime | None = None) -> WorldFact | None:`
+    > `        fact = self.facts.get(key)`
+    > `        moment = at or now_utc()`
+    1. [ ] src/evomesh/blackboard.py `Blackboard.fact` -- use the `at` argument to return the version of `key` that existed at that moment (e.g. return `None` when the fact did not exist yet at `at`), instead of always returning the latest fact and ignoring `at`.

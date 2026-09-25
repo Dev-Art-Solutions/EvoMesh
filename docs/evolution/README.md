@@ -4,6 +4,7 @@ One entry per generation the Environment Evolver produced: what it
 changed, the reason it gave, and how the change was checked. Written
 by the mesh itself, into the same commit as the code.
 
+- [Generation 1638](001638.md) — The method's public signature (`at:`) and the `WorldFact.expires_at` field promise time-aware reads, but the implementation ignores `at` and only applies expiry against the current time — so callers passing a historical timestamp get the wrong (current) fact with no signal that the lookup is approximate.
 - [Generation 1617](001617.md) — Implemented named month and day-of-week support in `_parse_field` by mapping `JAN..DEC`/`A..C` and `SUN..SAT`/`WED..THU` to their integer codes (including within `-` ranges and after `/` steps), so `0 9 * * MON`, `0 0 1 JAN *`, and `0 9 * * MON-FRI` parse; added corresponding tests.
 - [Generation 1616](001616.md) — Confirmed. No existing test or code handles named fields, and the current behavior silently rejects valid input. Writing the item.
 - [Generation 1615](001615.md) — The current code in `src/evomesh/environment.py` (lines 1503-1514) is already in the optimized state:
