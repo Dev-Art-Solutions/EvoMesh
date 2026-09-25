@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,16 @@ class ToolParameter(BaseModel):
     name: str
     description: str = ""
     required: bool = True
+    type: str = "str"
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        if value in ("str", "int", "float", "bool", "list", "dict", "bytes"):
+            return value
+        raise TypeError(
+            f"'{cls.__name__}' 'type' is not a recognized Python type: {value!r}"
+        )
 
 
 class ToolDefinition(BaseModel):
