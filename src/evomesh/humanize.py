@@ -52,14 +52,20 @@ def humanize_duration(seconds: float) -> str:
     seconds = max(0, _safe_float(seconds))
     if seconds < 1:
         return f"{seconds * 1000:.0f} ms"
-    if seconds < _DAYS * _HOURS * _MINUTES * _WEEKS:
-        return f"{seconds // (_DAYS * _HOURS)} days"
+    # Seconds per unit, largest first. Found 2026-09-25: every divisor here
+    # was one unit too small (a "week" of 86400 s, a "day" of 1440 s), and a
+    # sub-week branch divided by 1440 -- so 238 s rendered as "0.0 days" and
+    # two weeks as "14w".
+    minute = _MINUTES
+    hour = _HOURS * minute
+    day = _DAYS * hour
+    week = _WEEKS * day
     parts = []
     remaining = int(seconds)
-    weeks, remaining = divmod(remaining, _DAYS * _HOURS * _MINUTES)
-    days, remaining = divmod(remaining, _DAYS * _HOURS)
-    hours, remaining = divmod(remaining, _HOURS)
-    minutes, secs = divmod(remaining, _MINUTES)
+    weeks, remaining = divmod(remaining, week)
+    days, remaining = divmod(remaining, day)
+    hours, remaining = divmod(remaining, hour)
+    minutes, secs = divmod(remaining, minute)
     if weeks:
         parts.append(f"{weeks}w")
     if days:
