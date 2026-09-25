@@ -56,7 +56,11 @@ truncation state. Memory and working notes are selected by task/goal terms with
 only a small recent fallback; inbox history is included only for chat and
 unstructured-input operations. The 4k/8k regression scenarios deliberately
 use oversized irrelevant context and prove required sections remain intact.
-`/status` exposes aggregate call telemetry.
+`/status` exposes aggregate call telemetry, including the token counts the model
+server reported (Ollama, OpenAI-compatible and Anthropic report them; a server
+that does not leaves them unknown, never estimated). Beliefs are the state:
+memory and working notes are labelled as projections, and a projected line
+naming a belief's key or repeating a belief is left out of the prompt.
 
 ## Memory, events and the blackboard
 
@@ -126,6 +130,10 @@ Every opened generation is an improvement: the evolver's own fallbacks
 (`backlog_exhausted`, `codebase_analysis`, `human_request`), under the same
 budget and verification.
 
+An improvement with several open steps is a DAG of work items, one per step,
+each depending on the one before; a step done by hand is cancelled rather than
+worked again, and simple work stays a single work item.
+
 `/improvements` shows the backlog; `depend <id> <on-id>` builds the dependency
 graph (cycles refused) and `epic <id> <name>` groups improvements into epics.
 
@@ -138,6 +146,9 @@ runs it as a quality gate. Highlights of the committed run: known work 0 model
 calls; one standing goal over 8 passes needs 3 planning calls instead of 8;
 delegation routes with 0 model calls; 200 KB of memory stays inside a 6000-,
 12000- and 24000-character prompt budget (4k/8k/16k context).
+`--live <model>` adds rows run against a real local model with the server's own
+token counts (committed run on ornith-1.5:35b: one novel goal done in 4 calls,
+2057 input / 2103 output tokens).
 
 ## Verification commands
 

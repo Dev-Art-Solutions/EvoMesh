@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -161,6 +162,25 @@ def describe(exc: Exception) -> str:
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int
+    output_tokens: int
+
+
+# The token counts the server reported for the call just made in this task.
+# A context variable rather than a return value, so every provider keeps its
+# plain str/ChatTurn API: the caller clears it, awaits the provider in the
+# same task, and reads what the provider left there (None when the server did
+# not say).
+LAST_USAGE: ContextVar[TokenUsage | None] = ContextVar("evomesh_last_usage", default=None)
+
+
+def _record_usage(input_tokens: object, output_tokens: object) -> None:
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        LAST_USAGE.set(TokenUsage(input_tokens, output_tokens))
+
+
 class ModelProvider(Protocol):
     async def generate(
         self,
@@ -261,7 +281,9 @@ class OllamaProvider:
                     client, f"{self.base_url}/api/generate", json=body
                 )
                 response.raise_for_status()
-                return str(response.json()["response"])
+                data = response.json()
+                _record_usage(data.get("prompt_eval_count"), data.get("eval_count"))
+                return str(data["response"])
             except (httpx.HTTPError, KeyError) as exc:
                 raise ModelUnavailableError(describe(exc)) from exc
 
@@ -300,7 +322,9 @@ class OllamaProvider:
             try:
                 response = await _post_with_retry(client, f"{self.base_url}/api/chat", json=body)
                 response.raise_for_status()
-                answer = response.json()["message"]
+                data = response.json()
+                _record_usage(data.get("prompt_eval_count"), data.get("eval_count"))
+                answer = data["message"]
             except httpx.HTTPStatusError as exc:
                 if tools and _tools_are_unsupported(exc):
                     raise ToolsUnsupportedError(describe(exc)) from exc
@@ -383,7 +407,10 @@ class OpenAICompatibleProvider:
                     json={"model": model or self.model, "messages": messages},
                 )
                 response.raise_for_status()
-                return str(response.json()["choices"][0]["message"]["content"])
+                data = response.json()
+                usage = data.get("usage") or {}
+                _record_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+                return str(data["choices"][0]["message"]["content"])
             except (httpx.HTTPError, KeyError, IndexError) as exc:
                 raise ModelUnavailableError(describe(exc)) from exc
 
@@ -437,7 +464,10 @@ class OpenAICompatibleProvider:
                     client, f"{self.base_url}/chat/completions", headers=self._headers, json=body
                 )
                 response.raise_for_status()
-                answer = response.json()["choices"][0]["message"]
+                data = response.json()
+                usage = data.get("usage") or {}
+                _record_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+                answer = data["choices"][0]["message"]
             except httpx.HTTPStatusError as exc:
                 if tools and _tools_are_unsupported(exc):
                     raise ToolsUnsupportedError(describe(exc)) from exc
@@ -608,6 +638,8 @@ class AnthropicProvider:
                 )
                 response.raise_for_status()
                 payload = response.json()
+                usage = payload.get("usage") or {}
+                _record_usage(usage.get("input_tokens"), usage.get("output_tokens"))
             except httpx.HTTPStatusError as exc:
                 if tools and _tools_are_unsupported(exc):
                     raise ToolsUnsupportedError(describe(exc)) from exc

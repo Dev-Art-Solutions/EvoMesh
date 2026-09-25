@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from benchmarks.cognitive_runtime.scenarios import ScenarioResult, run_all
+from benchmarks.cognitive_runtime.scenarios import ScenarioResult, live_sample, run_all
 
 DEFAULT_REPORT = Path("docs/architecture/cognitive-runtime-benchmark.md")
 
@@ -21,15 +22,26 @@ def render(results: list[ScenarioResult]) -> str:
         "real runtime against a scripted local provider; the counts are the runtime's own",
         "model calls from `CognitiveModelService` telemetry, not estimates.",
         "",
-        "| Scenario | Success | LLM calls | Planning | Input chars | Largest prompt | Measures |",
-        "|---|---|---:|---:|---:|---:|---|",
+        "Token columns are what the model server reported; `n/a` for the scripted",
+        "provider, which reports none. `live-` rows (`--live <model>`) run against a",
+        "real local model: they measure real latency and tokens, vary between runs",
+        "(a model may answer a step as blocked), and inform rather than gate.",
+        "",
+        "| Scenario | Success | LLM calls | Planning | Input chars | Largest prompt "
+        "| Tokens in/out | Measures |",
+        "|---|---|---:|---:|---:|---:|---:|---|",
     ]
     for result in results:
         measures = "; ".join(f"{key}={value}" for key, value in result.measures.items())
+        tokens = (
+            f"{result.input_tokens}/{result.output_tokens}"
+            if result.input_tokens is not None
+            else "n/a"
+        )
         lines.append(
             f"| {result.key}. {result.title} | {'yes' if result.success else '**no**'} | "
             f"{result.llm_calls} | {result.planning_calls} | {result.input_chars} | "
-            f"{result.max_prompt_chars} | {measures} |"
+            f"{result.max_prompt_chars} | {tokens} | {measures} |"
         )
     lines += ["", "## Raw results", "", "```json"]
     lines.append(json.dumps([asdict(result) for result in results], indent=2, default=str))
@@ -41,11 +53,19 @@ def main(argv: list[str]) -> int:
     report = Path(argv[0]) if argv and not argv[0].startswith("--") else DEFAULT_REPORT
     root = Path(argv[argv.index("--root") + 1]) if "--root" in argv else None
     results = asyncio.run(run_all(root))
+    if "--live" in argv:
+        # e.g. --live ornith-1.5:35b [--ollama http://127.0.0.1:11434]
+        model = argv[argv.index("--live") + 1]
+        url = argv[argv.index("--ollama") + 1] if "--ollama" in argv else "http://127.0.0.1:11434"
+        scratch = (root / "live") if root else Path(tempfile.mkdtemp(prefix="evomesh-live-"))
+        results += asyncio.run(live_sample(url, model, scratch))
     report.write_text(render(results), encoding="utf-8")
     for result in results:
         status = "ok  " if result.success else "FAIL"
         print(f"{status} {result.key:6} calls={result.llm_calls:3} {result.title}")
-    return 0 if all(result.success for result in results) else 1
+    # Live rows measure a real model's behaviour; they inform, they do not gate.
+    gated = [result for result in results if not result.key.startswith("live-")]
+    return 0 if all(result.success for result in gated) else 1
 
 
 if __name__ == "__main__":

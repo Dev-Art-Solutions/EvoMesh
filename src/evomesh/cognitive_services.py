@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from evomesh.contracts import now_utc
 from evomesh.memory import clip
-from evomesh.models import ChatMessage, ChatTurn, ModelProvider
+from evomesh.models import LAST_USAGE, ChatMessage, ChatTurn, ModelProvider
 
 
 class CognitiveServiceType(StrEnum):
@@ -71,6 +71,10 @@ class ModelCallRecord(BaseModel):
     task_id: str = ""
     input_chars: int
     output_chars: int = 0
+    # What the server itself counted, when it said (Ollama, OpenAI-compatible,
+    # Anthropic all do); None when it did not.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
     duration_seconds: float
     status: ModelCallStatus
     error: str = ""
@@ -101,6 +105,11 @@ class CognitiveMetrics:
             "failures": failures,
             "input_chars": sum(call.input_chars for call in self._records),
             "output_chars": sum(call.output_chars for call in self._records),
+            "input_tokens": sum(call.input_tokens or 0 for call in self._records),
+            "output_tokens": sum(call.output_tokens or 0 for call in self._records),
+            "calls_with_token_counts": sum(
+                call.input_tokens is not None for call in self._records
+            ),
             "duration_seconds": sum(call.duration_seconds for call in self._records),
             "by_service": dict(sorted(services.items())),
             "by_reason": dict(sorted(reasons.items())),
@@ -169,12 +178,24 @@ class TaskPacket:
             sections.append(ContextSection("world", "WORLD", self.world, 8, False, 0.06))
         if self.memory:
             sections.append(
-                ContextSection("memory", "RELEVANT MEMORY", self.memory, 9, False, 0.10)
+                ContextSection(
+                    "memory",
+                    "RELEVANT MEMORY (older notes; BELIEFS win where they differ)",
+                    self.memory,
+                    9,
+                    False,
+                    0.10,
+                )
             )
         if self.notes:
             sections.append(
                 ContextSection(
-                    "notes", "RELEVANT WORKING NOTES", self.notes, 7, False, 0.08
+                    "notes",
+                    "RELEVANT WORKING NOTES (projection; BELIEFS win where they differ)",
+                    self.notes,
+                    7,
+                    False,
+                    0.08,
                 )
             )
         if self.inbox:
@@ -334,6 +355,7 @@ class CognitiveModelService:
     ) -> str:
         started = time.monotonic()
         input_chars = len(prompt) + len(system) + len(json.dumps(format or {}))
+        LAST_USAGE.set(None)
         try:
             output = await provider.generate(
                 prompt, system=system, model=model, num_ctx=num_ctx, format=format
@@ -391,6 +413,7 @@ class CognitiveModelService:
             + len(system)
             + len(json.dumps(tools or []))
         )
+        LAST_USAGE.set(None)
         try:
             output = await provider.chat(
                 list(messages),
@@ -450,8 +473,11 @@ class CognitiveModelService:
         status: ModelCallStatus,
         error: str = "",
     ) -> None:
+        usage = LAST_USAGE.get() if status is ModelCallStatus.SUCCEEDED else None
         self.metrics.record(
             ModelCallRecord(
+                input_tokens=usage.input_tokens if usage else None,
+                output_tokens=usage.output_tokens if usage else None,
                 service=service,
                 reason=reason,
                 provider=provider,

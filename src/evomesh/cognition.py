@@ -300,6 +300,11 @@ class CycleContext:
             CognitiveServiceType.CHAT_RESPONSE,
             CognitiveServiceType.INTERPRET_UNSTRUCTURED_INPUT,
         }
+        # B-020: memory.md/context.md are projections; structured beliefs
+        # are the state. A projected line naming a belief's key, or repeating
+        # a belief, is superseded by that belief and left out.
+        memory = self.without_superseded(memory)
+        notes = self.without_superseded(notes)
         packet = TaskPacket(
             role=self.definition.name,
             operation=service,
@@ -319,6 +324,22 @@ class CycleContext:
         assembly = ContextAssembler(self.budget.prompt_chars).assemble_with_provenance(packet)
         self.last_context_provenance = assembly.provenance
         return assembly.text
+
+    def without_superseded(self, text: str) -> str:
+        """``text`` without the lines a current belief supersedes."""
+        beliefs = self.definition.mind.beliefs
+        if not text or not beliefs:
+            return text
+        keys = [item.key.lower() for item in beliefs if "." in item.key]
+        statements = {" ".join(item.statement.lower().split()) for item in beliefs}
+        kept = []
+        for line in text.splitlines():
+            lowered = line.lower()
+            body = " ".join(lowered.lstrip("-* ").split())
+            if any(key in lowered for key in keys) or body in statements:
+                continue
+            kept.append(line)
+        return "\n".join(kept)
 
     @staticmethod
     def select_relevant_text(

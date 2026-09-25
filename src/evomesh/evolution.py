@@ -2846,6 +2846,10 @@ def backlog_candidate(item: Improvement) -> Candidate:
         factors=PriorityFactors(
             impact=2.0, strategic_value=2.0, estimated_effort=1.0 if item.steps else 1.5
         ),
+        # More than one step is more than one piece of work: a stage DAG.
+        stages=tuple(f"step:{step.number}" for step in open_steps)
+        if len(item.steps) > 1
+        else (),
     )
 
 

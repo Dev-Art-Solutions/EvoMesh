@@ -930,6 +930,9 @@ class EvolverBehavior(BDIBehavior):
                 objective=objective,
                 generation=generation.number,
                 route=self._route(context),
+                stage=f"step:{substantive['pick_step']}"
+                if substantive.get("pick_step")
+                else None,
             )
             if work is not None:
                 substantive["improvement_id"] = tracked.id

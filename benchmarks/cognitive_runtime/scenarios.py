@@ -72,6 +72,10 @@ class ScenarioResult:
     output_chars: int
     max_prompt_chars: int
     duration_seconds: float
+    # Server-reported tokens; None when the provider did not report them
+    # (the scripted provider never does, a real Ollama/OpenAI/Anthropic does).
+    input_tokens: int | None = None
+    output_tokens: int | None = None
     by_reason: dict[str, int] = field(default_factory=dict)
     measures: dict[str, object] = field(default_factory=dict)
 
@@ -114,12 +118,59 @@ def _summarize(
         output_chars=sum(record.output_chars for record in records),
         max_prompt_chars=max((record.input_chars for record in records), default=0),
         duration_seconds=round(time.perf_counter() - started, 3),
+        input_tokens=sum(record.input_tokens or 0 for record in records)
+        if any(record.input_tokens is not None for record in records)
+        else None,
+        output_tokens=sum(record.output_tokens or 0 for record in records)
+        if any(record.output_tokens is not None for record in records)
+        else None,
         by_reason=dict(sorted(reasons.items())),
-        measures=dict(measures),
+        measures={
+            **measures,
+            "failed_calls": sum(record.status.value == "failed" for record in records),
+        },
     )
 
 
-async def _environment(root: Path, provider: MockProvider, prompt_chars: int = 6000) -> Environment:
+class _Recording:
+    """Wraps any provider and keeps the prompts it was sent."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.calls: list[dict[str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def generate(self, prompt: str, **kwargs: Any) -> str:
+        self.calls.append({"prompt": prompt})
+        return await self.inner.generate(prompt, **kwargs)
+
+
+async def live_sample(base_url: str, model: str, root: Path) -> list[ScenarioResult]:
+    """B and G-4k against a real local model: real latency, real tokens."""
+    from evomesh.models import OllamaProvider
+
+    def provider() -> Any:
+        return OllamaProvider(base_url, model, timeout_seconds=600)
+
+    # A goal a real model can finish from what it knows: there are no notes
+    # to summarize here, and a real model says so ("blocked") -- correctly.
+    results = [
+        await novel_task(
+            root / "live-B", provider(), model, "Write two sentences describing what EvoMesh is"
+        )
+    ]
+    results.append(
+        await oversized_memory(root / "live-G", 6000, "4k", _Recording(provider()), model)
+    )
+    for result in results:
+        result.key = f"live-{result.key}"
+        result.title = f"{result.title} [{model}]"
+    return results
+
+
+async def _environment(root: Path, provider: Any, prompt_chars: int = 6000) -> Environment:
     environment = Environment(_settings(root, prompt_chars), {"ollama": provider})
     await environment.start()
     return environment
@@ -159,13 +210,18 @@ async def known_task(root: Path) -> ScenarioResult:
 # -- B. novel task ------------------------------------------------------------
 
 
-async def novel_task(root: Path) -> ScenarioResult:
+async def novel_task(
+    root: Path,
+    provider: Any = None,
+    model: str = "",
+    goal_text: str = "Summarize the notes",
+) -> ScenarioResult:
     """A goal nobody has a plan for: one planning call, then execution."""
     started = time.perf_counter()
-    provider = ScriptedProvider()
+    provider = provider or ScriptedProvider()
     environment = await _environment(root, provider)
-    agent = await _agent(environment, "Worker")
-    goal = agent.mind.add_goal("Summarize the notes")
+    agent = await _agent(environment, "Worker", **({"model_name": model} if model else {}))
+    goal = agent.mind.add_goal(goal_text)
     cycles = 0
     while goal.status is not GoalStatus.DONE and cycles < 12:
         await environment.cycle_agent("Worker")
@@ -180,6 +236,8 @@ async def novel_task(root: Path) -> ScenarioResult:
         started,
         success=goal.status is GoalStatus.DONE and planning <= 2,
         cycles=cycles,
+        final_goal_status=goal.status.value,
+        why=goal.blocked_reason or goal.last_error or "",
     )
 
 
@@ -328,12 +386,14 @@ async def repeated_failure(root: Path) -> ScenarioResult:
 # -- G. oversized memory ----------------------------------------------------------------------
 
 
-async def oversized_memory(root: Path, prompt_chars: int, label: str) -> ScenarioResult:
+async def oversized_memory(
+    root: Path, prompt_chars: int, label: str, provider: Any = None, model: str = ""
+) -> ScenarioResult:
     """200 KB of memory and context: every prompt stays within its budget."""
     started = time.perf_counter()
-    provider = ScriptedProvider()
+    provider = provider or _Recording(ScriptedProvider())
     environment = await _environment(root, provider, prompt_chars=prompt_chars)
-    agent = await _agent(environment, "Hoarder")
+    agent = await _agent(environment, "Hoarder", **({"model_name": model} if model else {}))
     memory = environment.memory_for(agent)
     await memory.ensure()
     filler = "".join(

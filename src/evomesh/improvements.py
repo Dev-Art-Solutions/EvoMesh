@@ -154,6 +154,10 @@ class Improvement(BaseModel):
     source_ref: str = ""
     # The epic this improvement belongs to (Epic -> Improvement -> WorkItem).
     epic: str = ""
+    # Its open stages, in order, when it is too big for one work item (a
+    # backlog item with several steps): each becomes a WorkItem that depends
+    # on the one before it. Empty for simple work, which stays one item.
+    work_plan: list[str] = Field(default_factory=list)
     occurrences: int = 1
     last_seen_at: datetime = Field(default_factory=now_utc)
     verification_started_at: datetime | None = None
@@ -364,10 +368,7 @@ class ImprovementCoordinator:
             for item_id in improvement.work_item_ids
             if item_id in self.backlog.work_items
         ]
-        if any(
-            item.status in {WorkStatus.FAILED, WorkStatus.NEEDS_HUMAN}
-            for item in work
-        ):
+        if any(item.status in {WorkStatus.FAILED, WorkStatus.NEEDS_HUMAN} for item in work):
             improvement.status = ImprovementStatus.NEEDS_HUMAN
             improvement.rejection_reason = "a work item exhausted its attempt budget"
             improvement.updated_at = now_utc()
@@ -431,6 +432,8 @@ class Candidate:
     factors: PriorityFactors
     # How many opens after deployment the evidence must stay gone.
     observations: int = 1
+    # Its open stages in order, when it is more than one piece of work.
+    stages: tuple[str, ...] = ()
 
     def improvement(self) -> Improvement:
         return Improvement(
@@ -445,6 +448,7 @@ class Candidate:
             source=self.kind,
             created_by="improvement_scout",
             source_ref=self.ref,
+            work_plan=list(self.stages),
             success_criteria=[f"The {self.kind.replace('_', ' ')} evidence is gone after deploy."],
             verification=VerificationPlan(
                 metric="evidence_present",
@@ -592,6 +596,7 @@ class ImprovementControl:
                 self.triage.triage(item)
         for candidate in candidates:
             item = self.backlog.add(candidate.improvement())
+            self._replan(item, candidate.stages)
             if item.status is ImprovementStatus.PROPOSED:
                 self.triage.triage(item)
             elif item.status is ImprovementStatus.VERIFIED:
@@ -664,6 +669,69 @@ class ImprovementControl:
         best-scoring ready one whose dependencies are verified."""
         return self.active() or self.coordinator.activate_next()
 
+    def _replan(self, improvement: Improvement, stages: tuple[str, ...]) -> None:
+        """Keep the stage plan equal to the evidence: a stage that is no
+        longer open (a human did it, or it landed) is not worked again."""
+        if not stages and not improvement.work_plan:
+            return
+        improvement.work_plan = list(stages)
+        for work in self._work_of(improvement):
+            stage = work.inputs.get("stage")
+            if (
+                stage is not None
+                and stage not in stages
+                and work.status in {WorkStatus.PENDING, WorkStatus.BLOCKED}
+            ):
+                work.status = WorkStatus.CANCELLED
+                work.updated_at = now_utc()
+
+    def _work_of(self, improvement: Improvement) -> list[WorkItem]:
+        return [
+            self.backlog.work_items[item_id]
+            for item_id in improvement.work_item_ids
+            if item_id in self.backlog.work_items
+        ]
+
+    def _plan_dag(self, improvement: Improvement) -> None:
+        """One WorkItem per planned stage not yet represented, each
+        depending on the one before it."""
+        existing = {
+            str(work.inputs.get("stage")): work
+            for work in self._work_of(improvement)
+            if work.inputs.get("stage") is not None and work.status is not WorkStatus.CANCELLED
+        }
+        previous: WorkItem | None = None
+        for stage in improvement.work_plan:
+            work = existing.get(stage)
+            if work is None:
+                work = WorkItem(
+                    parent_goal_id=improvement.id,
+                    improvement_id=improvement.id,
+                    type="implementation",
+                    objective=f"{improvement.title} [{stage}]",
+                    required_capabilities=[CODE_EDIT_CAPABILITY],
+                    success_conditions=list(improvement.success_criteria),
+                    dependencies=[previous.id] if previous is not None else [],
+                    inputs={"stage": stage},
+                )
+                self.backlog.work_items[work.id] = work
+                improvement.work_item_ids.append(work.id)
+            previous = work
+
+    def ready_work(self, improvement: Improvement) -> WorkItem | None:
+        """The first planned stage whose dependencies are done."""
+        done = {WorkStatus.COMPLETED, WorkStatus.CANCELLED}
+        for work in self._work_of(improvement):
+            if work.status is not WorkStatus.PENDING:
+                continue
+            if all(
+                dependency in self.backlog.work_items
+                and self.backlog.work_items[dependency].status in done
+                for dependency in work.dependencies
+            ):
+                return work
+        return None
+
     async def begin(
         self,
         improvement: Improvement,
@@ -671,18 +739,35 @@ class ImprovementControl:
         objective: str,
         generation: int,
         route: Callable[[WorkItem], str | None],
+        stage: str | None = None,
     ) -> WorkItem | None:
         """A bounded work item for one generation, awarded by ``route``
-        (capability routing). A retry reuses the item and its budget."""
-        work = next(
-            (
-                self.backlog.work_items[item_id]
-                for item_id in reversed(improvement.work_item_ids)
-                if item_id in self.backlog.work_items
-                and self.backlog.work_items[item_id].status is WorkStatus.PENDING
-            ),
-            None,
-        )
+        (capability routing). A retry reuses the item and its budget. An
+        improvement with a stage plan works the DAG: ``stage`` names the one
+        this generation does, else the first whose dependencies are done."""
+        work: WorkItem | None = None
+        if improvement.work_plan:
+            self._plan_dag(improvement)
+            work = next(
+                (
+                    item
+                    for item in self._work_of(improvement)
+                    if stage is not None
+                    and item.inputs.get("stage") == stage
+                    and item.status is WorkStatus.PENDING
+                ),
+                None,
+            ) or self.ready_work(improvement)
+        else:
+            work = next(
+                (
+                    self.backlog.work_items[item_id]
+                    for item_id in reversed(improvement.work_item_ids)
+                    if item_id in self.backlog.work_items
+                    and self.backlog.work_items[item_id].status is WorkStatus.PENDING
+                ),
+                None,
+            )
         if work is None:
             work = self.coordinator.create_work_item(
                 improvement, objective, capabilities=[CODE_EDIT_CAPABILITY]

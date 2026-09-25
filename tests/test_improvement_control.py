@@ -4,6 +4,7 @@ evidence -> backlog -> prioritize -> delegate -> implement -> review/validate
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -299,3 +300,44 @@ async def test_the_improvement_lifecycle_survives_a_restart(tmp_path: Path) -> N
     assert item.status is ImprovementStatus.VERIFIED, (item.status, item.rejection_reason)
     work = restored.work_items[item.work_item_ids[0]]
     assert work.status is WorkStatus.COMPLETED
+
+
+async def test_a_multi_step_improvement_is_a_dependency_dag_of_work_items() -> None:
+    plane, _ = control()
+    staged = Candidate(
+        ref="item:big change",
+        kind=EVIDENCE_HUMAN_BACKLOG,
+        title="big change",
+        problem="big change",
+        component="evomesh",
+        evidence={},
+        factors=PriorityFactors(),
+        stages=("step:1", "step:2", "step:3"),
+    )
+    await plane.sync([staged], {staged.ref})
+    item = plane.choose()
+    assert item is not None and item.work_plan == ["step:1", "step:2", "step:3"]
+
+    first = await plane.begin(item, objective="do step 1", generation=1, route=lambda _: "evolver")
+    assert first is not None and first.inputs["stage"] == "step:1"
+    steps = {work.inputs["stage"]: work for work in plane.backlog.work_items.values()}
+    assert steps["step:2"].dependencies == [first.id]
+    assert steps["step:3"].dependencies == [steps["step:2"].id]
+    assert plane.ready_work(item) is None, "step 2 waits for step 1"
+
+    first.status = WorkStatus.COMPLETED
+    assert plane.ready_work(item) is steps["step:2"]
+
+    # A human did step 2 by hand: the evidence no longer lists it.
+    await plane.sync([dataclasses.replace(staged, stages=("step:3",))], {staged.ref})
+    assert steps["step:2"].status is WorkStatus.CANCELLED
+    assert plane.ready_work(item) is steps["step:3"]
+
+
+async def test_simple_work_stays_one_work_item() -> None:
+    plane, _ = control()
+    await plane.sync([candidate("item:small")], {"item:small"})
+    item = plane.choose()
+    assert item is not None and not item.work_plan
+    await plane.begin(item, objective="do it", generation=1, route=lambda _: "evolver")
+    assert len(plane.backlog.work_items) == 1
