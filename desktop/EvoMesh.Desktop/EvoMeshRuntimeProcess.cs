@@ -405,8 +405,14 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
 
         Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
         Log($"Starting with: {uvExecutable}");
-        _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        _process.Exited += (_, _) => OnProcessExited(_process?.ExitCode ?? -1);
+        // The handler must see THIS process, not whatever _process holds when
+        // it fires: found live 2026-09-25, an Exited raised after a restart had
+        // already replaced _process read ExitCode of the new, running process,
+        // threw outside OnProcessExited's own try, and took the whole Control
+        // Center down -- leaving the mesh with nobody to restart it.
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        _process = process;
+        process.Exited += (_, _) => OnProcessExited(process, ExitCodeOf(process));
 
         try
         {
@@ -625,8 +631,26 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     /// point of applying one -- so it is restarted here rather than reported as a
     /// crash and left to a human.
     /// </summary>
-    private void OnProcessExited(int exitCode)
+    private static int ExitCodeOf(Process process)
     {
+        try
+        {
+            return process.ExitCode;
+        }
+        catch (InvalidOperationException)
+        {
+            return -1;
+        }
+    }
+
+    private void OnProcessExited(Process process, int exitCode)
+    {
+        if (!ReferenceEquals(process, _process))
+        {
+            // A process this supervisor already replaced: its exit is old news.
+            Log($"ignoring the exit ({exitCode}) of a runtime process already replaced");
+            return;
+        }
         // This runs on a raw ThreadPool callback, not inside a Task -- an
         // exception escaping it (e.g. a UI subscriber throwing because its
         // window was already closed) terminates the whole Control Center
