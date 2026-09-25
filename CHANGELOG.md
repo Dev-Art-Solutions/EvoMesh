@@ -2,6 +2,68 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [0.3.0-alpha.1] - 2026-09-25
+
+The cognitive runtime. Deterministic reasoning, commitments, reusable
+procedures and cooperation now handle what the mesh already knows, and a small
+local model is called for what it does not. Self-improvement starts from
+evidence and ends with a measurement, not a green test run.
+
+### Added
+
+- **Structured goals.** Dependencies (a goal waits, blocked, until they are
+  done), explicit success and failure predicates, a transparent utility score in
+  which priority stays dominant, retry budgets with backoff, and `stale_goals` in
+  `/status`. A mind keeps its newest 30 finished goals.
+- **A rule engine in every cycle.** Bounded forward chaining after belief
+  revision, fed by the mesh events addressed to the agent and a `belief_changed`
+  event per revised belief. Rules assert beliefs, propose goals, emit events and
+  request actions (`announce`, `wake`). Per agent: a template's `rules:` or
+  `/rules <agent> [add '<json>'|remove|clear]`. The Guardian's degradation
+  desire is now a rule.
+- **Learned procedures.** Every finished model-made plan is an execution trace
+  in the agent's persisted mind; three identical clean successes make a
+  procedure, and the next time the goal comes up the planning call is not made.
+  `/procedures <agent> [approve <pattern>|forget <name>]`.
+- **Selective inference.** Every model call carries its cognitive service and
+  reason, sizes and outcome; `/status` shows the totals and how many goals
+  finished without a model call.
+- **Cooperation.** Capabilities on every agent (templates: `capabilities:`, or
+  derived from their tools); structured work items and ACL performatives read
+  without a model; Contract Net routing; an accepted delegation becomes a goal
+  ahead of standing work and comes back as `result`/`failure`. A stalled agent's
+  diagnosis is delegated to the Guardian, which answers from runtime state.
+- **A shared blackboard.** Revised beliefs become facts with their source, files
+  a harness job writes become artifacts, open work items are listed; bounded,
+  persisted, and part of every agent's world view.
+- **The improvement backlog steers evolution.** Evidence (logged tracebacks, a
+  red suite, `improvements.md` items, recurring runtime failures, `PROPOSAL:`
+  lines a job reports instead of widening its change) becomes ranked
+  improvements; each generation is a budgeted work item; review and validation
+  are recorded separately; an exhausted budget is `needs_human`, announced once;
+  a landed improvement is `verifying` until its evidence stays gone, then
+  `verified` or `ineffective`. `/improvements [release|depend|epic]`.
+- **Control Center:** Improvements, and per agent Goals / Procedures / Rules.
+- Since 0.2.0-alpha.6 (3–24 September): OpenAI, Claude and OpenRouter
+  providers; `document_read`/`document_write`; agents writing their own skills
+  behind a content scanner and optional review; file attachments in chat,
+  Control Center and Telegram; `ask_agent`; a Chrome extension for the human's
+  signed-in tabs; the Coder and MT5 Coder templates and per-agent projects;
+  NewsAnalyzer; a priority harness lane for human questions; MCP client tools;
+  `api_key_ref` secrets; a baseline suite run before every objective; backlog
+  items as anchored work orders a small-context model can finish.
+
+### Fixed
+
+- A stall was re-signalled every cycle past its threshold, and each signal
+  delegated a new work item -- a new persisted goal on the helper per cycle.
+- Delegated goals starved forever behind an always-runnable standing goal.
+- A `/goal drop` during a minute-long model call was undone when the cycle
+  finished.
+- A model endpoint's HTTP error could become an improvement for the evolver.
+- Control Center crashed when a replaced runtime's exit arrived late, leaving
+  the mesh with nobody to restart it.
+
 ## [0.2.0-alpha.6] - 2026-09-02
 
 ### Fixed
