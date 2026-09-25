@@ -8,10 +8,8 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import Any
 
-from evomesh import cron
 from evomesh.bdi import ReflectiveBehavior
 from evomesh.cognition import AgentBehavior, CycleContext, CycleOutcome, strip_reasoning
 from evomesh.cognitive_services import (
@@ -26,7 +24,6 @@ from evomesh.contracts import (
     AgentStatus,
     Autonomy,
     Goal,
-    GoalStatus,
     MemoryEpisode,
     Message,
     now_utc,
@@ -500,8 +497,9 @@ class AgentRuntime:
         self.state.phase = outcome.phase
         self.state.last_error = outcome.error
         if goal is not None:
+            manager = GoalManager(self.definition.mind)
             if outcome.error:
-                GoalManager(self.definition.mind).record_failure(goal, outcome.error)
+                manager.record_failure(goal, outcome.error)
                 await self.events.publish(
                     Event(
                         EventType.TASK_FAILED,
@@ -512,12 +510,11 @@ class AgentRuntime:
                     )
                 )
             elif outcome.worked:
-                goal.status = GoalStatus.ACTIVE
+                manager.activate(goal)
                 goal.last_error = None
             progress = self._progress.observe(goal, outcome)
             if progress.stalled:
-                goal.status = GoalStatus.STALLED
-                goal.blocked_reason = progress.reason
+                manager.mark_stalled(goal, progress.reason)
                 await self.events.publish(
                     Event(
                         EventType.AGENT_STALLED,
@@ -536,19 +533,11 @@ class AgentRuntime:
                 # Intentions belong to the BDI reasoner; recording one here
                 # would drop the agent's commitment on every single cycle.
                 goal.note(outcome.step)
-            if outcome.goal_done and (goal.cron or goal.interval_seconds):
-                # Independent of whether this goal is recurring: a one-shot
-                # goal still only means "don't re-plan the instant this
-                # finishes" until this fires, and a recurring one is exactly
-                # what this exists for -- checked again on its own schedule,
-                # not on the agent's very next tick.
-                if goal.cron:
-                    goal.next_attempt_at = cron.next_after(goal.cron, now_utc())
-                elif goal.interval_seconds:
-                    goal.next_attempt_at = now_utc() + timedelta(seconds=goal.interval_seconds)
+            if outcome.goal_done and goal.recurring:
+                manager.complete(goal)
             if outcome.goal_done and not goal.recurring:
                 if worked_before:
-                    goal.status = GoalStatus.DONE
+                    manager.complete(goal)
                     self._progress.clear(goal.id)
                     intention = next(
                         (

@@ -52,7 +52,7 @@ from evomesh.contracts import (
     PlanStep,
 )
 from evomesh.events import Event, EventBus, EventType
-from evomesh.goal_manager import GoalEvaluationContext, GoalManager
+from evomesh.goal_manager import GoalEvaluationContext, GoalManager, PreemptionPolicy
 from evomesh.harness_queue import HarnessGateway
 from evomesh.memory import clip
 from evomesh.models import ModelUnavailableError
@@ -272,6 +272,8 @@ class BDIReasoner:
 
     max_steps: int = MAX_PLAN_STEPS
     learner: ProcedureLearner = field(default_factory=ProcedureLearner)
+    preemption: PreemptionPolicy = field(default_factory=PreemptionPolicy)
+    allow_legacy_plan_completion: bool = True
 
     async def cycle(self, behavior: BDIBehavior, context: CycleContext) -> CycleOutcome:
         mind = context.definition.mind
@@ -377,13 +379,14 @@ class BDIReasoner:
     # -- option generation ----------------------------------------------
 
     def _adopt_desires(self, mind: MindState, desires: Sequence[Desire]) -> None:
+        manager = GoalManager(mind)
         for desire in desires:
             if any(
                 goal.description == desire.description and goal.is_open
                 for goal in mind.goals
             ):
                 continue
-            mind.add_goal(
+            manager.create(
                 desire.description, priority=desire.priority, recurring=desire.recurring
             )
 
@@ -405,8 +408,11 @@ class BDIReasoner:
             return RECONSIDER_GOAL_CLOSED
         if not goal.is_open:
             return RECONSIDER_GOAL_CLOSED
-        best = mind.next_goal()
-        if best is not None and best.id != goal.id and best.priority < goal.priority:
+        manager = GoalManager(mind)
+        best = manager.next_goal()
+        if best is not None and manager.should_preempt(
+            goal, best, policy=self.preemption
+        ):
             return RECONSIDER_BETTER_GOAL
         touched = change.keys & frozenset(intention.context_keys)
         if touched:
@@ -534,8 +540,7 @@ class BDIReasoner:
             mind.record_plan_outcome(intention.plan, success=False)
             self._learn(context, mind, intention, succeeded=False)
             if goal is not None and not goal.recurring:
-                goal.status = GoalStatus.BLOCKED
-                goal.blocked_reason = result.impossible
+                GoalManager(mind).block(goal, result.impossible)
             return CycleOutcome(
                 summary=f"{position} is impossible: {result.impossible}",
                 step=step.description,
@@ -556,7 +561,17 @@ class BDIReasoner:
             )
 
         intention.advance(result.summary, failed=result.failed)
-        achieved = result.achieved or intention.exhausted
+        # Exhaustion is retained only as an explicit compatibility policy for
+        # legacy goals without predicates. Structured goals always require
+        # their success evidence, and deployments can disable the fallback.
+        legacy_plan_completion = (
+            self.allow_legacy_plan_completion
+            and intention.exhausted
+            and goal is not None
+            and not goal.success_conditions
+            and not goal.failure_conditions
+        )
+        achieved = result.achieved or legacy_plan_completion
         if achieved and goal is not None and goal.success_conditions:
             root = (
                 Path(context.definition.harness_root)

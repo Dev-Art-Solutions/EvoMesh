@@ -208,6 +208,23 @@ async def test_one_plan_step_is_executed_per_cycle(tmp_path: Path) -> None:
     await environment.stop()
 
 
+async def test_plan_exhaustion_can_be_disabled_as_completion_evidence(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedProvider(plan="1. inspect\n")
+    environment, agent = await worker(tmp_path, provider)
+    behavior = environment.runtimes[agent.id].behavior
+    assert isinstance(behavior, BDIBehavior)
+    behavior.reasoner.allow_legacy_plan_completion = False
+
+    outcome = await environment.cycle_agent("Worker")
+
+    assert not outcome.goal_done
+    assert agent.mind.intentions[-1].status is IntentionStatus.DROPPED
+    assert agent.mind.goals[0].status is not GoalStatus.DONE
+    await environment.stop()
+
+
 async def test_a_finished_plan_is_marked_achieved_and_a_new_one_is_adopted(
     tmp_path: Path,
 ) -> None:

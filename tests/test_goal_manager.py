@@ -20,6 +20,8 @@ from evomesh.goal_manager import (
     GoalEvaluationContext,
     GoalGraphError,
     GoalManager,
+    IllegalGoalTransition,
+    PreemptionPolicy,
 )
 
 
@@ -177,3 +179,82 @@ def test_deterministic_utility_policy_prefers_value_then_stable_age() -> None:
     assert GoalManager(mind).next_goal() is valuable
     valuable.status = GoalStatus.DONE
     assert GoalManager(mind).next_goal() is ordinary
+
+
+def test_preemption_uses_goal_manager_score_and_a_minimum_delta() -> None:
+    mind = MindState()
+    current = mind.add_goal("current", priority=5)
+    candidate = mind.add_goal("valuable", priority=5)
+    candidate.utility = GoalUtility(expected_value=20)
+    manager = GoalManager(mind)
+
+    assert not manager.should_preempt(
+        current, candidate, policy=PreemptionPolicy(minimum_score_delta=101)
+    )
+    assert manager.should_preempt(
+        current, candidate, policy=PreemptionPolicy(minimum_score_delta=99)
+    )
+
+
+def test_non_preemptible_goal_yields_only_to_an_explicit_override() -> None:
+    mind = MindState()
+    current = mind.add_goal("settle transaction", kind="transaction", priority=9)
+    candidate = mind.add_goal("ordinary interruption", priority=1)
+    manager = GoalManager(mind)
+    policy = PreemptionPolicy(non_preemptible_goal_kinds=frozenset({"transaction"}))
+
+    assert not manager.should_preempt(current, candidate, policy=policy)
+    candidate.parameters[policy.override_parameter] = True
+    assert manager.should_preempt(current, candidate, policy=policy)
+
+
+def test_deadline_override_preempts_below_the_normal_score_threshold() -> None:
+    mind = MindState()
+    current = mind.add_goal("current", priority=1)
+    candidate = mind.add_goal(
+        "deadline", priority=9, deadline=now_utc() + timedelta(seconds=30)
+    )
+
+    assert GoalManager(mind).should_preempt(
+        current,
+        candidate,
+        policy=PreemptionPolicy(
+            minimum_score_delta=10_000, deadline_override_seconds=60
+        ),
+    )
+
+
+def test_illegal_goal_transition_is_rejected() -> None:
+    mind = MindState()
+    goal = mind.add_goal("finished")
+    manager = GoalManager(mind)
+    manager.complete(goal)
+
+    with pytest.raises(IllegalGoalTransition, match="done -> active"):
+        manager.activate(goal)
+
+
+def test_failed_dependency_fails_dependant_instead_of_blocking_forever() -> None:
+    mind = MindState()
+    dependency = mind.add_goal("dependency")
+    dependant = mind.add_goal("dependant", dependency_goal_ids=[dependency.id])
+    manager = GoalManager(mind)
+    manager.record_failure(dependency, "terminal")
+    dependency.attempts = dependency.attempt_limit
+    manager.refresh()
+
+    assert dependency.status is GoalStatus.FAILED
+    assert dependant.status is GoalStatus.FAILED
+    assert dependant.blocked_reason == "dependency_failed"
+
+
+def test_human_override_can_complete_a_blocked_goal() -> None:
+    mind = MindState()
+    goal = mind.add_goal("blocked")
+    manager = GoalManager(mind)
+    manager.refresh()
+    manager.block(goal, "waiting")
+
+    manager.complete(goal, human_override=True)
+
+    assert goal.status is GoalStatus.DONE

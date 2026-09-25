@@ -21,13 +21,13 @@ from evomesh.contracts import (
     AgentDefinition,
     AgentStatus,
     FilesystemGrant,
-    GoalStatus,
     Message,
     TelegramSettings,
 )
 from evomesh.coordination import WorkStatus
 from evomesh.environment import Environment
 from evomesh.git import GitError, GitRepository
+from evomesh.goal_manager import GoalManager
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
@@ -796,7 +796,7 @@ class ConsoleChannel:
             # check that permanently gives up after max_attempts failures
             # defeats the reason it was given a schedule in the first place.
             # Drop it by hand with /goal drop if it should stop.
-            goal = definition.mind.add_goal(
+            goal = GoalManager(definition.mind).create(
                 parts[3],
                 priority=priority,
                 interval_seconds=interval,
@@ -818,8 +818,12 @@ class ConsoleChannel:
                 )
         elif action in {"done", "drop"}:
             goal = definition.mind.goal(parts[3])
-            goal.status = GoalStatus.DONE if action == "done" else GoalStatus.FAILED
-            goal.recurring = False
+            manager = GoalManager(definition.mind)
+            if action == "done":
+                goal.recurring = False
+                manager.complete(goal, human_override=True)
+            else:
+                manager.cancel(goal, "dropped by human")
             message = f"Goal {goal.id} marked {goal.status}."
         elif action == "notify":
             goal = definition.mind.goal(parts[3])

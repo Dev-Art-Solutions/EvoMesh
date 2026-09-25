@@ -77,6 +77,55 @@ class GoalGraphError(ValueError):
     pass
 
 
+class IllegalGoalTransition(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class PreemptionPolicy:
+    enabled: bool = True
+    minimum_score_delta: float = 50.0
+    non_preemptible_goal_kinds: frozenset[str] = frozenset()
+    deadline_override_seconds: float = 300.0
+    override_parameter: str = "preempt_override"
+
+
+LEGAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
+    GoalStatus.PENDING: frozenset(
+        {GoalStatus.RUNNABLE, GoalStatus.BLOCKED, GoalStatus.FAILED, GoalStatus.CANCELLED}
+    ),
+    GoalStatus.RUNNABLE: frozenset(
+        {
+            GoalStatus.ACTIVE,
+            GoalStatus.BLOCKED,
+            GoalStatus.STALLED,
+            GoalStatus.DONE,
+            GoalStatus.FAILED,
+            GoalStatus.CANCELLED,
+        }
+    ),
+    GoalStatus.ACTIVE: frozenset(
+        {
+            GoalStatus.RUNNABLE,
+            GoalStatus.BLOCKED,
+            GoalStatus.STALLED,
+            GoalStatus.DONE,
+            GoalStatus.FAILED,
+            GoalStatus.CANCELLED,
+        }
+    ),
+    GoalStatus.BLOCKED: frozenset(
+        {GoalStatus.RUNNABLE, GoalStatus.STALLED, GoalStatus.FAILED, GoalStatus.CANCELLED}
+    ),
+    GoalStatus.STALLED: frozenset(
+        {GoalStatus.RUNNABLE, GoalStatus.BLOCKED, GoalStatus.FAILED, GoalStatus.CANCELLED}
+    ),
+    GoalStatus.DONE: frozenset(),
+    GoalStatus.FAILED: frozenset(),
+    GoalStatus.CANCELLED: frozenset(),
+}
+
+
 class GoalManager:
     """Own lifecycle policy for the goals in one ``MindState``.
 
@@ -103,6 +152,70 @@ class GoalManager:
             raise
         self.refresh()
         return goal
+
+    def transition(
+        self,
+        goal: Goal,
+        status: GoalStatus,
+        *,
+        reason: str | None = None,
+        at: datetime | None = None,
+        human_override: bool = False,
+    ) -> bool:
+        """Apply one legal lifecycle transition and keep its metadata coherent."""
+        if goal.status is status:
+            if status in {GoalStatus.BLOCKED, GoalStatus.STALLED} and reason is not None:
+                goal.blocked_reason = reason
+                goal.updated_at = at or now_utc()
+            return False
+        if not human_override and status not in LEGAL_TRANSITIONS.get(
+            goal.status, frozenset()
+        ):
+            raise IllegalGoalTransition(
+                f"illegal goal transition {goal.status.value} -> {status.value} for {goal.id}"
+            )
+        moment = at or now_utc()
+        goal.status = status
+        goal.updated_at = moment
+        goal.blocked_reason = reason if status in {GoalStatus.BLOCKED, GoalStatus.STALLED} else None
+        if status is GoalStatus.DONE:
+            goal.progress = 1.0
+            goal.completed_at = moment
+        return True
+
+    def score(self, goal: Goal, *, at: datetime | None = None) -> float:
+        return self.scoring.score(goal, at=at or now_utc())
+
+    def should_preempt(
+        self,
+        current: Goal,
+        candidate: Goal,
+        *,
+        policy: PreemptionPolicy | None = None,
+        at: datetime | None = None,
+    ) -> bool:
+        policy = policy or PreemptionPolicy()
+        at = at or now_utc()
+        if current.id == candidate.id or not policy.enabled:
+            return False
+        if current.status in TERMINAL_GOAL_STATUSES | {
+            GoalStatus.BLOCKED,
+            GoalStatus.STALLED,
+        }:
+            return True
+        explicit_override = bool(candidate.parameters.get(policy.override_parameter))
+        emergency = candidate.kind in {"human_override", "emergency"}
+        deadline_override = (
+            candidate.deadline is not None
+            and (candidate.deadline - at).total_seconds() <= policy.deadline_override_seconds
+        )
+        if explicit_override or emergency or deadline_override:
+            return True
+        if current.kind in policy.non_preemptible_goal_kinds:
+            return False
+        return self.score(candidate, at=at) - self.score(current, at=at) >= max(
+            0.0, policy.minimum_score_delta
+        )
 
     def validate_graph(self) -> None:
         goals = {goal.id: goal for goal in self.mind.goals}
@@ -149,29 +262,59 @@ class GoalManager:
             if goal.status in TERMINAL_GOAL_STATUSES:
                 continue
             if goal.deadline is not None and at >= goal.deadline and not goal.recurring:
-                goal.status = GoalStatus.FAILED
+                self.transition(goal, GoalStatus.FAILED, at=at)
                 goal.blocked_reason = "deadline"
                 goal.last_error = "deadline passed before the goal completed"
                 goal.updated_at = at
                 continue
+            if goal.status is GoalStatus.STALLED:
+                continue
             due = goal.next_attempt_at is None or at >= goal.next_attempt_at
             attempts_left = goal.recurring or goal.attempts < goal.attempt_limit
-            dependencies_complete = self.dependencies_complete(goal)
+            dependencies: list[Goal] = []
+            missing_dependency = False
+            for dependency_id in goal.dependency_goal_ids:
+                try:
+                    dependencies.append(self.mind.goal(dependency_id))
+                except KeyError:
+                    missing_dependency = True
+            failed_dependency = next(
+                (
+                    dependency
+                    for dependency in dependencies
+                    if dependency.status in {GoalStatus.FAILED, GoalStatus.CANCELLED}
+                ),
+                None,
+            )
+            if failed_dependency is not None:
+                self.transition(goal, GoalStatus.FAILED, at=at)
+                goal.last_error = f"dependency {failed_dependency.id} did not complete"
+                goal.blocked_reason = "dependency_failed"
+                continue
+            if missing_dependency:
+                self.transition(
+                    goal, GoalStatus.BLOCKED, reason="missing_dependency", at=at
+                )
+                continue
+            dependencies_complete = all(
+                dependency.status is GoalStatus.DONE for dependency in dependencies
+            )
             if not dependencies_complete or not due or not attempts_left:
                 # A goal exhausted by failures is failed, while dependency and
                 # cadence waits are blocked and can later become runnable.
-                goal.status = (
+                status = (
                     GoalStatus.FAILED
                     if not attempts_left and not goal.recurring
                     else GoalStatus.BLOCKED
                 )
-                goal.blocked_reason = (
+                reason = (
                     "attempts"
                     if not attempts_left
                     else "dependencies"
                     if not dependencies_complete
                     else "schedule"
                 )
+                self.transition(goal, status, reason=reason, at=at)
             elif goal.status is GoalStatus.BLOCKED and goal.blocked_reason not in {
                 "dependencies",
                 "schedule",
@@ -179,8 +322,7 @@ class GoalManager:
             }:
                 continue
             elif goal.status is not GoalStatus.ACTIVE:
-                goal.status = GoalStatus.RUNNABLE
-                goal.blocked_reason = None
+                self.transition(goal, GoalStatus.RUNNABLE, at=at)
 
     def runnable_goals(self, *, at: datetime | None = None) -> list[Goal]:
         at = at or now_utc()
@@ -232,8 +374,7 @@ class GoalManager:
         if goal.failure_conditions and any(
             self.condition_met(condition, context) for condition in goal.failure_conditions
         ):
-            goal.status = GoalStatus.FAILED
-            goal.updated_at = now_utc()
+            self.transition(goal, GoalStatus.FAILED)
             return goal.status
         if goal.success_conditions and all(
             self.condition_met(condition, context) for condition in goal.success_conditions
@@ -242,19 +383,31 @@ class GoalManager:
             return goal.status
         return None
 
-    def complete(self, goal: Goal, *, at: datetime | None = None) -> None:
+    def complete(
+        self,
+        goal: Goal,
+        *,
+        at: datetime | None = None,
+        human_override: bool = False,
+    ) -> None:
         at = at or now_utc()
-        goal.progress = 1.0
-        goal.completed_at = at
-        goal.updated_at = at
+        if goal.status is GoalStatus.PENDING:
+            self.refresh(at=at)
         if goal.recurring:
             if goal.cron:
                 goal.next_attempt_at = cron.next_after(goal.cron, at)
             elif goal.interval_seconds:
                 goal.next_attempt_at = at + timedelta(seconds=goal.interval_seconds)
-            goal.status = GoalStatus.BLOCKED if goal.next_attempt_at else GoalStatus.RUNNABLE
+            self.transition(
+                goal,
+                GoalStatus.BLOCKED if goal.next_attempt_at else GoalStatus.RUNNABLE,
+                reason="schedule" if goal.next_attempt_at else None,
+                at=at,
+            )
         else:
-            goal.status = GoalStatus.DONE
+            self.transition(
+                goal, GoalStatus.DONE, at=at, human_override=human_override
+            )
         self.refresh(at=at)
 
     def record_failure(self, goal: Goal, reason: str, *, at: datetime | None = None) -> None:
@@ -264,22 +417,38 @@ class GoalManager:
         goal.last_error = reason
         goal.updated_at = at
         if not goal.recurring and goal.attempts >= goal.attempt_limit:
-            goal.status = GoalStatus.FAILED
+            self.transition(goal, GoalStatus.FAILED, at=at)
             return
         delay = goal.retry_policy.backoff_seconds * (
             goal.retry_policy.backoff_multiplier ** max(0, goal.attempts - 1)
         )
         if delay > 0:
             goal.next_attempt_at = at + timedelta(seconds=delay)
-            goal.status = GoalStatus.BLOCKED
-            goal.blocked_reason = "retry"
+            self.transition(goal, GoalStatus.BLOCKED, reason="retry", at=at)
         elif was_blocked:
             # A behavior can declare a step impossible and deliberately block
             # the goal. Recording its failure budget must not immediately
             # undo that semantic transition and make it runnable again.
-            goal.status = GoalStatus.BLOCKED
+            if goal.status is not GoalStatus.BLOCKED:
+                self.transition(goal, GoalStatus.BLOCKED, reason=goal.blocked_reason, at=at)
         else:
-            goal.status = GoalStatus.RUNNABLE
+            self.transition(goal, GoalStatus.RUNNABLE, at=at)
+
+    def activate(self, goal: Goal, *, at: datetime | None = None) -> None:
+        moment = at or now_utc()
+        if goal.status is GoalStatus.PENDING:
+            self.transition(goal, GoalStatus.RUNNABLE, at=moment)
+        self.transition(goal, GoalStatus.ACTIVE, at=moment)
+
+    def block(self, goal: Goal, reason: str, *, at: datetime | None = None) -> None:
+        self.transition(goal, GoalStatus.BLOCKED, reason=reason, at=at)
+
+    def mark_stalled(self, goal: Goal, reason: str, *, at: datetime | None = None) -> None:
+        self.transition(goal, GoalStatus.STALLED, reason=reason, at=at)
+
+    def cancel(self, goal: Goal, reason: str = "cancelled", *, at: datetime | None = None) -> None:
+        goal.recurring = False
+        self.transition(goal, GoalStatus.CANCELLED, reason=reason, at=at)
 
     def stalled_goals(
         self, older_than: timedelta, *, at: datetime | None = None

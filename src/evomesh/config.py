@@ -114,6 +114,10 @@ class RuntimeSettings(BaseModel):
     context_chars: int = 1500
     inbox_chars: int = 1000
     beliefs_chars: int = 700
+    preemption_enabled: bool = True
+    preemption_minimum_score_delta: float = 50.0
+    non_preemptible_goal_kinds: list[str] = Field(default_factory=list)
+    preemption_deadline_override_seconds: float = 300.0
 
     def budget(self) -> MemoryBudget:
         return MemoryBudget(

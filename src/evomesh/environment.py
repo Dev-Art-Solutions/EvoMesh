@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
-from evomesh.bdi import ReflectiveBehavior
+from evomesh.bdi import BDIBehavior, ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
 from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
 from evomesh.cognition import AgentBehavior, CycleOutcome
@@ -48,7 +48,7 @@ from evomesh.coordination import (
 )
 from evomesh.events import Event, EventBus, EventType
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
-from evomesh.goal_manager import GoalManager
+from evomesh.goal_manager import GoalManager, PreemptionPolicy
 from evomesh.harness import HarnessResult, build_runner
 from evomesh.harness_queue import (
     HarnessGateway,
@@ -809,13 +809,25 @@ class Environment:
         provider = self.providers.get(definition.provider)
         if provider is None:
             raise RuntimeError(f"Provider '{definition.provider}' is unavailable")
+        behavior = self.behaviors.get(definition.id, ReflectiveBehavior())
+        if isinstance(behavior, BDIBehavior):
+            behavior.reasoner.preemption = PreemptionPolicy(
+                enabled=self.settings.runtime.preemption_enabled,
+                minimum_score_delta=self.settings.runtime.preemption_minimum_score_delta,
+                non_preemptible_goal_kinds=frozenset(
+                    self.settings.runtime.non_preemptible_goal_kinds
+                ),
+                deadline_override_seconds=(
+                    self.settings.runtime.preemption_deadline_override_seconds
+                ),
+            )
         runtime = AgentRuntime(
             definition=definition,
             provider=provider,
             bus=self.bus,
             repository=self.repository,
             memory=self.memory_for(definition),
-            behavior=self.behaviors.get(definition.id, ReflectiveBehavior()),
+            behavior=behavior,
             budget=self.budget_for(definition),
             cycle_seconds=self.cycle_seconds_for(definition),
             num_ctx=self.num_ctx_for(definition),
