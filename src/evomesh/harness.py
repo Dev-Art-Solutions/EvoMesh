@@ -37,6 +37,7 @@ from evomesh.harness_session import HarnessSession
 from evomesh.harness_tools import (
     ALL_TOOLS,
     ASK_TOOLS,
+    DELEGATE_TOOLS,
     LEARN_TOOLS,
     READ_ONLY_TOOLS,
     SHELL_TOOLS,
@@ -859,6 +860,7 @@ def build_runner(
     scraping_executable: str = "",
     scraping_timeout: float = 30.0,
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None,
+    delegate_work: Callable[[str, str], Awaitable[str]] | None = None,
     learn_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
     patch_skill: Callable[[str, str, str], Awaitable[str]] | None = None,
     skills_root: Path | None = None,
@@ -890,6 +892,7 @@ def build_runner(
         scraping_executable=scraping_executable,
         scraping_timeout=scraping_timeout,
         ask_agent=ask_agent,
+        delegate_work=delegate_work,
         learn_skill=learn_skill,
         patch_skill=patch_skill,
         skills_root=skills_root,
@@ -904,6 +907,8 @@ def build_runner(
         tools = tools + WEB_TOOLS
     if ask_agent is not None:
         tools = tools + ASK_TOOLS
+    if delegate_work is not None:
+        tools = tools + DELEGATE_TOOLS
     if learn_skill is not None:
         tools = tools + LEARN_TOOLS
     # Already filtered by the caller to ones whose command is allow-listed --

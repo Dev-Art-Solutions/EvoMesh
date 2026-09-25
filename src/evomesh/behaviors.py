@@ -29,7 +29,7 @@ from evomesh.bdi import (
 )
 from evomesh.blackboard import Blackboard
 from evomesh.cognition import CycleContext
-from evomesh.contracts import AgentPhase, Belief, Intention, PlanStep
+from evomesh.contracts import AgentPhase, Belief, Goal, Intention, PlanStep
 from evomesh.coordination import DELEGATED_GOAL_KIND, ContractNet, WorkItem
 from evomesh.evolution import (
     BACKLOG_MAX_SECONDS,
@@ -60,10 +60,15 @@ from evomesh.evolution import (
 from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
 from evomesh.improvements import (
+    EVIDENCE_BACKLOG_EXHAUSTED,
+    EVIDENCE_CODEBASE_ANALYSIS,
+    EVIDENCE_HUMAN_REQUEST,
     NOT_PICKABLE_NOW,
     RECURRENCE_SOURCES,
+    Candidate,
     ImprovementControl,
     ImprovementStatus,
+    PriorityFactors,
     ReviewVerdict,
 )
 from evomesh.improvements import Improvement as TrackedImprovement
@@ -455,6 +460,27 @@ class EvaluatorBehavior(BDIBehavior):
         if verdict is None:
             return StepResult(summary="no candidate generation to evaluate")
         return StepResult(summary=verdict.statement, fact=verdict.statement)
+
+
+def fallback_candidate(objective: str, pick: str, goal: Goal | None) -> Candidate:
+    """An objective the pipeline chose outside the ranked backlog, as
+    evidence: a human's own goal, a scout for more work, or maintenance."""
+    headline = objective.strip().splitlines()[0][:160] if objective.strip() else "objective"
+    if goal is not None and not goal.recurring:
+        kind, factors = EVIDENCE_HUMAN_REQUEST, PriorityFactors(strategic_value=2.0)
+    elif pick == PICK_SCOUT:
+        kind, factors = EVIDENCE_BACKLOG_EXHAUSTED, PriorityFactors(confidence=0.5)
+    else:
+        kind, factors = EVIDENCE_CODEBASE_ANALYSIS, PriorityFactors(confidence=0.5)
+    return Candidate(
+        ref=f"{kind}:{headline.lower()}",
+        kind=kind,
+        title=headline,
+        problem=headline,
+        component="evomesh",
+        evidence={"pick": pick or "objective"},
+        factors=factors,
+    )
 
 
 class EvolverBehavior(BDIBehavior):
@@ -854,6 +880,19 @@ class EvolverBehavior(BDIBehavior):
                             f"`src/evomesh/{module.name}.py`."
                         )
                         objective = _with_recent_failure(evolver, objective, (needle,))
+        if self._improvements is not None and tracked is None:
+            # Everything the pipeline opens is an improvement with evidence,
+            # including its own fallbacks and a human's objective (B-009).
+            tracked = await self._improvements.adopt(
+                fallback_candidate(objective, str(substantive.get("pick") or ""), goal)
+            )
+            if tracked is None:
+                return await self._stall(
+                    context,
+                    f"exhausted:{objective[:80]}",
+                    "this objective used up its attempts and waits for a human: "
+                    "/improvements release <id> to try it again",
+                )
         # At this stage no candidate is in flight, by definition. One still open
         # that was never worked on -- no change, no verdict -- is an orphan of a
         # restart that landed mid-open, and prune_stale() protects open

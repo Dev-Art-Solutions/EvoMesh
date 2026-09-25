@@ -245,19 +245,25 @@ class Environment:
             runtime.wake()
 
     async def _unblock_goal_dependents(self, event: Event) -> None:
+        """Dispatch what GoalManager's refresh did for the dependants of a
+        completed goal: one GOAL_UNBLOCKED per goal that became runnable."""
         for definition in self.registry.all():
-            for goal in definition.mind.goals:
-                if event.goal_id not in goal.dependency_goal_ids:
-                    continue
-                before = goal.status
-                GoalManager(definition.mind).refresh()
-                if before is GoalStatus.BLOCKED and goal.status is GoalStatus.RUNNABLE:
+            if not any(
+                event.goal_id in goal.dependency_goal_ids for goal in definition.mind.goals
+            ):
+                continue
+            for change in GoalManager(definition.mind).refresh():
+                if (
+                    change.before is GoalStatus.BLOCKED
+                    and change.after is GoalStatus.RUNNABLE
+                    and event.goal_id in change.goal.dependency_goal_ids
+                ):
                     await self.events.publish(
                         Event(
                             EventType.GOAL_UNBLOCKED,
                             source="goal_manager",
                             agent_id=definition.id,
-                            goal_id=goal.id,
+                            goal_id=change.goal.id,
                             payload={"dependency_goal_id": event.goal_id},
                         )
                     )
@@ -1047,6 +1053,51 @@ class Environment:
         overrides = definition.mcp_servers if definition is not None else []
         return await self.mcp.tools_for(overrides)
 
+    def _make_delegate_work(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
+        """A harness job's ``delegate_work`` tool, bound to the agent it runs
+        for: task-like requests become WorkItems routed by capability, never
+        free-form text (B-008)."""
+
+        async def delegate(capability: str, objective: str) -> str:
+            sender = self.registry.get(sender_id)
+            goal = sender.mind.next_goal()
+            item = WorkItem(
+                parent_goal_id=goal.id if goal is not None else "",
+                requester_agent_id=sender.id,
+                objective=objective,
+                required_capabilities=[capability],
+                expected_outputs=["result"],
+            )
+            bid = self.contract_net.award(
+                item,
+                states=self.runtime_states(),
+                active_work=list(self.blackboard.work_items.values()),
+                history=self.blackboard.work_history(),
+                exclude_agent_ids={sender.id},
+            )
+            if bid is None:
+                raise LookupError(f"no other agent has the capability {capability!r}")
+            self.blackboard.publish_work(item)
+            await self.bus.send(
+                semantic_message(
+                    Performative.DELEGATE,
+                    sender_id=sender.id,
+                    recipient_id=bid.agent_id,
+                    task_id=item.id,
+                    goal_id=item.parent_goal_id,
+                    payload=item.model_dump(mode="json"),
+                    content=item.objective,
+                )
+            )
+            await self._save_blackboard()
+            helper = self.registry.get(bid.agent_id).name
+            return (
+                f"delegated work item {item.id} to {helper}; its result will arrive "
+                f"as a message and on the blackboard as work.{item.id}.result"
+            )
+
+        return delegate
+
     def _make_ask_agent(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
         """A harness job's ``ask_agent`` tool, bound to the agent it runs for.
 
@@ -1261,6 +1312,7 @@ class Environment:
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
             ask_agent=self._make_ask_agent(job.agent_id) if job.agent_id else None,
+            delegate_work=self._make_delegate_work(job.agent_id) if job.agent_id else None,
             learn_skill=(
                 self._make_learn_skill(job.agent_id)
                 if job.agent_id and can_learn_skills

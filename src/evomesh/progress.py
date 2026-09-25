@@ -26,8 +26,14 @@ class ProgressTracker:
     _last: dict[str, str] = field(default_factory=dict)
     _repeats: dict[str, int] = field(default_factory=dict)
 
-    def observe(self, goal: Goal, outcome: CycleOutcome) -> ProgressSignal:
-        signature = self._signature(goal, outcome)
+    def observe(
+        self, goal: Goal, outcome: CycleOutcome, structure: tuple[object, ...] = ()
+    ) -> ProgressSignal:
+        """``structure`` is the goal's measurable progress -- completed plan
+        steps, children, satisfied conditions, work -- so a cycle that moved
+        any of it is progress even when its text repeats word for word, and
+        the textual signature is one signal among several (B-017)."""
+        signature = self._signature(goal, outcome, structure)
         previous = self._last.get(goal.id)
         repeats = self._repeats.get(goal.id, 0) + 1 if previous == signature else 1
         self._last[goal.id] = signature
@@ -49,9 +55,10 @@ class ProgressTracker:
         return ProgressSignal(stalled, signature, repeats, reason)
 
     @staticmethod
-    def _signature(goal: Goal, outcome: CycleOutcome) -> str:
+    def _signature(goal: Goal, outcome: CycleOutcome, structure: tuple[object, ...]) -> str:
         material = "|".join(
             (
+                repr(structure),
                 outcome.error or "",
                 outcome.step.strip(),
                 outcome.fact.strip(),

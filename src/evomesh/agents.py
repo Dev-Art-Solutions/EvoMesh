@@ -24,8 +24,10 @@ from evomesh.contracts import (
     AgentStatus,
     Autonomy,
     Goal,
+    GoalStatus,
     MemoryEpisode,
     Message,
+    StepStatus,
     now_utc,
 )
 from evomesh.coordination import (
@@ -264,6 +266,24 @@ class AgentRuntime:
         payload = {"value": event.goal_id or True, **event.payload, "source": event.source}
         kind = str(event.payload.get("type")) if event.type is EventType.RULE_EVENT else ""
         self._pending_events.append(RuntimeEvent(kind or event.type.value, payload))
+
+    def _structure(self, goal: Goal) -> tuple[object, ...]:
+        """The goal's structural progress: steps done across its intentions,
+        children and conditions satisfied, delegated work closed."""
+        mind = self.definition.mind
+        steps_done = sum(
+            step.status is StepStatus.DONE
+            for intention in mind.intentions
+            if intention.goal_id == goal.id
+            for step in intention.steps
+        )
+        children_done = sum(
+            1
+            for child_id in goal.child_goal_ids
+            for child in mind.goals
+            if child.id == child_id and child.status is GoalStatus.DONE
+        )
+        return (steps_done, children_done, len(goal.artifacts), goal.progress)
 
     def _event_is_relevant(self, event: Event) -> bool:
         return (
@@ -522,7 +542,7 @@ class AgentRuntime:
             elif outcome.worked:
                 manager.activate(goal)
                 goal.last_error = None
-            progress = self._progress.observe(goal, outcome)
+            progress = self._progress.observe(goal, outcome, self._structure(goal))
             if progress.stalled:
                 manager.mark_stalled(goal, progress.reason)
                 # Counting restarts after the pause, so the same goal can be

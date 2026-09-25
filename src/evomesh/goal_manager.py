@@ -81,6 +81,13 @@ STALL_COOLDOWN_MAX_SECONDS = 3600.0
 STALL_LIMIT = 3
 
 
+@dataclass(frozen=True)
+class GoalTransition:
+    goal: Goal
+    before: GoalStatus
+    after: GoalStatus
+
+
 class GoalGraphError(ValueError):
     pass
 
@@ -264,8 +271,20 @@ class GoalManager:
         except KeyError:
             return False
 
-    def refresh(self, *, at: datetime | None = None) -> None:
+    def refresh(self, *, at: datetime | None = None) -> list[GoalTransition]:
+        """Apply time, dependency and budget policy to every goal, and return
+        the transitions it made -- the one record callers dispatch events
+        from, instead of inferring them around the call (B-007)."""
         at = at or now_utc()
+        before = {goal.id: goal.status for goal in self.mind.goals}
+        self._refresh(at)
+        return [
+            GoalTransition(goal, before[goal.id], goal.status)
+            for goal in self.mind.goals
+            if goal.id in before and before[goal.id] is not goal.status
+        ]
+
+    def _refresh(self, at: datetime) -> None:
         for goal in self.mind.goals:
             if goal.status in TERMINAL_GOAL_STATUSES:
                 continue

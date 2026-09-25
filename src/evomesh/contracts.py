@@ -526,6 +526,14 @@ class MindState(BaseModel):
         owner_agent_id: str | None = None,
     ) -> Goal:
         parent = self.goal(parent_goal_id) if parent_goal_id is not None else None
+        known = {goal.id for goal in self.goals}
+        missing = [item for item in dependency_goal_ids if item not in known]
+        if missing:
+            # Every creation path, not only GoalManager.create, refuses a
+            # dependency on nothing (B-006). A new goal has no dependants yet,
+            # so it cannot close a cycle; a missing reference is the only way
+            # it can break the graph.
+            raise ValueError(f"goal depends on unknown goal(s): {', '.join(missing)}")
         goal = Goal(
             description=description.strip(),
             kind=kind,

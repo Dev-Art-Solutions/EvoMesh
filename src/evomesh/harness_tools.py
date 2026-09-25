@@ -115,6 +115,10 @@ class ToolContext:
     # for the human at the console, or with no live mesh behind it at all
     # (a test), has no other agent to ask.
     ask_agent: Callable[[str, str], Awaitable[str]] | None = None
+    # Bound the same way: hands a *task* (not a question) to whichever agent
+    # holds a capability, as a structured, budgeted WorkItem whose result
+    # comes back later. None is why delegate_work is not registered.
+    delegate_work: Callable[[str, str], Awaitable[str]] | None = None
     # Bound to this job's own agent_id, the same way ask_agent is -- writes a
     # new skills/<name>/SKILL.md (or overwrites one this same agent already
     # authored) and returns what the registry says about it. None is why
@@ -1213,6 +1217,27 @@ async def tool_fetch(context: ToolContext, args: dict[str, Any]) -> str:
     return _clip(content, context.limits, unit="lines")
 
 
+async def tool_delegate_work(context: ToolContext, args: dict[str, Any]) -> str:
+    """Hand a task to the agent best able to do it, by capability.
+
+    Unlike ask_agent, nothing waits here: the work is a WorkItem routed by
+    Contract Net, and its result arrives as a message and as the blackboard
+    fact the answer names.
+    """
+    if context.delegate_work is None:
+        raise ToolDenied("DENIED: no other agent can take work from this job.")
+    capability = str(args.get("capability") or "").strip()
+    objective = str(args.get("objective") or "").strip()
+    if not capability:
+        raise ToolDenied("DENIED: delegate_work needs the capability the task requires.")
+    if not objective:
+        raise ToolDenied("DENIED: delegate_work needs the task's objective.")
+    try:
+        return await context.delegate_work(capability, objective)
+    except LookupError as exc:
+        raise ToolDenied(f"DENIED: {exc}") from None
+
+
 async def tool_ask_agent(context: ToolContext, args: dict[str, Any]) -> str:
     """Ask another live agent a question and return its answer.
 
@@ -1474,7 +1499,8 @@ ASK_TOOLS: tuple[Tool, ...] = (
             "Ask another live agent in this mesh a question and wait for its "
             "real answer -- not a message that sits in its inbox until its "
             "next cycle. Use the agent's name or id (see the mesh roster, "
-            "or /agents on the console)."
+            "or /agents on the console). For a question only: to hand over a "
+            "task, use delegate_work."
         ),
         parameters={
             "type": "object",
@@ -1488,6 +1514,30 @@ ASK_TOOLS: tuple[Tool, ...] = (
             "required": ["agent", "question"],
         },
         run=tool_ask_agent,
+    ),
+)
+
+DELEGATE_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="delegate_work",
+        description=(
+            "Hand a task to whichever agent in this mesh has the capability it "
+            "needs (e.g. health.verify, code.edit, tool.news_fetch). It becomes "
+            "a tracked work item; you do not wait for it -- its result comes "
+            "back as a message and on the shared blackboard."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "capability": {
+                    "type": "string",
+                    "description": "The capability the task requires.",
+                },
+                "objective": {"type": "string", "description": "What must be done."},
+            },
+            "required": ["capability", "objective"],
+        },
+        run=tool_delegate_work,
     ),
 )
 

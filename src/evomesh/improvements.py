@@ -28,6 +28,10 @@ EVIDENCE_FAILING_TESTS = "failing_tests"
 EVIDENCE_RUNTIME_FAULT = "runtime_fault"
 EVIDENCE_HUMAN_BACKLOG = "human_backlog"
 EVIDENCE_RUNTIME_EVENT = "runtime_event"
+# The evolver's own fallbacks, once nothing evidenced is ready.
+EVIDENCE_BACKLOG_EXHAUSTED = "backlog_exhausted"
+EVIDENCE_CODEBASE_ANALYSIS = "codebase_analysis"
+EVIDENCE_HUMAN_REQUEST = "human_request"
 # Improvement.source of a proposal the scout made from a runtime event.
 RUNTIME_SOURCE = "runtime"
 # Improvement.source of something a job noticed outside its own objective.
@@ -620,6 +624,24 @@ class ImprovementControl:
             ),
             None,
         )
+
+    async def adopt(self, candidate: Candidate) -> Improvement | None:
+        """Put work the evolver chose outside the ranked backlog -- a scout,
+        a maintenance target, a human's own objective -- under the same
+        lifecycle, budget and verification (B-009). ``None`` when that target
+        already exhausted its budget and waits for a human."""
+        item = self.backlog.add(candidate.improvement())
+        if item.status is ImprovementStatus.NEEDS_HUMAN:
+            return None
+        active = self.active()
+        if active is not None and active is not item:
+            active.status = ImprovementStatus.READY
+            active.updated_at = now_utc()
+        item.status = ImprovementStatus.ACTIVE
+        item.rejection_reason = ""
+        item.updated_at = now_utc()
+        await self.save()
+        return item
 
     def choose(self) -> Improvement | None:
         """The improvement to work on next: one already active, else the
