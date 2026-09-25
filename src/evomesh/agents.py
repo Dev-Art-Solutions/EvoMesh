@@ -526,6 +526,7 @@ class AgentRuntime:
                         goal_id=goal.id,
                         payload={
                             "reason": progress.reason,
+                            "error": outcome.error or "",
                             "signature": progress.signature,
                             "repeats": progress.repeats,
                         },

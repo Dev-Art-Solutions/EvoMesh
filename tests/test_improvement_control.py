@@ -212,3 +212,37 @@ async def test_a_dependency_holds_an_improvement_until_the_other_is_verified() -
 
     assert plane.choose() is base, "the higher score waits for its dependency"
     assert "epic reliability: 0/1 verified" in plane.summary()
+
+
+async def test_a_model_endpoint_error_is_environmental_even_inside_a_stall() -> None:
+    """Found live: a 404 for a model Ollama does not have became a READY
+    improvement, and a stall caused by it hid the error behind its reason."""
+    plane, _ = control()
+    error = (
+        "step 1/1 failed: HTTPStatusError: Client error '404 Not Found' for url "
+        "'http://127.0.0.1:11434/api/generate'"
+    )
+    failed = await plane.propose_from_event(
+        Event(EventType.TASK_FAILED, "bdi", agent_id="a", payload={"reason": error})
+    )
+    stalled = await plane.propose_from_event(
+        Event(
+            EventType.AGENT_STALLED,
+            "progress_tracker",
+            agent_id="a",
+            payload={"reason": "same failure repeated 3 times", "error": error},
+        )
+    )
+    assert failed is not None and failed.status is ImprovementStatus.REJECTED
+    assert stalled is not None and stalled.status is ImprovementStatus.REJECTED
+
+
+async def test_sync_judges_waiting_runtime_proposals_again() -> None:
+    plane, _ = control()
+    stale = await plane.propose_from_event(
+        Event(EventType.TASK_FAILED, "bdi", agent_id="a", payload={"reason": "odd failure"})
+    )
+    assert stale is not None
+    stale.status = ImprovementStatus.READY  # judged under an older policy
+    await plane.sync([], set())
+    assert stale.status is ImprovementStatus.TRIAGED

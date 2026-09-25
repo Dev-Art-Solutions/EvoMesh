@@ -72,6 +72,10 @@ class GoalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+# Finished goals a mind keeps for history; older ones are forgotten.
+KEEP_CLOSED_GOALS = 30
+CLOSED_GOAL_STATUSES = frozenset({GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED})
+
 OPEN_GOAL_STATUSES = frozenset(
     {GoalStatus.PENDING, GoalStatus.RUNNABLE, GoalStatus.ACTIVE, GoalStatus.BLOCKED}
 )
@@ -522,7 +526,28 @@ class MindState(BaseModel):
         if parent is not None:
             if goal.id not in parent.child_goal_ids:
                 parent.child_goal_ids.append(goal.id)
+        self._prune_closed_goals()
         return goal
+
+    def _prune_closed_goals(self, keep: int = KEEP_CLOSED_GOALS) -> None:
+        """Forget the oldest finished goals beyond ``keep``.
+
+        Found live: the Guardian held hundreds of done "Investigate why ..."
+        goals, persisted with the agent and scanned on every cycle. A closed
+        goal an open one still points at (dependency, parent, child) stays.
+        """
+        closed = [goal for goal in self.goals if goal.status in CLOSED_GOAL_STATUSES]
+        if len(closed) <= keep:
+            return
+        referenced = {
+            related
+            for goal in self.goals
+            if goal.status not in CLOSED_GOAL_STATUSES
+            for related in (*goal.dependency_goal_ids, *goal.child_goal_ids, goal.parent_goal_id)
+            if related
+        }
+        forget = {goal.id for goal in closed[:-keep] if goal.id not in referenced}
+        self.goals = [goal for goal in self.goals if goal.id not in forget]
 
     # -- beliefs --------------------------------------------------------
 

@@ -49,6 +49,14 @@ ENVIRONMENTAL_MARKERS = (
     "timeout",
     "connection",
     "not running",
+    # HTTP failures from a model endpoint (found live: a 404 for a model
+    # Ollama does not have became a READY "improvement" for the evolver).
+    "httpstatuserror",
+    "not found for url",
+    "/api/",
+    "rate limit",
+    "502 bad gateway",
+    "503 service",
 )
 # The capability an evolution work item is routed by.
 CODE_EDIT_CAPABILITY = "code.edit"
@@ -222,6 +230,10 @@ class ImprovementScout:
         if event.type not in {EventType.AGENT_STALLED, EventType.TASK_FAILED}:
             return None
         reason = str(event.payload.get("reason") or event.type.value)
+        if error := str(event.payload.get("error") or ""):
+            # A stall's own reason is only "same failure repeated N times";
+            # the failure is what says whether it is the code's problem.
+            reason = f"{reason}: {' '.join(error.split())[:200]}"
         agent = event.agent_id or event.source
         return Improvement(
             source_ref=f"{event.type.value}:{agent}:{' '.join(reason.lower().split())}",
@@ -547,6 +559,14 @@ class ImprovementControl:
         ``candidates`` but are certainly not fixed.
         """
         present = present | {candidate.ref for candidate in candidates}
+        for item in self.backlog.items.values():
+            # Triage policy may have changed since a runtime proposal was
+            # judged (a restart onto newer code): judge the waiting ones again.
+            if item.source == RUNTIME_SOURCE and item.status in {
+                ImprovementStatus.READY,
+                ImprovementStatus.TRIAGED,
+            }:
+                self.triage.triage(item)
         for candidate in candidates:
             item = self.backlog.add(candidate.improvement())
             if item.status is ImprovementStatus.PROPOSED:

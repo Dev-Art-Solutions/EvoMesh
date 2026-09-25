@@ -131,3 +131,20 @@ async def test_a_goal_dropped_during_a_cycle_stays_dropped(tmp_path: Path) -> No
 
     assert goal.status is GoalStatus.FAILED
     await environment.stop()
+
+
+def test_a_mind_forgets_its_oldest_finished_goals_but_not_referenced_ones() -> None:
+    from evomesh.contracts import KEEP_CLOSED_GOALS
+
+    mind = MindState()
+    anchor = mind.add_goal("depended on")
+    anchor.status = GoalStatus.DONE
+    mind.add_goal("waits", dependency_goal_ids=[anchor.id])
+    for number in range(KEEP_CLOSED_GOALS + 10):
+        mind.add_goal(f"finished {number}").status = GoalStatus.DONE
+    mind.add_goal("one more")
+
+    closed = [goal for goal in mind.goals if goal.status is GoalStatus.DONE]
+    assert len(closed) == KEEP_CLOSED_GOALS + 1, "the referenced one is kept on top"
+    assert anchor in mind.goals
+    assert "finished 0" not in {goal.description for goal in mind.goals}
