@@ -20,7 +20,12 @@ goals:
       (bullish/bearish/neutral), and your confidence (low/medium/high) per
       the news-impact-analysis skill. Report only headlines at or above
       config.json's min_confidence; silence is correct when nothing new
-      clears that bar.
+      clears that bar. Your final answer is ONLY report lines, one per
+      headline, exactly like
+      `XAUUSD bullish (medium): Gold hits a record above $4300 -- safe-haven demand ahead of the Fed`
+      (symbol, direction, confidence in brackets, colon, headline, two
+      hyphens, reason) -- no summary, no table, no Markdown. Nothing to
+      report: answer nothing else.
     priority: 5
     recurring: true
     cron: "*/30 * * * *"

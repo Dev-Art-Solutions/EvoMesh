@@ -87,8 +87,27 @@ def _apply_report_pattern(summary: str, pattern: str) -> str:
     except re.error:
         logger.warning("goal has an invalid report_pattern, skipping filter: %r", pattern)
         return summary
-    kept = [line for line in summary.splitlines() if compiled.fullmatch(line.strip())]
+    kept = [
+        normal
+        for line in summary.splitlines()
+        if compiled.fullmatch(normal := _normalize_report_line(line))
+    ]
     return "\n".join(kept)
+
+
+def _normalize_report_line(line: str) -> str:
+    """A report line with the formatting tics a model adds taken back out.
+
+    Found live 2026-09-25: 209 NewsAnalyzer cycles "matched nothing", and
+    the well-formed signals among them (``EURUSD bearish (medium): "..." —
+    a hike supports the dollar``) were dropped for an em dash where the
+    pattern wants ``--``, or for a Markdown bullet or bold around the line.
+    """
+    line = line.strip()
+    line = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line)
+    line = line.replace("**", "").replace("__", "")
+    line = re.sub(r"\s+[—–]\s+", " -- ", line)
+    return line.strip()
 
 
 class AgentRegistry:

@@ -1626,3 +1626,24 @@ def test_deterministic_behavior_builds_a_plan_library_from_its_plans() -> None:
     library = behavior.library()
     assert library.recipes == (recipe,)
     assert library.select(Goal(description="noop"), MindState()) is recipe
+
+
+def test_report_pattern_forgives_dashes_bullets_and_bold() -> None:
+    """Found live: well-formed NewsAnalyzer signals dropped for an em dash
+    instead of ``--`` or a Markdown bullet/bold around the line."""
+    from evomesh.agents import _apply_report_pattern
+
+    pattern = r"^[A-Za-z0-9_.]+ (bullish|bearish|neutral) \((low|medium|high)\): .+ -- .+$"
+    answer = "\n".join(
+        (
+            "## Summary",
+            'EURUSD bearish (medium): "Fed braces for hikes" \u2014 a hike supports the dollar.',
+            "- **XAUUSD bullish (high): Gold hits a record -- safe-haven demand**",
+            "**Bottom line:** one actionable assessment \u2014 EURUSD bearish, medium.",
+        )
+    )
+
+    assert _apply_report_pattern(answer, pattern).splitlines() == [
+        'EURUSD bearish (medium): "Fed braces for hikes" -- a hike supports the dollar.',
+        "XAUUSD bullish (high): Gold hits a record -- safe-haven demand",
+    ]
