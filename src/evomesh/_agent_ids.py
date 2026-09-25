@@ -23,7 +23,8 @@ class AgentId(str):
 
     __slots__ = ()
 
-    def __new__(cls, value: str) -> AgentId:
+    def __new__(cls, *parts: str) -> AgentId:
+        value = _SEPARATOR.join(parts)
         if not is_valid(value):
             raise ValueError(f"invalid agent identifier: {value!r}")
         return str.__new__(cls, value)
