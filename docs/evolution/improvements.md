@@ -159,3 +159,7 @@ the line below the title.
     `_download` awaits the attachment with `self._client.get(url)` but has no `try/except`, so a `ReadTimeout`/`ReadError` escapes the poll loop (matching the `ReadError`/`ReadTimeout` poll failures logged since the file last changed). Every other HTTP call in the file is wrapped and re-raised as a `TelegramError` with a backoff (`except (httpx.HTTPError, ...) -> ... TelegramError(...)`), and the sibling `_send_document` does the same for uploads — but downloads are unhandled.
     >         response = await self._client.get(url)
     1. [x] src/evomesh/telegram.py `TelegramChannel._download` -- wrap the `await self._client.get(url)` in a `try/except (httpx.HTTPError) as exc:` block that logs the failure and re-raises a `TelegramError` with a retry delay, matching `_send_document`'s handling right next to it.
+- [ ] Compute each agent's stale goals once in `Environment.status`
+    `Environment.status` builds its `stale_goals` entry with a dict comprehension that calls `GoalManager(definition.mind).stalled_goals(...)` twice per agent -- once for the value and again in the `if` filter -- so every `/status` poll (the desktop Control Center polls it continuously) scans every agent's goals twice.
+    >                 if GoalManager(definition.mind).stalled_goals(
+    1. [ ] src/evomesh/environment.py `Environment.status` -- compute each agent's stale-goal count once (e.g. build `{name: count}` first, then keep only non-zero counts) instead of calling `stalled_goals` twice per agent; the reported mapping must stay the same.
