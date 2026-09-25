@@ -38,6 +38,7 @@ from tests.test_improvement_control import _control_context, control
 
 DEFECT = '"""Prices."""\n\n\ndef total(items):\n    return sum(items) + 1\n'
 FIXED = '"""Prices."""\n\n\ndef total(items):\n    return sum(items)\n'
+WEAKENED = "def test_total_adds_exactly():\n    assert True\n"
 ACCEPTANCE = (
     "from evomesh.pricing import total\n\n\n"
     "def test_total_adds_exactly():\n    assert total([1, 2]) == 3\n"
@@ -56,11 +57,18 @@ def _fixture(root: Path) -> None:
 
 
 def _acceptance(tree: Path) -> tuple[bool, str]:
-    """The fixed, protected acceptance check -- run for real, outside the
-    candidate's control (its file is part of the fixture, not the edit)."""
+    """The fixed, protected acceptance check, run for real against ``tree``'s
+    code. The oracle is always the fixture's own copy, never the candidate's:
+    a candidate that weakens its test file changes nothing here (T57)."""
+    oracle = tree / ".acceptance"
+    oracle.mkdir(exist_ok=True)
+    (oracle / "test_pricing.py").write_text(ACCEPTANCE, encoding="utf-8")
     run = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/test_pricing.py", "-q", "-p", "no:cacheprovider"],
-        cwd=tree,
+        [
+            sys.executable, "-m", "pytest", str(oracle / "test_pricing.py"), "-q",
+            "-p", "no:cacheprovider", "--rootdir", str(oracle),
+        ],
+        cwd=oracle,
         env={
             "PYTHONPATH": str(tree / "src"),
             # Nothing written into the tree: a dirty fixture is never applied over.
@@ -72,6 +80,9 @@ def _acceptance(tree: Path) -> tuple[bool, str]:
         text=True,
         timeout=120,
     )
+    for item in oracle.iterdir():
+        item.unlink()
+    oracle.rmdir()
     return run.returncode == 0, run.stdout[-2000:]
 
 
@@ -320,3 +331,37 @@ async def test_only_an_operator_verifies_by_hand() -> None:
 
     assert item.status is ImprovementStatus.VERIFIED
     assert item.verified_by.startswith("operator:iliya")
+
+
+async def test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    _fixture(root)
+    project = await git_project(root)
+    validator = AcceptanceValidator()
+    evolver, context, harness = await evolving(
+        tmp_path,
+        project,
+        # No fix -- only the test rewritten to pass.
+        [[("tests/test_pricing.py", WEAKENED)]],
+        validator,  # type: ignore[arg-type]
+        StubRepairer(),
+    )
+    harness.answers = ["RATIONALE: made the test pass"]
+    monkeypatch.setattr(evolver, "baseline", _real_baseline(evolver, project))
+    plane, _ = control(require_review=True)
+    _control_context(context, plane)
+    behavior = EvolverBehavior(
+        auto_validate=True, max_repairs=0, auto_promote=True, baseline_tests=True,
+        test_backlog=False, scout_when_idle=False,
+    )
+
+    for _ in range(40):
+        await behavior.cycle(context)
+        if validator.runs:
+            break
+        await asyncio.sleep(0.02)
+
+    assert validator.runs == [False], "the protected oracle still fails"
+    assert (project / "src" / "evomesh" / "pricing.py").read_text(encoding="utf-8") == DEFECT

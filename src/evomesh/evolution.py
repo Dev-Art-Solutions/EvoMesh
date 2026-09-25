@@ -41,6 +41,7 @@ from evomesh.codebase import (
     plan_objective,
     plan_task,
     project_map,
+    protected_changes,
     runtime_fault_needle,
     runtime_fault_objective,
     runtime_faults,
@@ -1153,10 +1154,39 @@ class CandidateValidator:
             ),
         }
 
+    @staticmethod
+    async def _protected_failure(path: Path) -> dict[str, object] | None:
+        """A candidate that changed the protected surface (its own oracle,
+        the admission/verification rules, the reviewed approvals) is not
+        validated by the commands it could have rewritten."""
+        try:
+            status = await run_command("git", "status", "--porcelain", "-uall", cwd=path)
+        except (OSError, FileNotFoundError):
+            return None
+        if status.exit_code != 0:
+            return None
+        changed = [line[3:].split(" -> ")[-1].strip('"') for line in status.output.splitlines()]
+        touched = protected_changes(changed)
+        if not touched:
+            return None
+        return {
+            "command": "evomesh protected-surface check",
+            "exit_code": 1,
+            "output": (
+                "this candidate changes protected files: "
+                + ", ".join(touched)
+                + ". They decide whether work is admitted, verified or promoted, so a "
+                "candidate may not change them on its own -- leave them as they are "
+                "and change the code they judge instead, or ask a human to review it."
+            ),
+        }
+
     async def validate(self, generation: Generation) -> ValidationResult:
         outcomes: list[dict[str, object]] = []
         if hygiene := self._hygiene_failure(generation.path):
             return self._write(generation, ValidationResult(passed=False, commands=[hygiene]))
+        if protected := await self._protected_failure(generation.path):
+            return self._write(generation, ValidationResult(passed=False, commands=[protected]))
         try:
             uv = uv_executable(generation.path)
         except FileNotFoundError as exc:

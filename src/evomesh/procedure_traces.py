@@ -44,6 +44,7 @@ from evomesh.procedure_runtime import (
     goal_evidence,
 )
 from evomesh.procedures import (
+    SECRET_NAMES,
     Catalog,
     SideEffect,
     canonical_json,
@@ -73,6 +74,9 @@ class TraceStep(BaseModel):
     code: str = ""
     result: dict[str, Any] | None = None
     result_digest: str = ""
+    # Secret-named fields were replaced before storing: kept as a record of
+    # what ran, never as something to learn from.
+    redacted: bool = False
 
 
 class OperationTrace(BaseModel):
@@ -92,6 +96,29 @@ class OperationTrace(BaseModel):
 
     def signature(self) -> tuple[tuple[str, int], ...]:
         return tuple((step.adapter, step.contract_version) for step in self.steps)
+
+
+REDACTED = "[redacted]"
+
+
+def _redacted(value: Any) -> tuple[Any, bool]:
+    """``value`` with every secret-named field replaced (closure plan 16.1,
+    T33), and whether anything was. A trace never holds the secret itself."""
+    if isinstance(value, dict):
+        found = False
+        clean: dict[str, Any] = {}
+        for key, item in value.items():
+            if SECRET_NAMES.search(str(key)):
+                clean[key] = REDACTED
+                found = True
+                continue
+            clean[key], inner = _redacted(item)
+            found = found or inner
+        return clean, found
+    if isinstance(value, list):
+        pairs = [_redacted(item) for item in value]
+        return [item for item, _ in pairs], any(flag for _, flag in pairs)
+    return value, False
 
 
 def _bounded(value: Any) -> Any | None:
@@ -132,8 +159,11 @@ class TraceRecorder:
         for occurrence in [key for key, item in self.pending.items() if item["goal_id"] == goal.id]:
             entry = self.pending.pop(occurrence)
             steps: list[TraceStep] = entry["steps"]
-            parameters = _bounded(dict(goal.parameters or {}))
+            clean, hidden = _redacted(dict(goal.parameters or {}))
+            parameters = _bounded(clean)
             reasons = _ineligibility(goal, steps, basis, parameters)
+            if hidden:
+                reasons.append("the goal's parameters carried secret-named fields")
             trace = OperationTrace(
                 trace_id=uuid.uuid4().hex,
                 occurrence_id=occurrence,
@@ -181,6 +211,8 @@ def _ineligibility(
             reasons.append(f"operation {step.index} was too large to keep")
         if step.side_effect not in LEARNABLE_EFFECTS:
             reasons.append(f"operation {step.index} has effect {step.side_effect}")
+        if step.redacted:
+            reasons.append(f"operation {step.index} carried secret-named fields")
     return reasons
 
 
@@ -206,6 +238,8 @@ def typed_harness_tools(
             AdapterContext(agent_id=agent_id, tool_context=context, operation_key=key), arguments
         )
         if served is not None:
+            clean_arguments, hid_argument = _redacted(arguments)
+            clean_result, hid_result = _redacted(outcome.result)
             recorder.record(
                 served[1],
                 served[0],
@@ -216,12 +250,13 @@ def typed_harness_tools(
                     adapter=adapter.contract.adapter_id,
                     contract_version=adapter.contract.contract_version,
                     side_effect=adapter.contract.side_effect.value,
-                    arguments=_bounded(arguments),
-                    argument_digest=digest_of(canonical_json(arguments)),
+                    arguments=_bounded(clean_arguments),
+                    argument_digest=digest_of(canonical_json(clean_arguments)),
                     ok=outcome.ok,
                     code=outcome.code,
-                    result=_bounded(outcome.result) if outcome.result is not None else None,
-                    result_digest=digest_of(canonical_json(outcome.result or {})),
+                    result=_bounded(clean_result) if clean_result is not None else None,
+                    result_digest=digest_of(canonical_json(clean_result or {})),
+                    redacted=hid_argument or hid_result,
                 ),
             )
         if not outcome.ok:

@@ -11,7 +11,9 @@ candidate that creates one can be failed rather than shipped.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -310,6 +312,40 @@ KNOWN_ROOT_FILES = frozenset(
         "validation-result.json",
     )
 )
+
+
+# What a candidate may not change on its own (closure plan 18.4): the rules
+# that admit, verify and promote work, the acceptance assertions that judge
+# it, and the reviewed approvals. A change here needs a human's review, so a
+# candidate cannot pass by rewriting its own oracle.
+PROTECTED_PATHS: tuple[str, ...] = (
+    "src/evomesh/procedures.py",
+    "src/evomesh/procedure_runtime.py",
+    "src/evomesh/procedure_traces.py",
+    "src/evomesh/improvements.py",
+    "procedures/*",
+    "plans/*",
+    "docs/architecture/closure-evidence/*",
+    "tests/test_procedure*.py",
+    "tests/test_w3_improvement.py",
+    "tests/test_idle_evolution.py",
+    "tests/test_work_executor.py",
+    "tests/test_protected_surface.py",
+    "evomesh.yaml",
+    "evomesh.secrets.yaml",
+)
+
+
+def protected_changes(changed: Iterable[str]) -> list[str]:
+    """The changed paths (repository-relative, forward slashes) that fall
+    on the protected surface."""
+    return sorted(
+        {
+            path
+            for path in (item.replace("\\", "/").strip() for item in changed)
+            if any(fnmatch.fnmatchcase(path, pattern) for pattern in PROTECTED_PATHS)
+        }
+    )
 
 
 def stray_root_files(root: Path) -> list[str]:
