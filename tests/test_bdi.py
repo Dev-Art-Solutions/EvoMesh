@@ -1647,3 +1647,50 @@ def test_report_pattern_forgives_dashes_bullets_and_bold() -> None:
         'EURUSD bearish (medium): "Fed braces for hikes" -- a hike supports the dollar.',
         "XAUUSD bullish (high): Gold hits a record -- safe-haven demand",
     ]
+
+
+async def test_a_report_written_as_markdown_blocks_is_rewritten_not_lost(
+    tmp_path: Path,
+) -> None:
+    """Found live: NewsAnalyzer wrote each signal as a Markdown block
+    (Instrument / Direction / Confidence), the sanitizer was only allowed to
+    *extract* lines that already matched, and every real signal was dropped."""
+
+    class Reformatter(ScriptedProvider):
+        async def generate(self, prompt: str, **kwargs: Any) -> str:
+            if "Rewrite each item" in prompt:
+                return "XAUUSD bearish (medium): Gold tilts lower -- rate-hike bets"
+            return await super().generate(prompt, **kwargs)
+
+    environment, agent = await worker(tmp_path, Reformatter())
+    goal = agent.mind.add_goal(
+        "Assess headlines",
+        recurring=True,
+        notify=True,
+        report_pattern=(
+            r"^[A-Za-z0-9_.]+ (bullish|bearish|neutral) \((low|medium|high)\): .+ -- .+$"
+        ),
+    )
+    runtime = environment.runtimes[agent.id]
+    announced: list[str] = []
+
+    async def record(text: str) -> None:
+        announced.append(text)
+
+    runtime.announce = record
+
+    await runtime._apply(  # noqa: SLF001
+        CycleOutcome(
+            summary=(
+                "## Reported\n\n**Gold tilts lower as rate-hike bets grow**\n"
+                "- Instrument: **XAUUSD**\n- Direction: **Bearish**\n- Confidence: **Medium**"
+            ),
+            goal_done=True,
+            phase=AgentPhase.IDLE,
+            worked=True,
+        ),
+        goal,
+    )
+
+    assert len(announced) == 1
+    assert "XAUUSD bearish (medium): Gold tilts lower -- rate-hike bets" in announced[0]

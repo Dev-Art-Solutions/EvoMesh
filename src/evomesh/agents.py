@@ -535,16 +535,24 @@ class AgentRuntime:
         this step only ever narrows what gets sent, never bypasses the format
         contract.
         """
+        # Rewrite, not extract. Found live 2026-09-25: NewsAnalyzer's reports
+        # came as Markdown blocks ("Instrument: GOLD / Direction: Bearish /
+        # Confidence: Medium"), so "extract the lines that already match"
+        # found none, every cycle, and real signals never reached a human.
+        # The regex still filters whatever comes back.
         raw = await self.provider.generate(
-            "Extract only the lines that already match this exact format from the "
-            f"text below; output nothing else, not even an introduction:\n\n"
+            "The TEXT below is an agent's report. Rewrite each item it says it is "
+            "REPORTING as exactly one line matching FORMAT. Leave out anything it "
+            "held back, skipped, rated below its bar, or had already reported, and "
+            "never add an item the TEXT does not contain. Output only those lines, "
+            "no introduction.\n\n"
             f"FORMAT (regex): {report_pattern}\n\n"
             f"TEXT:\n{raw}\n\n"
-            "If no line in TEXT matches, output nothing.",
+            "If TEXT reports nothing, output nothing.",
             system=(
-                "You are a strict text filter, not an assistant. You never explain, "
-                "apologize, or add commentary -- you output only the matching lines, "
-                "verbatim, or nothing at all."
+                "You are a strict reformatter, not an assistant. You never explain, "
+                "apologize, or add commentary -- you output only report lines in the "
+                "given format, or nothing at all."
             ),
             model=self.definition.model_name,
             num_ctx=self.num_ctx,
