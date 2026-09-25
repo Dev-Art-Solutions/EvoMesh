@@ -304,6 +304,7 @@ internal sealed class MainForm : Form
         {
             ("Status", "/status"), ("Agents", "/agents"), ("Ollama models", "/models ollama"),
             ("Skills", "/skills"), ("Evolution", "/evolution status"),
+            ("Improvements", "/improvements"),
             ("World", "/context world"), ("Restart mesh", "/restart"), ("Help", "/help")
         })
         {
@@ -485,7 +486,20 @@ internal sealed class MainForm : Form
         _agentDeleteButton = MakeButton("Delete...", 100);
         _agentDeleteButton.FlatAppearance.BorderColor = Color.FromArgb(178, 34, 34);
         _agentDeleteButton.Click += async (_, _) => await DeleteSelectedAgentAsync();
-        actions.Controls.AddRange([_agentStartStop, _agentMuteToggle, cycleNow, _agentDeleteButton]);
+        // What the cognitive runtime keeps per agent: its goals, the plans it
+        // learned to reuse without a planning call, and its own rules.
+        var inspect = new[] { ("Goals", "/goals"), ("Procedures", "/procedures"), ("Rules", "/rules") }
+            .Select(item =>
+            {
+                var button = MakeButton(item.Item1, 100);
+                button.Click += async (_, _) =>
+                {
+                    if (_selectedAgent is { } row) await SendCommandAsync($"{item.Item2} {Quote(row.Name)}");
+                };
+                return (Control)button;
+            })
+            .ToArray();
+        actions.Controls.AddRange([_agentStartStop, _agentMuteToggle, cycleNow, .. inspect, _agentDeleteButton]);
 
         var manage = new GroupBox { Text = "Model", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12) };
         var mgrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, AutoSize = true };
