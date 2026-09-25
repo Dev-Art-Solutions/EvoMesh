@@ -22,7 +22,7 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -34,6 +34,7 @@ from evomesh.contracts import (
     FilesystemGrant,
     TelegramSettings,
 )
+from evomesh.rules import rules_from_config
 
 if TYPE_CHECKING:
     from evomesh.environment import Environment
@@ -76,6 +77,12 @@ class AgentTemplateDefinition(BaseModel):
     goals: list[TemplateGoal] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    # What this agent can be delegated (capability routing / Contract Net).
+    # Empty means derived on instantiate(): `tool.<name>` per bundled tool,
+    # plus `harness` when it gets harness access.
+    capabilities: list[str] = Field(default_factory=list)
+    # Forward-chaining rules (rules.rule_from_config shape), validated here.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     # instantiate() auto-grants harness access whenever a template bundles
     # its own tools (they need it to run at all) -- but an agent whose whole
     # purpose is the harness's own built-in read/edit/write/shell, with no
@@ -149,6 +156,16 @@ def parse_agent_template(
         autonomy = Autonomy(str(meta.get("autonomy") or "cyclic").strip().lower())
         skills = [str(item).strip() for item in (meta.get("skills") or []) if str(item).strip()]
         tools = [str(item).strip() for item in (meta.get("tools") or []) if str(item).strip()]
+        capabilities = [
+            str(item).strip() for item in (meta.get("capabilities") or []) if str(item).strip()
+        ]
+        rules = meta.get("rules") or []
+        if not isinstance(rules, list) or not all(isinstance(item, dict) for item in rules):
+            raise InvalidAgentTemplateError(f"{path}: 'rules' must be a list of mappings")
+        try:
+            rules_from_config(rules)
+        except ValueError as exc:
+            raise InvalidAgentTemplateError(f"{path}: {exc}") from exc
         cycle_seconds = meta.get("cycle_seconds")
         watch = meta.get("watch") or {}
         if not isinstance(watch, dict):
@@ -165,6 +182,8 @@ def parse_agent_template(
             goals=goals,
             skills=skills,
             tools=tools,
+            capabilities=capabilities,
+            rules=[dict(item) for item in rules],
             harness=bool(meta.get("harness", False)),
             learn_skills=bool(meta.get("learn_skills", False)),
             watch_command=str(watch.get("command") or "").strip(),
@@ -305,6 +324,12 @@ class AgentTemplateRegistry:
             # Exactly the tools it bundles, and none for one that bundles none
             # (the coder templates) -- see AgentDefinition.tools.
             tools=list(template.tools),
+            capabilities=list(template.capabilities)
+            or [
+                *(f"tool.{name}" for name in template.tools),
+                *(["harness"] if template.harness or template.tools else []),
+            ],
+            rules=[dict(item) for item in template.rules],
             can_learn_skills=template.learn_skills,
             status=AgentStatus.ACTIVE,
             watch_command=template.watch_command.replace(

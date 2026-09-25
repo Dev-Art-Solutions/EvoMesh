@@ -646,6 +646,10 @@ class AgentDefinition(BaseModel):
     mind: MindState = Field(default_factory=MindState)
     skills: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    # Forward-chaining rules this agent runs every cycle before deliberation,
+    # in rules.rule_from_config's shape. Plain data here so the contract does
+    # not depend on the engine; a malformed one is refused where it is set.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     # The custom tools (tools/<name>/TOOL.md) this agent's harness jobs are
     # offered. None is the old behavior -- every allowed custom tool -- kept
     # for an agent that never said, except a system agent, which gets none.

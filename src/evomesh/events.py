@@ -22,6 +22,8 @@ class EventType(StrEnum):
     AGENT_STALLED = "agent_stalled"
     MESSAGE_RECEIVED = "message_received"
     HUMAN_FEEDBACK_RECEIVED = "human_feedback_received"
+    # A rule's EMIT_EVENT effect; payload carries the rule event's own type.
+    RULE_EVENT = "rule_event"
 
 
 @dataclass(frozen=True)

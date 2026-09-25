@@ -31,6 +31,7 @@ from evomesh.cognitive_services import (
 from evomesh.contracts import AgentDefinition, AgentPhase, Goal, Message
 from evomesh.memory import AgentMemory, MemoryBudget, clip
 from evomesh.models import ModelProvider
+from evomesh.rules import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,9 @@ class CycleContext:
     # instance serves every agent on it and each may need a different window.
     num_ctx: int | None = None
     cognitive: CognitiveModelService = field(default_factory=CognitiveModelService)
+    # Structured events addressed to this agent since its last cycle, the
+    # input the rule engine reacts to without a model call.
+    events: tuple[RuntimeEvent, ...] = ()
 
     @property
     def goal(self) -> Goal | None:

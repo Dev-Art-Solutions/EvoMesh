@@ -22,14 +22,13 @@ from typing import Any, cast
 
 from evomesh.bdi import (
     BDIBehavior,
-    Desire,
     PlanLibrary,
     PlanRecipe,
     ReflectiveBehavior,
     StepResult,
 )
 from evomesh.cognition import CycleContext
-from evomesh.contracts import AgentPhase, Belief, BeliefChange, Intention, PlanStep
+from evomesh.contracts import AgentPhase, Belief, Intention, PlanStep
 from evomesh.evolution import (
     BACKLOG_MAX_SECONDS,
     BACKLOG_MAX_STEPS,
@@ -56,6 +55,16 @@ from evomesh.evolution import (
 )
 from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
+from evomesh.rules import (
+    BELIEF_CHANGED_EVENT,
+    Rule,
+    RuleEffect,
+    RuleEffectKind,
+    RuleEngine,
+    RuleOperator,
+    RuleSource,
+    RuleTest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,16 +267,33 @@ class GuardianBehavior(BDIBehavior):
             ),
         ]
 
-    async def options(self, context: CycleContext, change: BeliefChange) -> list[Desire]:
-        """Want something new only when the world actually changed."""
-        degraded = context.definition.mind.belief(DEGRADED_KEY)
-        if (
-            DEGRADED_KEY in change.keys
-            and degraded is not None
-            and degraded.statement.startswith("agents not running")
-        ):
-            return [Desire(f"{INVESTIGATE}{degraded.statement}", priority=2)]
-        return []
+    def rule_engine(self) -> RuleEngine:
+        """Want something new only when the world actually changed: the
+        degradation belief was just revised, and says agents are down."""
+        return RuleEngine(
+            (
+                Rule(
+                    name="investigate-degradation",
+                    when=(
+                        RuleTest(RuleSource.EVENT, BELIEF_CHANGED_EVENT, value=DEGRADED_KEY),
+                        RuleTest(
+                            RuleSource.BELIEF,
+                            DEGRADED_KEY,
+                            RuleOperator.STARTS_WITH,
+                            "agents not running",
+                        ),
+                    ),
+                    then=(
+                        RuleEffect(
+                            RuleEffectKind.PROPOSE_GOAL,
+                            "investigate",
+                            f"{INVESTIGATE}{{belief:{DEGRADED_KEY}}}",
+                            {"priority": 2},
+                        ),
+                    ),
+                ),
+            )
+        )
 
     def library(self) -> PlanLibrary:
         return PlanLibrary(

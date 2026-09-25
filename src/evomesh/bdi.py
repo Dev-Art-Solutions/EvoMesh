@@ -25,10 +25,12 @@ steps cost no model call at all.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 from evomesh.cognition import (
     CycleContext,
@@ -49,6 +51,7 @@ from evomesh.contracts import (
     MindState,
     PlanStep,
 )
+from evomesh.events import Event, EventBus, EventType
 from evomesh.goal_manager import GoalEvaluationContext, GoalManager
 from evomesh.harness_queue import HarnessGateway
 from evomesh.memory import clip
@@ -59,7 +62,16 @@ from evomesh.procedural_learning import (
     ProcedureLearner,
     goal_signature,
 )
-from evomesh.rules import RuleEngine
+from evomesh.rules import (
+    BELIEF_CHANGED_EVENT,
+    RuleEffect,
+    RuleEngine,
+    RuleResult,
+    RuntimeEvent,
+    rules_from_config,
+)
+
+logger = logging.getLogger(__name__)
 
 MAX_PLAN_STEPS = 4
 
@@ -266,7 +278,12 @@ class BDIReasoner:
 
         percepts = await behavior.perceive(context)
         change = mind.revise(percepts)
-        rules = behavior.rule_engine().fire(mind)
+        inputs = (
+            *context.events,
+            *(RuntimeEvent(BELIEF_CHANGED_EVENT, {"value": key}) for key in sorted(change.keys)),
+        )
+        goals_before = {goal.id for goal in mind.goals}
+        rules = self._rule_engine(behavior, context).fire(mind, inputs)
         if rules.derived_beliefs:
             change = BeliefChange(
                 added=change.added
@@ -278,6 +295,7 @@ class BDIReasoner:
                 updated=change.updated,
             )
         self._adopt_desires(mind, await behavior.options(context, change))
+        await self._dispatch(behavior, context, rules, len(inputs), change, goals_before)
         artifact_root = (
             Path(context.definition.harness_root)
             if context.definition.harness_root
@@ -300,6 +318,61 @@ class BDIReasoner:
         if step is None:
             return CycleOutcome.idle("The committed plan has no runnable step.")
         return await self._execute(behavior, context, mind, intention, step, reason)
+
+    # -- rules -------------------------------------------------------------
+
+    @staticmethod
+    def _rule_engine(behavior: BDIBehavior, context: CycleContext) -> RuleEngine:
+        engine = behavior.rule_engine()
+        try:
+            return engine.with_rules(rules_from_config(context.definition.rules))
+        except ValueError as exc:
+            # Refused where they are set (templates, console); a row that got
+            # past that must not stop the agent thinking, only its own rules.
+            logger.warning("%s: ignoring its rules: %s", context.definition.name, exc)
+            return engine
+
+    async def _dispatch(
+        self,
+        behavior: BDIBehavior,
+        context: CycleContext,
+        rules: RuleResult,
+        consumed: int,
+        change: BeliefChange,
+        goals_before: set[str],
+    ) -> None:
+        """Make what this cycle's rules and revision produced visible: rule
+        events and the mesh-level facts (belief changes, new goals) go on the
+        event bus, requested actions go to the behavior."""
+        bus = context.service("events")
+        agent_id = context.definition.id
+        if isinstance(bus, EventBus):
+            for key in sorted(change.keys):
+                await bus.publish(
+                    Event(EventType.BELIEF_CHANGED, "bdi", agent_id, payload={"key": key})
+                )
+            for goal in context.definition.mind.goals:
+                if goal.id not in goals_before:
+                    await bus.publish(
+                        Event(
+                            EventType.GOAL_CREATED,
+                            "bdi",
+                            agent_id,
+                            goal.id,
+                            {"description": goal.description, "kind": goal.kind},
+                        )
+                    )
+            for event in rules.events[consumed:]:
+                await bus.publish(
+                    Event(
+                        EventType.RULE_EVENT,
+                        "rules",
+                        agent_id,
+                        payload={"type": event.type, **event.payload},
+                    )
+                )
+        for action in rules.requested_actions:
+            await behavior.on_rule_action(context, action)
 
     # -- option generation ----------------------------------------------
 
@@ -560,7 +633,29 @@ class BDIBehavior:
         return PlanLibrary()
 
     def rule_engine(self) -> RuleEngine:
+        """Rules built into this behavior; the agent's own configured rules
+        are added to them each cycle."""
         return RuleEngine()
+
+    async def on_rule_action(self, context: CycleContext, action: RuleEffect) -> None:
+        """Carry out a rule's REQUEST_ACTION. Built in: ``announce`` (tell the
+        humans ``value``) and ``wake`` (run the agent named ``value`` now)."""
+        environment = context.service("environment")
+        if action.key == "announce" and environment is not None:
+            await cast("Any", environment).announce(str(action.value))
+            return
+        if action.key == "wake" and environment is not None:
+            try:
+                target = cast("Any", environment).registry.get(str(action.value))
+            except KeyError:
+                logger.warning("rule asked to wake unknown agent %s", action.value)
+                return
+            if runtime := cast("Any", environment).runtimes.get(target.id):
+                runtime.wake()
+            return
+        logger.warning(
+            "%s: no handler for rule action %r", context.definition.name, action.key
+        )
 
     async def execute(
         self, context: CycleContext, intention: Intention, step: PlanStep

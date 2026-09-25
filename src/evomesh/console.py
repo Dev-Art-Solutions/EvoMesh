@@ -32,6 +32,7 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.models import describe
 from evomesh.procedural_learning import ProcedureLearner
+from evomesh.rules import rule_from_config
 from evomesh.skills import InvalidSkillError, MissingSkillError
 from evomesh.tools import InvalidToolError, MissingToolError
 
@@ -79,6 +80,8 @@ HELP = """Commands:
   /memory <agent>               Show the agent's memory.md
   /procedures <agent> [approve <pattern>|forget <name>]
                                 Learned procedures and repeated plans; approve one early
+  /rules <agent> [add <json>|remove <name>|clear]
+                                The agent's own forward-chaining rules
   /context <agent>|world        Show context.md
   /grant <agent> <path> <mode>  Grant read or write access
   /revoke <agent> <path>        Revoke access
@@ -939,6 +942,44 @@ class ConsoleChannel:
             + "\nrepeated plans not yet learned:\n"
             + ("\n".join(pending) or "  none")
         )
+
+    async def _command_rules(self, parts: list[str]) -> str:
+        """An agent's own forward-chaining rules: list, add one (JSON in
+        rules.rule_from_config's shape, refused if malformed), or clear."""
+        usage = "Usage: /rules <agent> [add '<json>'|remove <name>|clear]"
+        if len(parts) < 2:
+            return usage
+        definition = self.environment.registry.get(parts[1])
+        if len(parts) == 2:
+            return "\n".join(
+                f"{item.get('name')}: {json.dumps(item, ensure_ascii=False)}"
+                for item in definition.rules
+            ) or f"{definition.name} has no rules of its own."
+        action = parts[2]
+        if action == "add" and len(parts) > 3:
+            try:
+                raw = json.loads(" ".join(parts[3:]))
+                rule = rule_from_config(raw)
+            except (json.JSONDecodeError, ValueError, AttributeError) as exc:
+                return f"Rule refused: {exc}"
+            definition.rules = [
+                item for item in definition.rules if item.get("name") != rule.name
+            ] + [raw]
+            message = f"{definition.name} now runs rule {rule.name!r}."
+        elif action == "remove" and len(parts) == 4:
+            kept = [item for item in definition.rules if item.get("name") != parts[3]]
+            if len(kept) == len(definition.rules):
+                return f"{definition.name} has no rule named {parts[3]}."
+            definition.rules = kept
+            message = f"Removed rule {parts[3]!r}."
+        elif action == "clear" and len(parts) == 3:
+            definition.rules = []
+            message = f"Cleared {definition.name}'s rules."
+        else:
+            return usage
+        definition.touch()
+        await self.environment.repository.save_agent(definition)
+        return message
 
     async def _command_context(self, parts: list[str]) -> str:
         if len(parts) != 2:

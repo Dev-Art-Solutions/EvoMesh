@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -37,11 +38,13 @@ from evomesh.memory import AgentMemory, MemoryBudget
 from evomesh.messaging import MessageBus
 from evomesh.models import ModelProvider, ModelUnavailableError
 from evomesh.progress import ProgressTracker
+from evomesh.rules import RuntimeEvent
 from evomesh.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
 
 MAX_INBOX_HISTORY = 6
+MAX_PENDING_EVENTS = 64
 
 # How long a cycle can run before it counts as stuck rather than merely slow.
 # The validate stage hands a multi-minute suite off to a background task and
@@ -192,6 +195,10 @@ class AgentRuntime:
     _last_cycle_finished: float = field(default=0.0, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _progress: ProgressTracker = field(default_factory=ProgressTracker, init=False)
+    # Events addressed to this agent since its last cycle, for its rules.
+    _pending_events: deque[RuntimeEvent] = field(
+        default_factory=lambda: deque(maxlen=MAX_PENDING_EVENTS), init=False
+    )
 
     def __post_init__(self) -> None:
         self.state = AgentRuntimeState(
@@ -207,6 +214,8 @@ class AgentRuntime:
         await self.memory.ensure()
         await self.repository.save_agent(self.definition)
         self.bus.register(self.definition.id)
+        for event_type in EventType:
+            self.events.subscribe(event_type, self._collect_event)
         self._tasks = [
             asyncio.create_task(self._message_loop(), name=f"agent:{self.definition.slug}:inbox"),
             asyncio.create_task(self._cycle_loop(), name=f"agent:{self.definition.slug}:cycle"),
@@ -224,6 +233,8 @@ class AgentRuntime:
             self.definition.status = AgentStatus.STOPPED
             self.definition.touch()
         await self.repository.save_agent(self.definition)
+        for event_type in EventType:
+            self.events.unsubscribe(event_type, self._collect_event)
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -234,6 +245,18 @@ class AgentRuntime:
         self._tasks = []
         self.state.phase = AgentPhase.OFFLINE
         self.state.goal = None
+
+    def _collect_event(self, event: Event) -> None:
+        """Keep an event addressed to this agent for its next cycle's rules.
+        A rule matches ``value``: the goal the event is about, unless the
+        event carries a value of its own."""
+        if event.agent_id != self.definition.id or event.source in {"bdi", "rules"}:
+            # What this agent's own reasoner published it already reacted to
+            # within that cycle; feeding it back would re-fire it forever.
+            return
+        payload = {"value": event.goal_id or True, **event.payload, "source": event.source}
+        kind = str(event.payload.get("type")) if event.type is EventType.RULE_EVENT else ""
+        self._pending_events.append(RuntimeEvent(kind or event.type.value, payload))
 
     # -- reactive path --------------------------------------------------
 
@@ -419,7 +442,10 @@ class AgentRuntime:
             async with self._lock:
                 goal = self.definition.mind.next_goal()
                 self.state.phase = AgentPhase.THINKING
-                outcome = await self.behavior.cycle(self._context())
+                context = self._context()
+                context.events = tuple(self._pending_events)
+                self._pending_events.clear()
+                outcome = await self.behavior.cycle(context)
                 await self._apply(outcome, goal)
                 if outcome.again:
                     self.wake()
