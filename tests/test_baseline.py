@@ -193,3 +193,23 @@ async def test_the_verdict_is_reused_until_the_tree_changes(
     assert await evolver.baseline() is None  # new tree, new run
     await asyncio.sleep(0.01)
     assert runs == ["one", "two"]
+
+
+async def test_a_generation_decided_outside_the_pipeline_frees_it(
+    tmp_path: Path, project: Path
+) -> None:
+    """Found live 2026-09-26: the mesh was stopped with the pipeline at
+    `report` for a generation that was then discarded, and every cycle after
+    the restart failed with 'Generation N is not a known candidate'."""
+    context, evolver = await _context(tmp_path, project)
+    generation = await evolver.create_candidate("objective")
+    evolver.workspace.supervisor.discard(generation.number)
+    await evolver.set_pipeline_state(
+        {"stage": "report", "generation": generation.number, "objective": "objective"}
+    )
+
+    outcome = await EvolverBehavior(test_backlog=False, scout_when_idle=False).cycle(context)
+
+    assert outcome.error is None, outcome.error
+    assert "already discarded" in outcome.summary
+    assert (await evolver.pipeline_state())["stage"] == "plan"

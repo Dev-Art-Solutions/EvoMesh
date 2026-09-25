@@ -746,6 +746,18 @@ class EvolverBehavior(BDIBehavior):
     ) -> StepResult:
         if stage == STAGE_PLAN:
             return await self._open(context, evolver, objective)
+        number = state.get("generation")
+        if isinstance(number, int) and evolver.workspace.supervisor.outcome(number) is not None:
+            # Decided outside this pipeline (a human's /evolution discard, a
+            # stop mid-stage): every later stage would ask for a candidate
+            # that no longer exists and fail the same way each cycle.
+            decided = evolver.workspace.supervisor.outcome(number)
+            await evolver.set_pipeline_state({"stage": STAGE_PLAN})
+            return StepResult(
+                summary=f"generation {number} was already {decided} outside the pipeline; "
+                "the pipeline is free for the next objective",
+                phase=AgentPhase.ACTING,
+            )
         if stage == STAGE_DRAFT:
             return await self._draft_plan(context, evolver, state)
         if stage == STAGE_EVALUATE:
