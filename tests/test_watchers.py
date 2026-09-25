@@ -6,6 +6,9 @@ from __future__ import annotations
 import asyncio
 import shlex
 import sys
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from evomesh.watchers import AgentWatcher
 
@@ -73,6 +76,29 @@ async def test_a_hanging_child_is_killed_by_the_watcher_timeout() -> None:
 
     assert time.monotonic() - started < 10  # if the timeout never reached
     # subprocess.run, the child would leak and the real 30s sleep would hang us out.
+
+
+async def test_a_loop_backs_off_between_consecutive_timeouts() -> None:
+    async def notify(_: str) -> None:
+        return None
+
+    watcher = AgentWatcher(f'{PYTHON} -c "pass"', interval_seconds=1, notify=notify)
+    watcher._tick = AsyncMock(side_effect=TimeoutError)
+
+    slept: list[float] = []
+
+    async def capturing_sleep(delay, *args, **kwargs):
+        slept.append(delay)
+        # stop after six iterations so the loop runs a bounded number of times
+        if len(slept) >= 6:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        with patch("asyncio.sleep", side_effect=capturing_sleep):
+            await watcher._loop()
+
+    # doubles each timeout (1s -> 2 -> 4 -> 8 -> 16 -> 32) and caps at 32x.
+    assert slept == [2.0, 4.0, 8.0, 16.0, 32.0, 32.0]
 
 
 async def test_stop_cancels_the_loop() -> None:

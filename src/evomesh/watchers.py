@@ -41,6 +41,7 @@ class AgentWatcher:
         self.notify = notify
         self.cwd = cwd
         self.timeout_seconds = timeout_seconds
+        self._timeout_streak = 0
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -65,13 +66,15 @@ class AgentWatcher:
         while True:
             try:
                 await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)
+                self._timeout_streak = 0
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
+                self._timeout_streak = min(5, self._timeout_streak + 1)
                 logger.warning("Watcher command timed out: %s", self._argv)
             except Exception:  # noqa: BLE001 - one bad tick must not end the watcher
                 logger.exception("Watcher command failed: %s", self._argv)
-            await asyncio.sleep(self.interval_seconds)
+            await asyncio.sleep(self.interval_seconds * 2 ** self._timeout_streak)
 
     async def _tick(self) -> CommandResult:
         result = await run_command(

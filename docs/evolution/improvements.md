@@ -131,11 +131,11 @@ the line below the title.
     `phase_label` mangles any phase string that contains uppercase letters or digits: `"E2E"` becomes `"E2e"`, `"2D"` becomes `"2d"`, because the fallback calls `.capitalize()`, which lowercases everything after the first character. That fallback exists precisely to render phases not in `_LABELS`, and the function is typed and called with arbitrary phase strings.
     >         return text.replace("_", " ").strip().capitalize() or "Unknown"
     1. [x] src/evomesh/phase_label.py `phase_label` -- in the `except KeyError` fallback, replace `.capitalize()` with an upper-case-only-first-char transform (e.g. `text[:1].upper() + text[1:]`) so trailing digits/uppercase are preserved.
-- [ ] Add backoff so a watcher that keeps timing out slows down instead of hammering the failing command every interval
+- [x] Add backoff so a watcher that keeps timing out slows down instead of hammering the failing command every interval
     `AgentWatcher._loop` catches `TimeoutError`, logs one line, and then falls straight to `asyncio.sleep(self.interval_seconds)` and loops — so three consecutive timeouts (the logged failure) means three commands launched `interval_seconds` apart with no delay growing with the failure count, even though `run_command` has to tear down the whole process group after each one.
     >             except TimeoutError:
     >                 logger.warning("Watcher command timed out: %s", self._argv)
     >             except Exception:  # noqa: BLE001 - one bad tick must not end the watcher
     >                 logger.exception("Watcher command failed: %s", self._argv)
     >             await asyncio.sleep(self.interval_seconds)
-    1. [ ] src/evomesh/watchers.py `AgentWatcher._loop` -- keep a timeout streak (start at 0 in `__init__`): after a tick that finishes, set it to 0; in the `except TimeoutError:` branch add 1, capped at 5; then sleep `self.interval_seconds * 2 ** streak` instead of `self.interval_seconds`, so each consecutive timeout doubles the wait (up to 32x) and one good tick restores the normal interval.
+    1. [x] src/evomesh/watchers.py `AgentWatcher._loop` -- keep a timeout streak (start at 0 in `__init__`): after a tick that finishes, set it to 0; in the `except TimeoutError:` branch add 1, capped at 5; then sleep `self.interval_seconds * 2 ** streak` instead of `self.interval_seconds`, so each consecutive timeout doubles the wait (up to 32x) and one good tick restores the normal interval.
