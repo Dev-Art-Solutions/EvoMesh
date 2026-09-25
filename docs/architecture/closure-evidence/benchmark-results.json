@@ -1,0 +1,165 @@
+{
+  "tested_commit": "2da3a5c6b4c6c3c5ce1a1887e27c34f8f30d132f",
+  "benchmarks": {
+    "B1": {
+      "title": "W1 through normal typed selection",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T10",
+        "T13"
+      ],
+      "status": "passed",
+      "measured": {
+        "execution_path": "typed_authored",
+        "goal_status": "done",
+        "provider_invocations": 0,
+        "model_calls_ledger": 0,
+        "tool_attempts": 2,
+        "step_attempts": 3,
+        "validators": [
+          "artifact_matches_source"
+        ],
+        "artifact_sha256": "63b347af26d9edb3e700dcdd7499069e658078d8fb34ddbf43bbed03679d3a26",
+        "provider_tokens": null,
+        "tokens_note": "no model call was made"
+      }
+    },
+    "B2": {
+      "title": "W2 clean path",
+      "mode": "runtime_integration_scripted_provider",
+      "matrix_rows": [
+        "T21",
+        "T25"
+      ],
+      "status": "passed",
+      "measured": {
+        "execution_path": "typed_authored",
+        "goal_status": "done",
+        "provider_invocations": 1,
+        "model_calls_ledger": 1,
+        "planning_or_routing_calls": 0,
+        "prompt_chars": [
+          733
+        ],
+        "provider_tokens": null,
+        "tokens_note": "scripted provider reports none; recorded as unknown, not zero"
+      }
+    },
+    "B3": {
+      "title": "Model-directed traces -> candidate -> manual promotion",
+      "mode": "runtime_integration_scripted_provider",
+      "matrix_rows": [
+        "T51",
+        "T54"
+      ],
+      "status": "passed",
+      "measured": {
+        "legacy_model_calls_per_occurrence": [
+          3,
+          3,
+          3
+        ],
+        "typed_model_calls": 0,
+        "typed_goal_status": "done",
+        "candidate_restrictions": [],
+        "held_out_replay_passed": true,
+        "savings_ratio": 1.0,
+        "note": "scripted model on the legacy path; the ratio compares these runs only"
+      }
+    },
+    "B4": {
+      "title": "Incompatible parameters or contract",
+      "mode": "unit",
+      "matrix_rows": [
+        "T02",
+        "T09"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B5": {
+      "title": "Branch false/true/unknown",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T04",
+        "T06"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B6": {
+      "title": "Delegate and await across lost/duplicate notification",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T44",
+        "T45",
+        "T46",
+        "T48"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B7": {
+      "title": "Crash at every defined operation window",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T40"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B8": {
+      "title": "Cancellation during peer/model/tool work",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T19",
+        "T49"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B9": {
+      "title": "Procedure contract regression",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T55"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B10": {
+      "title": "W3 actual isolated candidate workflow",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T56",
+        "T57"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B11": {
+      "title": "Empty backlog or broken observer",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T58",
+        "T59"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B12": {
+      "title": "Old persisted state and restart",
+      "mode": "unit",
+      "matrix_rows": [
+        "T41",
+        "T43"
+      ],
+      "status": "passed",
+      "measured": null
+    }
+  }
+}

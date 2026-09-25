@@ -1,0 +1,32 @@
+{
+  "tested_commit": "2da3a5c6b4c6c3c5ce1a1887e27c34f8f30d132f",
+  "rows": {
+    "T41": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t39_restoring_an_older_ledger_does_not_repeat_the_write"
+      ],
+      "status": "passed"
+    },
+    "T43": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_an_old_database_migrates_idempotently_and_keeps_its_data"
+      ],
+      "status": "passed"
+    }
+  },
+  "benchmark": {
+    "title": "Old persisted state and restart",
+    "mode": "unit",
+    "matrix_rows": [
+      "T41",
+      "T43"
+    ],
+    "status": "passed",
+    "measured": null
+  },
+  "schema_versions": [
+    1,
+    2
+  ],
+  "note": "version 2 adds the procedure tables only; an older database migrates by gaining them, and a restart migrates again harmlessly"
+}

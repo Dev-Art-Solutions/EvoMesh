@@ -1,0 +1,80 @@
+d:\Projects\Dev-art solutions\EvoMesh\tests\conftest.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\conftest.py:5:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_agent_templates.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_agent_templates.py:9:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_anthropic_provider.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_anthropic_provider.py:13:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_baseline.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_baseline.py:14:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_bdi.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_bdi.py:9:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_browser_bridge.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_browser_bridge.py:17:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_cognitive_services.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_cognitive_services.py:5:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_config.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_config.py:14:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_console.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_console.py:7:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_core.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_core.py:8:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_cron.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_cron.py:5:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_cycles.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_cycles.py:6:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_document_tools.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_document_tools.py:15:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_goal_manager.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_goal_manager.py:6:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness.py:14:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness_tools.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness_tools.py:3:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_http_retry.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_http_retry.py:20:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_idle_evolution.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_idle_evolution.py:12:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_improvement_control.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_improvement_control.py:10:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_improvements.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_improvements.py:3:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_models.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_models.py:2:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_news_fetch_script.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_news_fetch_script.py:14:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_ollama_provider.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_ollama_provider.py:12:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_openai_compatible_provider.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_openai_compatible_provider.py:17:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_phase2_audit.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_phase2_audit.py:8:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_crash.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_crash.py:15:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_learning.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_learning.py:13:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_matrix.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedure_matrix.py:10:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedures.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_procedures.py:11:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_publishing.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_publishing.py:16:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_reachability.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_reachability.py:18:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_rules_wiring.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_rules_wiring.py:7:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_singleton.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_singleton.py:6:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_skills.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_skills.py:12:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_token_usage.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_token_usage.py:6:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_tools.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_tools.py:11:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_improvement.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_improvement.py:21:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py:11:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+38 errors, 0 warnings, 0 informations
+WARNING: there is a new pyright version available (v1.1.411 -> v1.1.414).
+Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
+

@@ -1,0 +1,1225 @@
+{
+  "plan": "EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2",
+  "base_commit": "815cd6c",
+  "implementation_parent": "6bac351",
+  "tested_commit": "2da3a5c6b4c6c3c5ce1a1887e27c34f8f30d132f",
+  "working_tree_clean": true,
+  "status": "ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED",
+  "core_gates": {
+    "CG1": "passed",
+    "CG2": "passed",
+    "CG3": "passed",
+    "CG4": "passed",
+    "CG5": "passed",
+    "CG6": "passed",
+    "CG7": "passed",
+    "CG8": "passed"
+  },
+  "gate_detail": {
+    "CG1": {
+      "title": "Contracts and authority",
+      "status": "passed",
+      "rows": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09"
+      ],
+      "benchmarks": []
+    },
+    "CG2": {
+      "title": "Useful deterministic/mixed execution",
+      "status": "passed",
+      "rows": [
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19",
+        "T20",
+        "T21",
+        "T22",
+        "T23",
+        "T24",
+        "T25",
+        "T26",
+        "T27",
+        "T28"
+      ],
+      "benchmarks": [
+        "B1",
+        "B2",
+        "B4",
+        "B5"
+      ]
+    },
+    "CG3": {
+      "title": "Recovery and bounded effects",
+      "status": "passed",
+      "rows": [
+        "T26",
+        "T27",
+        "T28",
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T39",
+        "T40",
+        "T41",
+        "T42",
+        "T43"
+      ],
+      "benchmarks": [
+        "B7",
+        "B8"
+      ]
+    },
+    "CG4": {
+      "title": "Real multi-agent cooperation",
+      "status": "passed",
+      "rows": [
+        "T31",
+        "T44",
+        "T45",
+        "T46",
+        "T47",
+        "T48",
+        "T49",
+        "T50"
+      ],
+      "benchmarks": [
+        "B6"
+      ]
+    },
+    "CG5": {
+      "title": "Trustworthy restricted learning",
+      "status": "passed",
+      "rows": [
+        "T51",
+        "T52",
+        "T53",
+        "T54",
+        "T55"
+      ],
+      "benchmarks": [
+        "B3",
+        "B9"
+      ]
+    },
+    "CG6": {
+      "title": "Useful self-improvement, not busywork",
+      "status": "passed",
+      "rows": [
+        "T56",
+        "T57",
+        "T58",
+        "T59",
+        "T60"
+      ],
+      "benchmarks": [
+        "B10",
+        "B11"
+      ]
+    },
+    "CG7": {
+      "title": "Migration and operation",
+      "status": "passed",
+      "rows": [
+        "T17",
+        "T18",
+        "T19",
+        "T20",
+        "T39",
+        "T40",
+        "T41",
+        "T42",
+        "T43"
+      ],
+      "benchmarks": [
+        "B12"
+      ]
+    },
+    "CG8": {
+      "title": "Reproducible evidence and quality",
+      "status": "passed",
+      "evidence": [
+        "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
+        "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
+        "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt"
+      ]
+    }
+  },
+  "matrix": {
+    "T01": {
+      "tests": [
+        "tests/test_procedures.py::test_t01_valid_definition_round_trips_through_the_registry"
+      ],
+      "status": "passed"
+    },
+    "T02": {
+      "tests": [
+        "tests/test_procedures.py::test_t02_t08_unknown_versions_fields_and_admission_are_refused",
+        "tests/test_procedures.py::test_t02_unknown_step_kind_and_operator"
+      ],
+      "status": "passed"
+    },
+    "T03": {
+      "tests": [
+        "tests/test_procedures.py::test_t03_graph_defects_are_refused"
+      ],
+      "status": "passed"
+    },
+    "T04": {
+      "tests": [
+        "tests/test_procedures.py::test_t04_a_result_from_only_one_branch_cannot_be_used_after_the_merge",
+        "tests/test_procedure_control.py::test_merge_after_a_branch_cannot_use_a_one_sided_result"
+      ],
+      "status": "passed"
+    },
+    "T05": {
+      "tests": [
+        "tests/test_procedures.py::test_t05_bindings_preserve_types_and_refuse_missing_values"
+      ],
+      "status": "passed"
+    },
+    "T06": {
+      "tests": [
+        "tests/test_procedures.py::test_t06_unknown_predicates_never_pass"
+      ],
+      "status": "passed"
+    },
+    "T07": {
+      "tests": [
+        "tests/test_procedures.py::test_t07_template_looking_text_is_data"
+      ],
+      "status": "passed"
+    },
+    "T08": {
+      "tests": [
+        "tests/test_procedures.py::test_t08_only_a_trusted_approval_promotes",
+        "tests/test_procedures.py::test_t02_t08_unknown_versions_fields_and_admission_are_refused"
+      ],
+      "status": "passed"
+    },
+    "T09": {
+      "tests": [
+        "tests/test_procedures.py::test_t09_a_revision_is_immutable_and_executions_stay_pinned"
+      ],
+      "status": "passed"
+    },
+    "T10": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w1_runs_through_a_running_agent_with_zero_model_calls"
+      ],
+      "status": "passed"
+    },
+    "T11": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t11_a_generic_recipe_does_not_shadow_the_typed_path"
+      ],
+      "status": "passed"
+    },
+    "T12": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w1_recurring_occurrence_rereads_and_gets_a_new_operation"
+      ],
+      "status": "passed"
+    },
+    "T13": {
+      "tests": [
+        "tests/test_procedures.py::test_t13_a_stale_destination_is_a_conflict_not_evidence",
+        "tests/test_procedure_runtime_wiring.py::test_w1_foreign_file_at_the_destination_is_a_conflict"
+      ],
+      "status": "passed"
+    },
+    "T14": {
+      "tests": [
+        "tests/test_procedures.py::test_t14_a_schema_invalid_source_stops_before_any_write"
+      ],
+      "status": "passed"
+    },
+    "T15": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_graph_completion_is_not_goal_achievement"
+      ],
+      "status": "passed"
+    },
+    "T16": {
+      "tests": [
+        "tests/test_procedure_control.py::test_evidence_from_before_this_execution_does_not_satisfy_the_wait",
+        "tests/test_procedure_control.py::test_a_result_from_the_wrong_executor_is_refused"
+      ],
+      "status": "passed"
+    },
+    "T17": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_preemption_keeps_the_execution_and_resumes_it",
+        "tests/test_procedure_control.py::test_pause_holds_and_resume_continues_from_the_same_step"
+      ],
+      "status": "passed"
+    },
+    "T18": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_an_unrelated_belief_change_does_not_replan_or_rewrite"
+      ],
+      "status": "passed"
+    },
+    "T19": {
+      "tests": [
+        "tests/test_procedure_control.py::test_cancel_while_waiting_on_a_child_leaves_the_child_accounted",
+        "tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write"
+      ],
+      "status": "passed"
+    },
+    "T20": {
+      "tests": [
+        "tests/test_procedure_control.py::test_waiting_does_not_spend_step_attempts"
+      ],
+      "status": "passed"
+    },
+    "T21": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w2_clean_path_makes_exactly_one_bounded_model_call"
+      ],
+      "status": "passed"
+    },
+    "T22": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w2_a_tool_call_attempt_fails_the_step_at_once"
+      ],
+      "status": "passed"
+    },
+    "T23": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w2_malformed_json_then_valid_reply",
+        "tests/test_procedure_runtime_wiring.py::test_w2_repeated_fake_evidence_fails_without_a_third_call"
+      ],
+      "status": "passed"
+    },
+    "T24": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w2_oversized_mandatory_input_is_refused_not_truncated"
+      ],
+      "status": "passed"
+    },
+    "T25": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_w2_clean_path_makes_exactly_one_bounded_model_call"
+      ],
+      "status": "passed"
+    },
+    "T26": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope"
+      ],
+      "status": "passed"
+    },
+    "T27": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_a_process_that_keeps_crashing_runs_out_of_budget",
+        "tests/test_procedure_runtime_wiring.py::test_w2_fake_evidence_id_is_repaired_within_the_call_budget"
+      ],
+      "status": "passed"
+    },
+    "T28": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t28_unreported_tokens_stay_unknown"
+      ],
+      "status": "passed"
+    },
+    "T29": {
+      "tests": [
+        "tests/test_procedures.py::test_t29_t30_the_direct_path_keeps_the_agents_own_policy"
+      ],
+      "status": "passed"
+    },
+    "T30": {
+      "tests": [
+        "tests/test_procedures.py::test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch",
+        "tests/test_procedure_runtime_wiring.py::test_w1_without_write_grant_fails_the_goal_without_fallback"
+      ],
+      "status": "passed"
+    },
+    "T31": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks"
+      ],
+      "status": "passed"
+    },
+    "T32": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t32_data_that_names_a_handler_or_approval_stays_data"
+      ],
+      "status": "passed"
+    },
+    "T33": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t33_secret_fields_never_reach_a_trace"
+      ],
+      "status": "passed"
+    },
+    "T34": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t34_an_undeclared_external_effect_is_refused"
+      ],
+      "status": "passed"
+    },
+    "T35": {
+      "tests": [
+        "tests/test_procedures.py::test_t35_concurrent_advances_dispatch_once"
+      ],
+      "status": "passed"
+    },
+    "T36": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t36_crash_before_the_write_retries_it",
+        "tests/test_procedure_crash.py::test_t36_crash_after_the_write_before_its_receipt_is_reconciled"
+      ],
+      "status": "passed"
+    },
+    "T37": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t37_a_killed_process_leaves_an_effect_that_is_reconciled"
+      ],
+      "status": "passed"
+    },
+    "T38": {
+      "tests": [
+        "tests/test_procedures.py::test_t38_same_operation_with_changed_arguments_is_a_conflict"
+      ],
+      "status": "passed"
+    },
+    "T39": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t39_restoring_an_older_ledger_does_not_repeat_the_write",
+        "tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated"
+      ],
+      "status": "passed"
+    },
+    "T40": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t40_an_unprovable_effect_waits_for_an_operator",
+        "tests/test_procedure_crash.py::test_t40_only_an_operator_resolves_it",
+        "tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it"
+      ],
+      "status": "passed"
+    },
+    "T41": {
+      "tests": [
+        "tests/test_procedure_crash.py::test_t39_restoring_an_older_ledger_does_not_repeat_the_write"
+      ],
+      "status": "passed"
+    },
+    "T42": {
+      "tests": [
+        "tests/test_procedure_matrix.py::test_t42_diagnostic_retention_never_drops_authoritative_records"
+      ],
+      "status": "passed"
+    },
+    "T43": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_an_old_database_migrates_idempotently_and_keeps_its_data"
+      ],
+      "status": "passed"
+    },
+    "T44": {
+      "tests": [
+        "tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated",
+        "tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result"
+      ],
+      "status": "passed"
+    },
+    "T45": {
+      "tests": [
+        "tests/test_procedure_control.py::test_evidence_published_before_the_wait_begins_is_seen"
+      ],
+      "status": "passed"
+    },
+    "T46": {
+      "tests": [
+        "tests/test_procedure_control.py::test_a_second_settlement_is_ignored",
+        "tests/test_procedure_control.py::test_a_result_from_the_wrong_executor_is_refused"
+      ],
+      "status": "passed"
+    },
+    "T47": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_an_offline_peer_is_not_selected",
+        "tests/test_procedure_control.py::test_no_eligible_peer_fails_without_a_child"
+      ],
+      "status": "passed"
+    },
+    "T48": {
+      "tests": [
+        "tests/test_procedure_runtime_wiring.py::test_delegation_runs_parent_peer_parent_without_a_model"
+      ],
+      "status": "passed"
+    },
+    "T49": {
+      "tests": [
+        "tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success"
+      ],
+      "status": "passed"
+    },
+    "T50": {
+      "tests": [
+        "tests/test_events_and_progress.py::test_assistance_causation_loop_escalates_without_new_work",
+        "tests/test_procedure_control.py::test_delegation_depth_is_bounded"
+      ],
+      "status": "passed"
+    },
+    "T51": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_a_trace_holds_the_actual_contract_operations",
+        "tests/test_procedure_learning.py::test_three_verified_occurrences_and_an_approved_map_yield_a_candidate"
+      ],
+      "status": "passed"
+    },
+    "T52": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_a_replayed_trace_does_not_count_twice",
+        "tests/test_procedure_learning.py::test_equal_values_are_not_lineage"
+      ],
+      "status": "passed"
+    },
+    "T53": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_self_reported_completion_is_not_evidence",
+        "tests/test_procedure_learning.py::test_a_failed_operation_makes_the_trace_ineligible"
+      ],
+      "status": "passed"
+    },
+    "T54": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_a_model_directed_workload_becomes_a_promoted_zero_call_procedure"
+      ],
+      "status": "passed"
+    },
+    "T55": {
+      "tests": [
+        "tests/test_procedure_learning.py::test_a_validation_regression_degrades_the_procedure",
+        "tests/test_procedures.py::test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch"
+      ],
+      "status": "passed"
+    },
+    "T56": {
+      "tests": [
+        "tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified"
+      ],
+      "status": "passed"
+    },
+    "T57": {
+      "tests": [
+        "tests/test_w3_improvement.py::test_a_candidate_edit_invalidates_the_old_review",
+        "tests/test_w3_improvement.py::test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass",
+        "tests/test_protected_surface.py::test_editing_the_verification_rules_fails_validation"
+      ],
+      "status": "passed"
+    },
+    "T58": {
+      "tests": [
+        "tests/test_idle_evolution.py::test_an_empty_backlog_is_idle_with_no_model_call",
+        "tests/test_idle_evolution.py::test_an_empty_ranked_backlog_is_idle_too"
+      ],
+      "status": "passed"
+    },
+    "T59": {
+      "tests": [
+        "tests/test_w3_improvement.py::test_w3_a_disabled_observer_never_verifies",
+        "tests/test_w3_improvement.py::test_zero_eligible_probes_never_verify",
+        "tests/test_w3_improvement.py::test_the_same_reading_counts_once",
+        "tests/test_w3_improvement.py::test_empty_syncs_are_not_observations"
+      ],
+      "status": "passed"
+    },
+    "T60": {
+      "tests": [
+        "tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified",
+        "tests/test_improvements.py::test_coordinator_enforces_wip_and_closes_verification_loop"
+      ],
+      "status": "passed"
+    }
+  },
+  "benchmarks": {
+    "B1": {
+      "title": "W1 through normal typed selection",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T10",
+        "T13"
+      ],
+      "status": "passed",
+      "measured": {
+        "execution_path": "typed_authored",
+        "goal_status": "done",
+        "provider_invocations": 0,
+        "model_calls_ledger": 0,
+        "tool_attempts": 2,
+        "step_attempts": 3,
+        "validators": [
+          "artifact_matches_source"
+        ],
+        "artifact_sha256": "63b347af26d9edb3e700dcdd7499069e658078d8fb34ddbf43bbed03679d3a26",
+        "provider_tokens": null,
+        "tokens_note": "no model call was made"
+      }
+    },
+    "B2": {
+      "title": "W2 clean path",
+      "mode": "runtime_integration_scripted_provider",
+      "matrix_rows": [
+        "T21",
+        "T25"
+      ],
+      "status": "passed",
+      "measured": {
+        "execution_path": "typed_authored",
+        "goal_status": "done",
+        "provider_invocations": 1,
+        "model_calls_ledger": 1,
+        "planning_or_routing_calls": 0,
+        "prompt_chars": [
+          733
+        ],
+        "provider_tokens": null,
+        "tokens_note": "scripted provider reports none; recorded as unknown, not zero"
+      }
+    },
+    "B3": {
+      "title": "Model-directed traces -> candidate -> manual promotion",
+      "mode": "runtime_integration_scripted_provider",
+      "matrix_rows": [
+        "T51",
+        "T54"
+      ],
+      "status": "passed",
+      "measured": {
+        "legacy_model_calls_per_occurrence": [
+          3,
+          3,
+          3
+        ],
+        "typed_model_calls": 0,
+        "typed_goal_status": "done",
+        "candidate_restrictions": [],
+        "held_out_replay_passed": true,
+        "savings_ratio": 1.0,
+        "note": "scripted model on the legacy path; the ratio compares these runs only"
+      }
+    },
+    "B4": {
+      "title": "Incompatible parameters or contract",
+      "mode": "unit",
+      "matrix_rows": [
+        "T02",
+        "T09"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B5": {
+      "title": "Branch false/true/unknown",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T04",
+        "T06"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B6": {
+      "title": "Delegate and await across lost/duplicate notification",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T44",
+        "T45",
+        "T46",
+        "T48"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B7": {
+      "title": "Crash at every defined operation window",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T40"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B8": {
+      "title": "Cancellation during peer/model/tool work",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T19",
+        "T49"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B9": {
+      "title": "Procedure contract regression",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T55"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B10": {
+      "title": "W3 actual isolated candidate workflow",
+      "mode": "real_adapter",
+      "matrix_rows": [
+        "T56",
+        "T57"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B11": {
+      "title": "Empty backlog or broken observer",
+      "mode": "runtime_integration",
+      "matrix_rows": [
+        "T58",
+        "T59"
+      ],
+      "status": "passed",
+      "measured": null
+    },
+    "B12": {
+      "title": "Old persisted state and restart",
+      "mode": "unit",
+      "matrix_rows": [
+        "T41",
+        "T43"
+      ],
+      "status": "passed",
+      "measured": null
+    }
+  },
+  "quality_gates": [
+    {
+      "gate": "ruff",
+      "command": "ruff.exe check .",
+      "exit_code": 0,
+      "seconds": 0.0,
+      "log": "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
+      "log_sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+      "tail": [
+        "All checks passed!"
+      ]
+    },
+    {
+      "gate": "pyright",
+      "command": "pyright.exe",
+      "exit_code": 0,
+      "seconds": 9.0,
+      "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
+      "log_sha256": "fd1dec676094fa93e01924bf27302439e9ae2150a2a0dadc4f630c68def01ebc",
+      "tail": [
+        "Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`"
+      ],
+      "local_note": "0 errors other than unresolved pytest imports"
+    },
+    {
+      "gate": "pytest",
+      "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
+      "exit_code": 0,
+      "seconds": 172.2,
+      "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
+      "log_sha256": "45094e922103f0ef49e5a95f9bd6a69567b266dd94cd184b8066b61a63abc3be",
+      "tail": [
+        "1046 passed in 171.20s (0:02:51)"
+      ]
+    }
+  ],
+  "local_model_validation": {
+    "status": "completed",
+    "provider": {
+      "kind": "ollama",
+      "base_url": "http://127.0.0.1:11434",
+      "version": "0.34.2"
+    },
+    "model": {
+      "tag": "ornith-1.5:35b",
+      "digest": "9f3b89b2521908dd2e6f7a11fa368e62c8f89e1075f22604e4d1a76dd1240fcc",
+      "parameter_size": "35.5B",
+      "quantization": "Q4_K_M"
+    },
+    "denominator": 18,
+    "completed": 18,
+    "first_call_success": 18,
+    "needed_repair": 0,
+    "failed": 0,
+    "evidence": "docs/architecture/closure-evidence/local-model-w2.json",
+    "evidence_sha256": "6c43a58e21f022834a633bf338a1e71e9191365eb763ada774c8a11f9442ecbf"
+  },
+  "platforms": {
+    "this_run": "win32",
+    "ci": "ubuntu-latest (GitHub Actions: ruff, pyright, pytest) and windows-latest (desktop build and self-tests)"
+  },
+  "blocking_findings": [],
+  "deferred_nonblocking_items": "see known-limitations.md",
+  "evidence_index": [
+    {
+      "id": "ruff",
+      "mode": "quality_gate",
+      "command": "ruff.exe check .",
+      "result": "passed",
+      "path": "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
+      "sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0"
+    },
+    {
+      "id": "pyright",
+      "mode": "quality_gate",
+      "command": "pyright.exe",
+      "result": "passed",
+      "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
+      "sha256": "fd1dec676094fa93e01924bf27302439e9ae2150a2a0dadc4f630c68def01ebc"
+    },
+    {
+      "id": "pytest",
+      "mode": "quality_gate",
+      "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
+      "result": "passed",
+      "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
+      "sha256": "45094e922103f0ef49e5a95f9bd6a69567b266dd94cd184b8066b61a63abc3be"
+    },
+    {
+      "id": "T01",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t01_valid_definition_round_trips_through_the_registry",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T02",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t02_t08_unknown_versions_fields_and_admission_are_refused tests/test_procedures.py::test_t02_unknown_step_kind_and_operator",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T03",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t03_graph_defects_are_refused",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T04",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t04_a_result_from_only_one_branch_cannot_be_used_after_the_merge tests/test_procedure_control.py::test_merge_after_a_branch_cannot_use_a_one_sided_result",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T05",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t05_bindings_preserve_types_and_refuse_missing_values",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T06",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t06_unknown_predicates_never_pass",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T07",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t07_template_looking_text_is_data",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T08",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t08_only_a_trusted_approval_promotes tests/test_procedures.py::test_t02_t08_unknown_versions_fields_and_admission_are_refused",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T09",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t09_a_revision_is_immutable_and_executions_stay_pinned",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T10",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w1_runs_through_a_running_agent_with_zero_model_calls",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T11",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t11_a_generic_recipe_does_not_shadow_the_typed_path",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T12",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w1_recurring_occurrence_rereads_and_gets_a_new_operation",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T13",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t13_a_stale_destination_is_a_conflict_not_evidence tests/test_procedure_runtime_wiring.py::test_w1_foreign_file_at_the_destination_is_a_conflict",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T14",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t14_a_schema_invalid_source_stops_before_any_write",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T15",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_graph_completion_is_not_goal_achievement",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T16",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_evidence_from_before_this_execution_does_not_satisfy_the_wait tests/test_procedure_control.py::test_a_result_from_the_wrong_executor_is_refused",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T17",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_preemption_keeps_the_execution_and_resumes_it tests/test_procedure_control.py::test_pause_holds_and_resume_continues_from_the_same_step",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T18",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_an_unrelated_belief_change_does_not_replan_or_rewrite",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T19",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_cancel_while_waiting_on_a_child_leaves_the_child_accounted tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T20",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_waiting_does_not_spend_step_attempts",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T21",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w2_clean_path_makes_exactly_one_bounded_model_call",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T22",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w2_a_tool_call_attempt_fails_the_step_at_once",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T23",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w2_malformed_json_then_valid_reply tests/test_procedure_runtime_wiring.py::test_w2_repeated_fake_evidence_fails_without_a_third_call",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T24",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w2_oversized_mandatory_input_is_refused_not_truncated",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T25",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_w2_clean_path_makes_exactly_one_bounded_model_call",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T26",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T27",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_a_process_that_keeps_crashing_runs_out_of_budget tests/test_procedure_runtime_wiring.py::test_w2_fake_evidence_id_is_repaired_within_the_call_budget",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T28",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t28_unreported_tokens_stay_unknown",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T29",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t29_t30_the_direct_path_keeps_the_agents_own_policy",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T30",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch tests/test_procedure_runtime_wiring.py::test_w1_without_write_grant_fails_the_goal_without_fallback",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T31",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T32",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t32_data_that_names_a_handler_or_approval_stays_data",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T33",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t33_secret_fields_never_reach_a_trace",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T34",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t34_an_undeclared_external_effect_is_refused",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T35",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t35_concurrent_advances_dispatch_once",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T36",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_t36_crash_before_the_write_retries_it tests/test_procedure_crash.py::test_t36_crash_after_the_write_before_its_receipt_is_reconciled",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T37",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_t37_a_killed_process_leaves_an_effect_that_is_reconciled",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T38",
+      "mode": "test",
+      "command": "pytest tests/test_procedures.py::test_t38_same_operation_with_changed_arguments_is_a_conflict",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T39",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_t39_restoring_an_older_ledger_does_not_repeat_the_write tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T40",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_t40_an_unprovable_effect_waits_for_an_operator tests/test_procedure_crash.py::test_t40_only_an_operator_resolves_it tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T41",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_crash.py::test_t39_restoring_an_older_ledger_does_not_repeat_the_write",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T42",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_matrix.py::test_t42_diagnostic_retention_never_drops_authoritative_records",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T43",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_an_old_database_migrates_idempotently_and_keeps_its_data",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T44",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T45",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_evidence_published_before_the_wait_begins_is_seen",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T46",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_a_second_settlement_is_ignored tests/test_procedure_control.py::test_a_result_from_the_wrong_executor_is_refused",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T47",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_an_offline_peer_is_not_selected tests/test_procedure_control.py::test_no_eligible_peer_fails_without_a_child",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T48",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_delegation_runs_parent_peer_parent_without_a_model",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T49",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T50",
+      "mode": "test",
+      "command": "pytest tests/test_events_and_progress.py::test_assistance_causation_loop_escalates_without_new_work tests/test_procedure_control.py::test_delegation_depth_is_bounded",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T51",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_a_trace_holds_the_actual_contract_operations tests/test_procedure_learning.py::test_three_verified_occurrences_and_an_approved_map_yield_a_candidate",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T52",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_a_replayed_trace_does_not_count_twice tests/test_procedure_learning.py::test_equal_values_are_not_lineage",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T53",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_self_reported_completion_is_not_evidence tests/test_procedure_learning.py::test_a_failed_operation_makes_the_trace_ineligible",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T54",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_a_model_directed_workload_becomes_a_promoted_zero_call_procedure",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T55",
+      "mode": "test",
+      "command": "pytest tests/test_procedure_learning.py::test_a_validation_regression_degrades_the_procedure tests/test_procedures.py::test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T56",
+      "mode": "test",
+      "command": "pytest tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T57",
+      "mode": "test",
+      "command": "pytest tests/test_w3_improvement.py::test_a_candidate_edit_invalidates_the_old_review tests/test_w3_improvement.py::test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass tests/test_protected_surface.py::test_editing_the_verification_rules_fails_validation",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T58",
+      "mode": "test",
+      "command": "pytest tests/test_idle_evolution.py::test_an_empty_backlog_is_idle_with_no_model_call tests/test_idle_evolution.py::test_an_empty_ranked_backlog_is_idle_too",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T59",
+      "mode": "test",
+      "command": "pytest tests/test_w3_improvement.py::test_w3_a_disabled_observer_never_verifies tests/test_w3_improvement.py::test_zero_eligible_probes_never_verify tests/test_w3_improvement.py::test_the_same_reading_counts_once tests/test_w3_improvement.py::test_empty_syncs_are_not_observations",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    },
+    {
+      "id": "T60",
+      "mode": "test",
+      "command": "pytest tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified tests/test_improvements.py::test_coordinator_enforces_wip_and_closes_verification_loop",
+      "result": "passed",
+      "path": "quality-gate-logs/final-pytest.xml"
+    }
+  ]
+}

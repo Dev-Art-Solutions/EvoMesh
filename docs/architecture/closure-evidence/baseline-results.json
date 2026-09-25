@@ -1,0 +1,12 @@
+{
+  "baseline_commit": "815cd6c",
+  "suite": [
+    "907 passed, 8 skipped in 150.58s (0:02:30)"
+  ],
+  "logs": [
+    "baseline-pyright.txt",
+    "baseline-pytest.txt",
+    "baseline-ruff.txt"
+  ],
+  "comparative_model_call_baseline": "unavailable for W1/W2: no legacy workflow performed the same file work; B3 compares the legacy model-directed path with its learned typed procedure on the same fixtures"
+}

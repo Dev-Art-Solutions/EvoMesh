@@ -65,3 +65,8 @@ ruff clean, pyright 0 errors).
   observation IDs; the baseline suite run on the promoted tree is the
   observer for test/backlog evidence; log absence of a fault stays
   inconclusive.
+
+---
+
+Outcome: see [architecture-closure-report.md](architecture-closure-report.md)
+(`ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED` at `2da3a5c`).
