@@ -118,4 +118,7 @@ async def test_restart_closes_delegated_work_nobody_owns_any_more(tmp_path: Path
 
     assert second.blackboard.work_items[owned.id].status is WorkStatus.ACTIVE
     assert second.blackboard.work_items[orphan.id].status is WorkStatus.CANCELLED
+    persisted = Blackboard()
+    persisted.load(await second.repository.load_state("blackboard"))
+    assert persisted.work_items[orphan.id].status is WorkStatus.CANCELLED, "saved at boot"
     await second.stop()

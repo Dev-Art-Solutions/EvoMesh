@@ -366,7 +366,7 @@ class Environment:
 
     # -- shared world state ---------------------------------------------
 
-    def _reconcile_work_after_restart(self) -> None:
+    def _reconcile_work_after_restart(self) -> int:
         """Delegated work that was assigned or active when the mesh stopped:
         still owned by an open delegated goal -> it carries on; otherwise it is
         closed explicitly instead of sitting ACTIVE forever or being redone.
@@ -380,6 +380,7 @@ class Environment:
             for goal in definition.mind.goals
             if goal.kind == DELEGATED_GOAL_KIND and goal.is_open
         }
+        closed = 0
         for work in self.blackboard.open_work():
             if work.improvement_id is not None or work.status not in {
                 WorkStatus.ASSIGNED,
@@ -391,6 +392,8 @@ class Environment:
             work.status = WorkStatus.CANCELLED
             work.failure_history.append("no live owner after restart")
             work.updated_at = now_utc()
+            closed += 1
+        return closed
 
     async def _save_blackboard(self) -> None:
         await self.repository.save_state("blackboard", self.blackboard.dump())
@@ -698,7 +701,10 @@ class Environment:
                 self.bus.register(system_definition.id)
                 await self.repository.save_agent(system_definition)
         # After the registry is populated: ownership is read from agents' goals.
-        self._reconcile_work_after_restart()
+        if self._reconcile_work_after_restart():
+            # Persisted now: found live, the reconciled state otherwise sat in
+            # memory until something else happened to save the blackboard.
+            await self._save_blackboard()
         self._apply_evolution_settings()
         provider = self.providers.get(default_name)
         if provider:
