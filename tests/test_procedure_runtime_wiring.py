@@ -516,3 +516,67 @@ async def test_preemption_keeps_the_execution_and_resumes_it(tmp_path: Path) -> 
     assert execution["completed_steps"].count("read_source") == 1, "no restart from the top"
     assert (work / "out" / "snapshot.json").exists()
     await environment.stop()
+
+
+# -- shipped templates select the typed path (plan 17.3, 19) ----------------------
+
+
+async def _spawned(tmp_path: Path, template: str, provider: MockProvider):  # type: ignore[no-untyped-def]
+    shutil.copytree(SHIPPED, tmp_path / "procedures")
+    templates = SHIPPED.parent / "agent-templates"
+    shutil.copytree(templates / template, tmp_path / "agent-templates" / template)
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=True)
+    environment = Environment(settings, {"ollama": provider})
+    await environment.start()
+    await environment.agent_templates.load()
+    agent = await environment.agent_templates.instantiate(environment, template)
+    root = Path(agent.harness_root)
+    return environment, agent, root
+
+
+async def test_the_archivist_template_runs_w1_typed(tmp_path: Path) -> None:
+    provider = MockProvider()
+    environment, agent, root = await _spawned(tmp_path, "json-archivist", provider)
+    (root / "inbox").mkdir(parents=True, exist_ok=True)
+    (root / "inbox" / "records.json").write_text('{"ids": [1, 2]}', encoding="utf-8")
+    goal = agent.mind.goals[0]
+    calls_before = len(provider.calls)
+
+    for _ in range(8):
+        await environment.cycle_agent(agent.name)
+        if goal.occurrence == 1:
+            break
+
+    assert goal.occurrence == 1, goal.last_error
+    snapshot = root / "archive" / "records.snapshot.json"
+    assert json.loads(snapshot.read_text(encoding="utf-8")) == {"ids": [1, 2]}
+    execution = await environment.procedures.executor.for_occurrence(f"{goal.id}#0")
+    assert execution is not None and execution.path == "typed_authored"
+    assert len(provider.calls) == calls_before
+    await environment.stop()
+
+
+async def test_the_analyst_template_runs_w2_with_one_call(tmp_path: Path) -> None:
+    provider = MockProvider([GOOD])
+    environment, agent, root = await _spawned(tmp_path, "report-analyst", provider)
+    (root / "reports").mkdir(parents=True, exist_ok=True)
+    (root / "reports" / "previous.json").write_text(
+        json.dumps({"findings": REPORTS["before.json"]}), encoding="utf-8"
+    )
+    (root / "reports" / "current.json").write_text(
+        json.dumps({"findings": REPORTS["after.json"]}), encoding="utf-8"
+    )
+    goal = agent.mind.goals[0]
+    calls_before = len(provider.calls)
+
+    for _ in range(10):
+        await environment.cycle_agent(agent.name)
+        if goal.occurrence == 1:
+            break
+
+    assert goal.occurrence == 1, goal.last_error
+    assert len(provider.calls) - calls_before == 1
+    written = json.loads((root / "reports" / "comparison.json").read_text(encoding="utf-8"))
+    assert written["evidence_ids"] == ["F1", "F3"]
+    await environment.stop()

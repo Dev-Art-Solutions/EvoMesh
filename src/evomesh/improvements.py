@@ -1122,6 +1122,11 @@ class ImprovementControl:
                 f"{item.title}"
                 + (f" (after {', '.join(item.dependencies)})" if item.dependencies else "")
                 + (f" -- {item.rejection_reason}" if item.rejection_reason else "")
+                + (
+                    f" -- not verified yet: {item.inconclusive_reason}"
+                    if item.status is ImprovementStatus.VERIFYING and item.inconclusive_reason
+                    else ""
+                )
             )
             if work:
                 line += f" work {completed}/{len(active)}"

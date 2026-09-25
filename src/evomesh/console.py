@@ -34,6 +34,7 @@ from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.improvements import ImprovementStatus
 from evomesh.models import describe
 from evomesh.procedural_learning import ProcedureLearner
+from evomesh.procedure_host import ProcedureOperator
 from evomesh.rules import rule_from_config
 from evomesh.skills import InvalidSkillError, MissingSkillError
 from evomesh.tools import InvalidToolError, MissingToolError
@@ -82,8 +83,13 @@ HELP = """Commands:
   /memory <agent>               Show the agent's memory.md
   /procedures <agent> [approve <pattern>|forget <name>]
                                 Learned procedures and repeated plans; approve one early
-  /improvements [release <id>|depend <id> <on-id>|epic <id> <name>]
-                                The evidence-backed backlog steering evolution
+  /improvements [release <id>|depend <id> <on-id>|epic <id> <name>|verify <id> <reason>]
+                                The evidence-backed backlog steering evolution;
+                                verify records your own check of work no observer measures
+  /typed [list|show|validate|approve|degrade|retire|explain|executions|execution|
+          cancel|pause|resume|reconcile|disable|enable]
+                                Typed procedures: admission, executions, reconciliation
+                                (/typed help for the arguments)
   /rules <agent> [add '<json>'|remove <name>|clear]
                                 The agent's own forward-chaining rules
   /context <agent>|world        Show context.md
@@ -981,9 +987,27 @@ class ConsoleChannel:
                 message = f"Improvement {item.id} now waits for {parts[3]} to be verified."
             await control.save()
             return message
+        if len(parts) >= 4 and parts[1] == "verify":
+            if parts[2] not in control.backlog.items:
+                return f"No improvement {parts[2]}."
+            try:
+                item = await control.verify(
+                    parts[2], actor="operator:console", reason=" ".join(parts[3:])
+                )
+            except ValueError as exc:
+                return f"Refused: {exc}"
+            return f"Improvement {item.id} is verified by {item.verified_by}."
         if len(parts) != 1:
-            return "Usage: /improvements [release <id>|depend <id> <on-id>|epic <id> <name>]"
+            return (
+                "Usage: /improvements [release <id>|depend <id> <on-id>|epic <id> <name>"
+                "|verify <id> <reason>]"
+            )
         return control.summary()
+
+    async def _command_typed(self, parts: list[str]) -> str:
+        """Typed procedures: admission, executions and reconciliation, as the
+        human at this console (closure plan 21)."""
+        return await ProcedureOperator(self.environment).run(parts)
 
     async def _command_rules(self, parts: list[str]) -> str:
         """An agent's own forward-chaining rules: list, add one (JSON in

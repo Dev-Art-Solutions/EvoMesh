@@ -32,6 +32,7 @@ from evomesh.contracts import (
     AgentStatus,
     Autonomy,
     FilesystemGrant,
+    GoalCondition,
     TelegramSettings,
 )
 from evomesh.rules import rules_from_config
@@ -63,6 +64,12 @@ class TemplateGoal(BaseModel):
     # own report must match, line by line, before it is announced. Optional;
     # unset means no filtering, same as before this field existed.
     report_pattern: str | None = None
+    # A structured goal: its kind selects an admitted typed procedure (see
+    # procedures/), its parameters are that procedure's inputs, and its
+    # success conditions are what completion is checked against.
+    kind: str = "goal"
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    success_conditions: list[GoalCondition] = Field(default_factory=list)
 
 
 class AgentTemplateDefinition(BaseModel):
@@ -352,6 +359,9 @@ class AgentTemplateRegistry:
                 cron_expression=goal.cron,
                 notify=goal.notify,
                 report_pattern=goal.report_pattern,
+                kind=goal.kind,
+                parameters=dict(goal.parameters),
+                success_conditions=list(goal.success_conditions),
             )
         if telegram_token.strip():
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())
