@@ -4,6 +4,7 @@ under that agent's own grants, and completes only on validator evidence."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -18,10 +19,12 @@ from evomesh.contracts import (
     GoalConditionKind,
     GoalStatus,
 )
+from evomesh.coordination import DELEGATED_GOAL_KIND
 from evomesh.environment import Environment
 from evomesh.goal_manager import GoalManager
 from evomesh.models import MockProvider
 from evomesh.procedure_runtime import AdmissionStatus
+from tests.procedure_fixtures import DELEGATED_INSPECTION, JSON_INSPECTION
 from tests.test_bdi import settings_for
 
 SHIPPED = Path(__file__).resolve().parents[1] / "procedures"
@@ -325,4 +328,191 @@ async def test_graph_completion_is_not_goal_achievement(tmp_path: Path) -> None:
 
     assert goal.status is GoalStatus.FAILED
     assert goal.last_error == "POSTCONDITION_UNSATISFIED"
+    await environment.stop()
+
+
+# -- AC-11 through the live runtime: parent -> peer -> parent -------------------
+
+
+async def _delegating_mesh(
+    tmp_path: Path, *, coordinator_reads: bool = True, start_inspector: bool = True
+) -> tuple[Environment, AgentDefinition, AgentDefinition, MockProvider, Path]:
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=False)
+    provider = MockProvider()
+    environment = Environment(settings, {"ollama": provider})
+    await environment.start()
+    registry = environment.procedures.registry
+    for raw in (DELEGATED_INSPECTION, JSON_INSPECTION):
+        admission = await registry.register(raw, source="template", owner="tests")
+        digest = registry.definitions[admission.key].digest()
+        await registry.approve(admission.key, actor="operator:test", digest=digest)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "doc.json").write_text(json.dumps({"b": 2, "a": 1}), encoding="utf-8")
+    coordinator = AgentDefinition(
+        name="Coordinator",
+        purpose="Hands out inspections",
+        status=AgentStatus.ACTIVE,
+        capabilities=["work.delegate"],
+        harness_root=str(shared),
+    )
+    inspector = AgentDefinition(
+        name="Inspector",
+        purpose="Inspects documents",
+        status=AgentStatus.ACTIVE,
+        capabilities=["artifact.read"],
+        harness_root=str(shared),
+    )
+    for agent, reads in ((coordinator, coordinator_reads), (inspector, True)):
+        await environment.register_agent(agent)
+        if reads:
+            await environment.grant_access(
+                FilesystemGrant(agent_id=agent.id, path=str(shared), read=True)
+            )
+    await environment.start_agent(coordinator.id, start_delay=3600)
+    if start_inspector:
+        await environment.start_agent(inspector.id, start_delay=3600)
+    return environment, coordinator, inspector, provider, shared
+
+
+async def _until(condition, within: float = 5.0) -> bool:  # type: ignore[no-untyped-def]
+    deadline = asyncio.get_running_loop().time() + within
+    while asyncio.get_running_loop().time() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+async def test_delegation_runs_parent_peer_parent_without_a_model(tmp_path: Path) -> None:
+    environment, coordinator, inspector, provider, _ = await _delegating_mesh(tmp_path)
+    goal = coordinator.mind.add_goal(
+        "Get doc.json inspected", kind="delegated_inspection", parameters={"path": "doc.json"}
+    )
+    calls_before = len(provider.calls)
+
+    await environment.cycle_agent(coordinator.name)  # delegate
+    assert await _until(
+        lambda: any(g.kind == DELEGATED_GOAL_KIND for g in inspector.mind.goals)
+    ), "the selected peer accepted the structured work"
+    child = next(g for g in inspector.mind.goals if g.kind == DELEGATED_GOAL_KIND)
+    for _ in range(4):
+        await environment.cycle_agent(inspector.name)
+        if not child.is_open:
+            break
+    assert child.status is GoalStatus.DONE, child.last_error
+    work_id = str(child.parameters["work_item_id"])
+
+    async def settled() -> bool:
+        row = await environment.repository.load_procedure_operation(f"delegate:{work_id}")
+        return row is not None and json.loads(row[1])["state"] == "applied"
+
+    for _ in range(100):
+        if await settled():
+            break
+        await asyncio.sleep(0.02)
+    assert await settled(), "the child's result settled on the parent's operation"
+    for _ in range(4):
+        await environment.cycle_agent(coordinator.name)
+        if not goal.is_open:
+            break
+
+    assert goal.status is GoalStatus.DONE, goal.last_error
+    execution = await environment.procedures.executor.for_occurrence(f"{goal.id}#0")
+    assert execution is not None and execution.output is not None
+    assert execution.output["keys"] == ["a", "b"]
+    child_evidence = [item for item in execution.evidence if item.get("kind") == "child"]
+    assert child_evidence and child_evidence[0]["executor"] == inspector.id
+    assert len(provider.calls) == calls_before, "no model routing, planning or polling"
+    await environment.stop()
+
+
+async def test_delegation_cannot_launder_a_read_the_requester_lacks(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _delegating_mesh(
+        tmp_path, coordinator_reads=False
+    )
+    goal = coordinator.mind.add_goal(
+        "Get doc.json inspected", kind="delegated_inspection", parameters={"path": "doc.json"}
+    )
+
+    await environment.cycle_agent(coordinator.name)
+
+    assert goal.status is GoalStatus.FAILED
+    assert "NO_ELIGIBLE_PEER" in (goal.last_error or "")
+    assert "may not read" in (goal.last_error or "")
+    assert not environment.blackboard.work_items, "no child work was created"
+    await environment.stop()
+
+
+async def test_an_offline_peer_is_not_selected(tmp_path: Path) -> None:
+    environment, coordinator, _, _, _ = await _delegating_mesh(tmp_path, start_inspector=False)
+    goal = coordinator.mind.add_goal(
+        "Get doc.json inspected", kind="delegated_inspection", parameters={"path": "doc.json"}
+    )
+
+    await environment.cycle_agent(coordinator.name)
+
+    assert goal.status is GoalStatus.FAILED
+    assert "NO_ELIGIBLE_PEER" in (goal.last_error or "")
+    await environment.stop()
+
+
+# -- AC-12 through the live runtime ----------------------------------------------
+
+
+async def _one_execution(environment: Environment) -> dict:  # type: ignore[type-arg]
+    rows = await environment.repository.list_procedure_executions()
+    assert len(rows) == 1, f"{len(rows)} executions"
+    return json.loads(rows[0][1])
+
+
+async def test_a_cancelled_goal_cancels_its_execution_before_the_write(tmp_path: Path) -> None:
+    environment, agent, _, work = await _mesh(tmp_path)
+    goal_id = _snapshot_goal(agent)
+    await environment.cycle_agent(agent.name)  # the read
+    goal = agent.mind.goal(goal_id)
+    GoalManager(agent.mind).transition(goal, GoalStatus.CANCELLED, human_override=True)
+
+    await environment.cycle_agent(agent.name)
+
+    assert (await _one_execution(environment))["status"] == "cancelled"
+    assert not (work / "out" / "snapshot.json").exists()
+    await environment.stop()
+
+
+async def test_an_unrelated_belief_change_does_not_replan_or_rewrite(tmp_path: Path) -> None:
+    environment, agent, provider, _ = await _mesh(tmp_path)
+    goal_id = _snapshot_goal(agent)
+    calls_before = len(provider.calls)
+    await environment.cycle_agent(agent.name)  # the read
+    agent.mind.revise([Belief(key="weather", statement="rain")])
+
+    await _run(environment, agent, goal_id)
+
+    assert agent.mind.goal(goal_id).status is GoalStatus.DONE
+    execution = await _one_execution(environment)
+    assert execution["completed_steps"].count("write_snapshot") == 1
+    assert len(provider.calls) == calls_before
+    await environment.stop()
+
+
+async def test_preemption_keeps_the_execution_and_resumes_it(tmp_path: Path) -> None:
+    environment, agent, _, work = await _mesh(tmp_path)
+    goal_id = _snapshot_goal(agent)
+    await environment.cycle_agent(agent.name)  # the read
+    urgent = agent.mind.add_goal("Answer the operator now", priority=1)
+    urgent.parameters["preempt"] = True
+
+    outcome = await environment.cycle_agent(agent.name)
+    held = await _one_execution(environment)
+    GoalManager(agent.mind).transition(urgent, GoalStatus.DONE, human_override=True)
+    await _run(environment, agent, goal_id)
+
+    assert not outcome.step.startswith("typed"), "the urgent goal took the cycle"
+    assert held["status"] == "running" and "write_snapshot" not in held["completed_steps"]
+    assert agent.mind.goal(goal_id).status is GoalStatus.DONE
+    execution = await _one_execution(environment)
+    assert execution["completed_steps"].count("read_source") == 1, "no restart from the top"
+    assert (work / "out" / "snapshot.json").exists()
     await environment.stop()

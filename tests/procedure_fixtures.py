@@ -231,3 +231,155 @@ REPORT_COMPARISON: dict[str, Any] = {
         },
     ],
 }
+
+
+# Structured delegation (plan 14): the parent hands a bounded inspection to a
+# capable peer and waits, without polling a model, for the child's result.
+JSON_INSPECTION: dict[str, Any] = {
+    "schema_version": 1,
+    "procedure_id": "json_inspection",
+    "revision": 1,
+    "name": "Inspect an authorized JSON document",
+    "entry_step_id": "read",
+    "goal_kind": "json_inspection",
+    "parameter_schema": {
+        "type": "object",
+        "properties": {"path": {"type": "string", "maxLength": 500}},
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    "output_schema": {
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string", "maxLength": 500},
+            "keys": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 100},
+                "maxItems": 64,
+            },
+            "digest": {"type": "string", "maxLength": 100},
+        },
+        "required": ["artifact_id", "keys", "digest"],
+        "additionalProperties": False,
+    },
+    "required_capabilities": ["artifact.read"],
+    "steps": [
+        {
+            "id": "read",
+            "kind": "tool",
+            "adapter": "core.json_read",
+            "contract_version": 1,
+            "arguments": {"path": ref("goal", "parameters", "path")},
+            "next": "done",
+        },
+        {
+            "id": "done",
+            "kind": "complete",
+            "result": {
+                "artifact_id": ref("result", "read", "path"),
+                "keys": ref("result", "read", "keys"),
+                "digest": ref("result", "read", "source_digest"),
+            },
+        },
+    ],
+}
+
+DELEGATED_INSPECTION: dict[str, Any] = {
+    "schema_version": 1,
+    "procedure_id": "delegated_inspection",
+    "revision": 1,
+    "name": "Have a peer inspect a JSON document",
+    "entry_step_id": "hand_off",
+    "goal_kind": "delegated_inspection",
+    "parameter_schema": {
+        "type": "object",
+        "properties": {"path": {"type": "string", "maxLength": 500}},
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    "output_schema": {
+        "type": "object",
+        "properties": {
+            "keys": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 100},
+                "maxItems": 64,
+            },
+            "digest": {"type": "string", "maxLength": 100},
+        },
+        "required": ["keys", "digest"],
+        "additionalProperties": False,
+    },
+    "required_capabilities": ["work.delegate"],
+    "steps": [
+        {
+            "id": "hand_off",
+            "kind": "delegate",
+            "work_kind": "json_inspection",
+            "objective": "Inspect the JSON document and report its keys and digest.",
+            "required_capabilities": ["artifact.read"],
+            "inputs": {"path": ref("goal", "parameters", "path")},
+            "output_schema": "authorized_json_inspection_v1",
+            "success_contract": "authorized_json_inspection_v1",
+            "budget": {"max_model_calls": 0, "max_attempts": 1, "deadline_seconds": 600},
+            "next": "wait",
+        },
+        {
+            "id": "wait",
+            "kind": "await",
+            "subject": "work",
+            "reference": ref("result", "hand_off", "work_item_id"),
+            "timeout_seconds": 600,
+            "output_schema": "authorized_json_inspection_v1",
+            "next": "done",
+        },
+        {
+            "id": "done",
+            "kind": "complete",
+            "result": {
+                "keys": ref("result", "wait", "keys"),
+                "digest": ref("result", "wait", "digest"),
+            },
+        },
+    ],
+}
+
+
+def evidence_wait(timeout: float = 60) -> dict[str, Any]:
+    """Wait for a named blackboard fact, then complete with its value."""
+    return {
+        "schema_version": 1,
+        "procedure_id": "evidence_wait",
+        "revision": 1,
+        "name": "Wait for a fact",
+        "entry_step_id": "wait",
+        "goal_kind": "evidence_wait",
+        "parameter_schema": {
+            "type": "object",
+            "properties": {"key": {"type": "string", "maxLength": 200}},
+            "required": ["key"],
+            "additionalProperties": False,
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "maxLength": 4000}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        "required_capabilities": [],
+        "steps": [
+            {
+                "id": "wait",
+                "kind": "await",
+                "subject": "evidence",
+                "reference": ref("goal", "parameters", "key"),
+                "timeout_seconds": timeout,
+                "next": "done",
+            },
+            {
+                "id": "done",
+                "kind": "complete",
+                "result": {"value": ref("result", "wait", "value")},
+            },
+        ],
+    }

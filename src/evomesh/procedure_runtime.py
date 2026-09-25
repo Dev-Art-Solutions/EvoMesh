@@ -71,6 +71,7 @@ PROCESS_EPOCH = uuid.uuid4().hex
 _ADVANCING: set[str] = set()
 RECEIPTS_DIR = ".evomesh-receipts"
 MAX_JSON_READ_BYTES = 256 * 1024
+RECONCILIATION_DECISIONS = frozenset({"recheck", "not_applied", "fail"})
 # Beside the shipped definitions: the reviewed approvals, bound to digests.
 ADMISSIONS_FILE = "admissions.json"
 
@@ -626,8 +627,13 @@ class JsonRead:
                 "value": OPAQUE_OBJECT,
                 "source_digest": {"type": "string", "maxLength": 100},
                 "path": {"type": "string", "maxLength": 500},
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 100},
+                    "maxItems": 64,
+                },
             },
-            ["value", "source_digest", "path"],
+            ["value", "source_digest", "path", "keys"],
         ),
         required_capabilities=("artifact.read",),
         side_effect=SideEffect.READ,
@@ -661,6 +667,7 @@ class JsonRead:
                 "value": value,
                 "source_digest": digest_of(canonical_json(value)),
                 "path": _rel(context.tool_context, target),
+                "keys": sorted(str(key)[:100] for key in value)[:64],
             },
         )
 
@@ -1737,6 +1744,7 @@ class ProcedureExecutor:
             record.state = OpState.REJECTED
             record.error = "LOST_IN_FLIGHT"
             execution.status = ExecStatus.RUNNING
+            self._release_attempt(execution, step.id)
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome("waiting", step.id, "RECOVERED", "safe operation will be repeated")
         if not contract.reconcile_supported and contract.retry is not RetrySemantics.IDEMPOTENT:
@@ -1759,6 +1767,7 @@ class ProcedureExecutor:
             record.state = OpState.REJECTED
             record.error = "NOT_APPLIED"
             execution.status = ExecStatus.RUNNING
+            self._release_attempt(execution, step.id)
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome(
                 "waiting", step.id, "RECOVERED", "the operation did not apply; it may be retried"
@@ -1771,11 +1780,25 @@ class ProcedureExecutor:
             "needs_reconciliation", step.id, "UNRESOLVED_EFFECT", execution.status_reason
         )
 
+    @staticmethod
+    def _release_attempt(execution: ProcedureExecution, step_id: str) -> None:
+        """An attempt proven not to have applied gives back its per-step
+        allowance (plan 13.2). The root counters keep it: a process that
+        keeps crashing still runs out of budget."""
+        attempts = execution.step_attempts.get(step_id, 0)
+        execution.step_attempts[step_id] = max(0, attempts - 1)
+
     async def resolve_reconciliation(
         self, execution_id: str, host: ProcedureHost, *, actor: str, decision: str
     ) -> StepOutcome:
-        """Operator path: re-run the adapter's reconciliation, or record a
-        trusted decision ("not_applied" retry / "fail")."""
+        """Operator path for an effect nobody could prove either way:
+        "recheck" re-runs the adapter's reconciliation; "not_applied" is the
+        operator's word that it did not happen, so the step may be retried;
+        "fail" ends the execution. Only a trusted operator decides."""
+        if decision not in RECONCILIATION_DECISIONS:
+            raise RegistryError("UNKNOWN_DECISION", decision)
+        if not actor or actor.startswith(("model", "agent:")):
+            raise RegistryError("UNTRUSTED_APPROVER", "reconciliation needs an operator identity")
         version, execution = await self.load(execution_id)
         definition = self._definition(execution)
         step = definition.step(execution.current_step_id)
@@ -1796,6 +1819,14 @@ class ProcedureExecutor:
             record.state = OpState.REJECTED
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome("failed", step.id, "RECONCILED_AS_FAILED", actor)
+        if decision == "not_applied":
+            record.state = OpState.REJECTED
+            record.error = "NOT_APPLIED_BY_OPERATOR"
+            execution.status = ExecStatus.RUNNING
+            execution.status_reason = ""
+            self._release_attempt(execution, step.id)
+            await self._commit(version, execution, ((record, "*"),))
+            return StepOutcome("waiting", step.id, "RECOVERED", f"{actor}: not applied")
         return await self._recover(version, execution, definition, step, record, host)
 
     # -- cognitive -------------------------------------------------------------------
@@ -2081,6 +2112,11 @@ class ProcedureExecutor:
             record.operation_key, record.state.value, record.state.value, record.model_dump_json()
         )
 
+    async def open_executions(self, agent_id: str) -> list[ProcedureExecution]:
+        rows = await self.repository.list_procedure_executions(open_only=True)
+        executions = [ProcedureExecution.model_validate_json(row[1]) for row in rows]
+        return [item for item in executions if item.agent_id == agent_id]
+
     async def for_occurrence(self, occurrence: str) -> ProcedureExecution | None:
         """The latest execution for one goal occurrence, open or not."""
         rows = await self.repository.list_procedure_executions(occurrence_id=occurrence)
@@ -2153,7 +2189,10 @@ class ProcedureExecutor:
         reference = resolve(step.reference, self._scopes(execution))
         if step.subject == "evidence":
             fact = host.blackboard.fact(str(reference)) if host.blackboard is not None else None
-            if fact is not None and fact.created_at >= since:
+            # Anything published during this execution counts, even before the
+            # wait began: the wait re-reads durable state, it does not depend
+            # on having been subscribed when the event happened.
+            if fact is not None and fact.created_at >= execution.created_at:
                 self._advance_to(
                     execution, step.id, step.next, {"value": fact.value, "source": fact.source}
                 )
@@ -2329,6 +2368,22 @@ class ProcedureService:
 
     async def advance(self, execution_id: str) -> StepOutcome:
         return await self.executor.advance(execution_id, self.host)
+
+    async def reap(self, agent: Any) -> list[str]:
+        """Cancel this agent's open executions whose goal occurrence is gone:
+        the goal was cancelled, finished some other way or moved on. A
+        cancellation is settled through the executor, so an in-flight
+        operation is accounted for rather than orphaned."""
+        reaped: list[str] = []
+        goals = {goal.id: goal for goal in agent.mind.goals}
+        for execution in await self.executor.open_executions(agent.id):
+            goal = goals.get(execution.goal_id)
+            if goal is not None and goal.is_open and occurrence_id(goal) == execution.occurrence_id:
+                continue
+            await self.executor.request_cancel(execution.execution_id, "the goal closed")
+            await self.executor.advance(execution.execution_id, self.host)
+            reaped.append(execution.execution_id)
+        return reaped
 
     async def cancel(self, execution_id: str, reason: str) -> ProcedureExecution:
         return await self.executor.request_cancel(execution_id, reason)

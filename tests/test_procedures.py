@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from evomesh.blackboard import Blackboard
 from evomesh.contracts import FilesystemGrant
 from evomesh.coordination import WorkItem
 from evomesh.harness_tools import ToolContext
@@ -44,7 +45,7 @@ class Host:
         self.policy = policy
         self.agent_id = agent_id
         self.caps = set(CAPS)
-        self.blackboard = None
+        self.blackboard: Blackboard | None = None
         self.model_calls: list[str] = []
         self.replies: list[str] = []
         self.routed: list[WorkItem] = []

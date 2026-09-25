@@ -329,6 +329,9 @@ class BDIReasoner:
             if goal.is_open and (goal.success_conditions or goal.failure_conditions):
                 manager.evaluate(goal, evaluation)
 
+        typed = context.service("procedures")
+        if typed is not None:
+            await typed.reap(context.definition)  # type: ignore[attr-defined]
         intention = mind.current_intention()
         reason = self.reconsider(intention, mind, change)
         if reason is not None:
