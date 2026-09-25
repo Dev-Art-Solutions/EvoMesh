@@ -23,6 +23,7 @@ from evomesh.codebase import (
     SCOUT_NEEDLE,
     Improvement,
     Module,
+    RuntimeFault,
     append_item,
     backlog_objective,
     backlog_target,
@@ -62,6 +63,14 @@ from evomesh.codebase import (
     write_test_task,
 )
 from evomesh.git import GitError, GitIdentity, GitRepository, PublishPolicy
+from evomesh.improvements import (
+    EVIDENCE_FAILING_TESTS,
+    EVIDENCE_HUMAN_BACKLOG,
+    EVIDENCE_RUNTIME_FAULT,
+    Candidate,
+    PriorityFactors,
+)
+from evomesh.improvements import Improvement as TrackedImprovement
 from evomesh.models import ModelProvider
 from evomesh.processes import run_command, without_virtual_env
 from evomesh.storage import SQLiteRepository
@@ -307,8 +316,7 @@ PLAN_EVAL_RULES = "\n".join(
     (
         "Rules for this stage:",
         TOOL_USAGE_HINT,
-        "- You are reviewing a plan someone else proposed. Do not touch any "
-        "source file.",
+        "- You are reviewing a plan someone else proposed. Do not touch any source file.",
         f"- Write exactly one file, `{(PLAN_DIR / PLAN_EVAL_FILE).as_posix()}`, "
         "inside this candidate, holding your review.",
         "- Answer each of these three checks with YES or NO, one per line, "
@@ -338,8 +346,7 @@ PLAN_DECOMPOSE_RULES = "\n".join(
         "- Decide whether this item is already minimal -- one small change to "
         "one module that already runs -- or whether it is still big enough to "
         "split into several independent-ish smaller items.",
-        "- If it is minimal, the file's last non-empty line must be exactly "
-        "'LEAF'.",
+        "- If it is minimal, the file's last non-empty line must be exactly 'LEAF'.",
         "- If it should split, write one line per child, each in the exact "
         "form '- <title> :: <reasoning>', optionally followed by "
         "' :: depends on: <n>' naming an earlier child in this same list by "
@@ -430,9 +437,7 @@ def parse_plan_children(text: str) -> list[dict[str, Any]] | None:
                     token = token.strip()
                     if token.isdigit():
                         depends_on.append(int(token))
-        children.append(
-            {"title": segments[0], "reasoning": segments[1], "depends_on": depends_on}
-        )
+        children.append({"title": segments[0], "reasoning": segments[1], "depends_on": depends_on})
     return children
 
 
@@ -750,6 +755,7 @@ class GenerationSupervisor:
         history = list(metadata.get("recent_outcomes", []))
         history.append("promoted")
         metadata["recent_outcomes"] = history[-20:]
+        _record_outcome(metadata, number, "promoted")
         self._write(metadata)
 
     def sweep_applied(self) -> list[int]:
@@ -795,7 +801,20 @@ class GenerationSupervisor:
         history = list(metadata.get("recent_outcomes", []))
         history.append("discarded")
         metadata["recent_outcomes"] = history[-20:]
+        _record_outcome(metadata, number, "discarded")
         self._write(metadata)
+
+    def outcome(self, number: int) -> str | None:
+        """``promoted``/``discarded`` once generation ``number`` is decided;
+        ``None`` while it is still an open candidate. A decided generation
+        older than the kept record reads as discarded."""
+        metadata = self.metadata()
+        if str(number) in metadata.get("candidates", {}):
+            return None
+        recorded = metadata.get("outcomes", {}).get(str(number))
+        if recorded is not None:
+            return str(recorded)
+        return "discarded" if number <= self.total_created() else None
 
     def rollback(self) -> None:
         metadata = self.metadata()
@@ -1107,17 +1126,14 @@ class CandidateValidator:
                 + ", ".join(f"{module.name}.py" for module in orphans)
             )
         if stray := stray_root_files(path):
-            problems.append(
-                "stray file(s) in the repository root: " + ", ".join(stray)
-            )
+            problems.append("stray file(s) in the repository root: " + ", ".join(stray))
         if not problems:
             return None
         return {
             "command": "evomesh codebase hygiene check",
             "exit_code": 1,
             "output": (
-                "; ".join(problems)
-                + ". Wire the module into something that already imports and "
+                "; ".join(problems) + ". Wire the module into something that already imports and "
                 "runs it, or delete the file -- a candidate cannot land code "
                 "nothing executes."
             ),
@@ -1126,9 +1142,7 @@ class CandidateValidator:
     async def validate(self, generation: Generation) -> ValidationResult:
         outcomes: list[dict[str, object]] = []
         if hygiene := self._hygiene_failure(generation.path):
-            return self._write(
-                generation, ValidationResult(passed=False, commands=[hygiene])
-            )
+            return self._write(generation, ValidationResult(passed=False, commands=[hygiene]))
         try:
             uv = uv_executable(generation.path)
         except FileNotFoundError as exc:
@@ -1271,7 +1285,10 @@ TEST_ONLY_NOTE = (
 )
 # The picks that are, by definition, a change to how EvoMesh behaves -- a
 # candidate answering one must still differ under src/evomesh/ when it lands.
-SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT})
+# An improvement from the V2 backlog that only runtime events evidence.
+PICK_V2 = "improvement-v2"
+V2_NEEDLE = "Resolve improvement"
+SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT, PICK_V2})
 # The picks that write docs/evolution/improvements.md and nothing else.
 BACKLOG_PICKS = frozenset({PICK_PLAN, PICK_SCOUT})
 # A plan or a scout only reads and then answers: the first ones took 9 to 21
@@ -1359,6 +1376,17 @@ def parse_baseline(key: str, exit_code: int, output: str) -> BaselineResult:
         failures=failures or (f"pytest exited {exit_code}",),
         output=output,
     )
+
+
+def _record_outcome(metadata: dict[str, Any], number: int, outcome: str) -> None:
+    outcomes = dict(metadata.get("outcomes", {}))
+    outcomes[str(number)] = outcome
+    metadata["outcomes"] = dict(list(outcomes.items())[-KEPT_OUTCOMES:])
+
+
+# Per-generation outcomes kept in supervisor.json (improvement work items read
+# the fate of their generation from it).
+KEPT_OUTCOMES = 200
 
 
 @dataclass(frozen=True)
@@ -1538,6 +1566,26 @@ class EnvironmentEvolver:
                 encoding="utf-8",
             )
 
+    def improvement_pick(self, improvement: TrackedImprovement) -> ObjectivePick:
+        """The objective for a backlog improvement no file-level source
+        backs (one the scout proposed from recurring runtime events)."""
+        evidence = "\n".join(
+            f"- {item.kind} {item.reference}: {item.value}" for item in improvement.evidence[-3:]
+        )
+        criteria = "\n".join(f"- {line}" for line in improvement.success_criteria)
+        return ObjectivePick(
+            kind=PICK_V2,
+            objective=(
+                f"{V2_NEEDLE} {improvement.id}: {improvement.title}.\n"
+                f"Problem (seen {improvement.occurrences} times): {improvement.problem}\n"
+                f"Evidence:\n{evidence}\nSuccess criteria:\n{criteria}\n"
+                "Find the code responsible under src/evomesh/ and change it so this "
+                "stops happening. Change only what that needs."
+            ),
+            needle=f"{V2_NEEDLE} {improvement.id}",
+            key=improvement.id,
+        )
+
     def baseline_pick(self, result: BaselineResult) -> ObjectivePick | None:
         """The objective a red baseline makes, or ``None`` once it has been
         tried ``MAX_TARGET_ATTEMPTS`` times recently -- then it is a human's."""
@@ -1595,9 +1643,7 @@ class EnvironmentEvolver:
 
     def backlog_objective(self, seed: int, *, nudge_delete: bool = False) -> str | None:
         """A concrete dead-module objective, or ``None`` when the backlog is empty."""
-        return backlog_objective(
-            self.workspace.repository_root, seed, nudge_delete=nudge_delete
-        )
+        return backlog_objective(self.workspace.repository_root, seed, nudge_delete=nudge_delete)
 
     def untested_objective(self, seed: int) -> str | None:
         """A concrete untested-export objective, or ``None`` when every live
@@ -1610,45 +1656,54 @@ class EnvironmentEvolver:
         target right now."""
         return untested_target(self.workspace.repository_root, seed)
 
-    def substantive_objective(
-        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS
-    ) -> ObjectivePick | None:
-        """A real behavioral change to make, or ``None`` if there is none.
-
-        Checked before either maintenance backlog: first a traceback the
-        running mesh actually logged, then an open item from
-        ``docs/evolution/improvements.md``. A target already attempted
-        ``MAX_TARGET_ATTEMPTS`` times in the recent window is skipped rather
-        than handed out again -- success removes a target by itself (the
-        file's mtime moves past the fault, the item gets ticked), so one that
-        is still here after that many tries is one the current model cannot
-        do, and the next target deserves the budget instead.
-        """
+    def substantive_candidates(self) -> list[tuple[ObjectivePick, Candidate]]:
+        """Every substantive objective available now, each with the evidence
+        it rests on as an improvement proposal: logged faults first, then
+        open items of ``docs/evolution/improvements.md``. A target already
+        attempted ``MAX_TARGET_ATTEMPTS`` times recently is left out."""
         root = self.workspace.repository_root
         recent = self._recent_objectives()
 
         def fresh(needle: str) -> bool:
             return sum(text.startswith(needle) for text in recent) < MAX_TARGET_ATTEMPTS
 
-        faults = [fault for fault in runtime_faults(root) if fresh(runtime_fault_needle(fault))]
-        if faults:
-            fault = faults[seed % len(faults)]
-            return ObjectivePick(
+        found: list[tuple[ObjectivePick, Candidate]] = []
+        for fault in runtime_faults(root):
+            if not fresh(runtime_fault_needle(fault)):
+                continue
+            pick = ObjectivePick(
                 kind=PICK_RUNTIME_FAULT,
                 objective=runtime_fault_objective(fault),
                 needle=runtime_fault_needle(fault),
                 key=f"{fault.module}.{fault.function}:{fault.exception}",
             )
-        picks = [
-            pick
-            for item in open_improvements(root)
-            if (pick := self._item_pick(item, fresh)) is not None
-        ]
-        if picks:
-            return picks[seed % len(picks)]
-        # Nothing left to hand out: find more, rather than fall through to the
-        # maintenance backlogs whose best outcome is one more test. Only where
-        # the backlog file exists -- that is the project opting in to one.
+            found.append((pick, fault_candidate(fault)))
+        for item in open_improvements(root):
+            if (pick := self._item_pick(item, fresh)) is not None:
+                found.append((pick, backlog_candidate(item)))
+        return found
+
+    def evidence_refs(self, baseline: BaselineResult | None = None) -> set[str]:
+        """Every piece of evidence present now, attempted or not: what
+        verification checks is gone after a fix is deployed."""
+        root = self.workspace.repository_root
+        refs = {fault_candidate(fault).ref for fault in runtime_faults(root)}
+        refs |= {backlog_candidate(item).ref for item in open_improvements(root)}
+        if baseline is not None and not baseline.passed and baseline.failures:
+            refs.add(baseline_candidate(baseline).ref)
+        return refs
+
+    def scout_pick(
+        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS
+    ) -> ObjectivePick | None:
+        """Find more work when no evidenced objective is left: scout a
+        module for backlog items, where the project keeps a backlog file."""
+        root = self.workspace.repository_root
+        recent = self._recent_objectives()
+
+        def fresh(needle: str) -> bool:
+            return sum(text.startswith(needle) for text in recent) < MAX_TARGET_ATTEMPTS
+
         scouted = sum(text.startswith(SCOUT_NEEDLE) for text in recent)
         # ``scout_cap=None``: no test backlog to fall back on, so scouting is
         # the only way to find work and is never capped.
@@ -1669,6 +1724,23 @@ class EnvironmentEvolver:
             key="",
             work={"module": module},
         )
+
+    def substantive_objective(
+        self, seed: int, scout_cap: int | None = MAX_SCOUT_ATTEMPTS
+    ) -> ObjectivePick | None:
+        """A real behavioral change to make, or ``None`` if there is none,
+        rotated by ``seed``: a logged fault first, then a backlog item, then
+        a scout. The prioritized path (ImprovementControl) ranks
+        :meth:`substantive_candidates` instead; this is the fallback without it.
+        """
+        pairs = self.substantive_candidates()
+        faults = [pick for pick, _ in pairs if pick.kind == PICK_RUNTIME_FAULT]
+        if faults:
+            return faults[seed % len(faults)]
+        items = [pick for pick, _ in pairs if pick.kind != PICK_RUNTIME_FAULT]
+        if items:
+            return items[seed % len(items)]
+        return self.scout_pick(seed, scout_cap)
 
     @staticmethod
     def _item_pick(item: Improvement, fresh: Callable[[str], bool]) -> ObjectivePick | None:
@@ -1823,9 +1895,7 @@ class EnvironmentEvolver:
         """Forwarded to :meth:`GenerationSupervisor.reset_no_op_streak`."""
         self.workspace.supervisor.reset_no_op_streak()
 
-    def recent_target_failure(
-        self, needles: tuple[str, ...], lookback: int = 20
-    ) -> str | None:
+    def recent_target_failure(self, needles: tuple[str, ...], lookback: int = 20) -> str | None:
         """Why the most recent generation aimed at this exact target failed,
         or ``None`` if none of the last ``lookback`` generation directories
         were aimed at it (or one was, but there's nothing concrete to say).
@@ -2669,9 +2739,7 @@ class EnvironmentEvolver:
         except GitError as exc:
             detail = excerpt(str(exc), 300)
             logger.warning("Could not publish %s: %s", commit[:8], detail)
-            self.workspace.supervisor.record_publish(
-                commit=commit, published=False, detail=detail
-            )
+            self.workspace.supervisor.record_publish(commit=commit, published=False, detail=detail)
             await self.repository.record_mutation(
                 {"status": "publish-failed", "commit": commit, "detail": detail}
             )
@@ -2692,9 +2760,7 @@ class EnvironmentEvolver:
             return None
         checkout = self.checkout()
         if not await checkout.is_clean():
-            raise GitError(
-                "the working tree has uncommitted changes; refusing to reset over them"
-            )
+            raise GitError("the working tree has uncommitted changes; refusing to reset over them")
         restored = await checkout.reset_to(str(target))
         self.workspace.supervisor.record_commits(active=restored, last_known_good=str(target))
         await self.repository.record_mutation({"status": "reverted", "commit": restored})
@@ -2726,3 +2792,50 @@ class EnvironmentEvolver:
         generation.git_commit = commit
         self.workspace.supervisor.record_candidate(generation)
         return commit
+
+
+def fault_candidate(fault: RuntimeFault) -> Candidate:
+    """A logged traceback as an improvement proposal: urgent, and more so the
+    more often it happened. Verified only after three opens without it."""
+    return Candidate(
+        ref=f"fault:{fault.module}.{fault.function}:{fault.exception}",
+        kind=EVIDENCE_RUNTIME_FAULT,
+        title=f"Fix {fault.exception} in {fault.module}.{fault.function}",
+        problem=f"{fault.exception} raised at {fault.module}:{fault.line}",
+        component=fault.module,
+        evidence={"count": fault.count, "last_seen": fault.last_seen, "line": fault.line},
+        factors=PriorityFactors(
+            impact=2.0, urgency=2.5, recurrence=float(min(5, max(1, fault.count)))
+        ),
+        observations=3,
+    )
+
+
+def backlog_candidate(item: Improvement) -> Candidate:
+    """A human-written backlog item: strategic, and cheaper once planned."""
+    open_steps = [step for step in item.steps if not step.done]
+    return Candidate(
+        ref=f"item:{item.title}",
+        kind=EVIDENCE_HUMAN_BACKLOG,
+        title=item.title,
+        problem=item.detail or item.title,
+        component=next(iter(item.source_paths), "evomesh"),
+        evidence={"steps": len(item.steps), "open_steps": len(open_steps)},
+        factors=PriorityFactors(
+            impact=2.0, strategic_value=2.0, estimated_effort=1.0 if item.steps else 1.5
+        ),
+    )
+
+
+def baseline_candidate(result: BaselineResult) -> Candidate:
+    """A red suite on the live tree: the most urgent thing there is."""
+    failures = sorted(result.failures)
+    return Candidate(
+        ref="tests:" + hashlib.sha256("|".join(failures).encode("utf-8")).hexdigest()[:12],
+        kind=EVIDENCE_FAILING_TESTS,
+        title=f"Make {len(failures)} failing test(s) pass",
+        problem=", ".join(failures[:5]),
+        component="tests",
+        evidence={"failures": failures[:20]},
+        factors=PriorityFactors(impact=3.0, urgency=3.0),
+    )

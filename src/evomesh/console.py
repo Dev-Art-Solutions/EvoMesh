@@ -25,11 +25,13 @@ from evomesh.contracts import (
     Message,
     TelegramSettings,
 )
+from evomesh.coordination import WorkStatus
 from evomesh.environment import Environment
 from evomesh.git import GitError, GitRepository
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
+from evomesh.improvements import ImprovementStatus
 from evomesh.models import describe
 from evomesh.procedural_learning import ProcedureLearner
 from evomesh.rules import rule_from_config
@@ -942,6 +944,25 @@ class ConsoleChannel:
             + "\nrepeated plans not yet learned:\n"
             + ("\n".join(pending) or "  none")
         )
+
+    async def _command_improvements(self, parts: list[str]) -> str:
+        """The evidence-backed improvement backlog that steers evolution."""
+        control = self.environment.improvements
+        if len(parts) == 3 and parts[1] == "release":
+            item = control.backlog.items.get(parts[2])
+            if item is None:
+                return f"No improvement {parts[2]}."
+            # A human looked at it: it may be worked again, with a fresh budget.
+            item.status = ImprovementStatus.READY
+            item.rejection_reason = ""
+            for work_id in item.work_item_ids:
+                if (work := control.backlog.work_items.get(work_id)) is not None:
+                    work.status = WorkStatus.CANCELLED
+            await control.save()
+            return f"Improvement {item.id} is ready to be worked again."
+        if len(parts) != 1:
+            return "Usage: /improvements [release <id>]"
+        return control.summary()
 
     async def _command_rules(self, parts: list[str]) -> str:
         """An agent's own forward-chaining rules: list, add one (JSON in

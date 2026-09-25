@@ -27,9 +27,10 @@ from evomesh.bdi import (
     ReflectiveBehavior,
     StepResult,
 )
+from evomesh.blackboard import Blackboard
 from evomesh.cognition import CycleContext
 from evomesh.contracts import AgentPhase, Belief, Intention, PlanStep
-from evomesh.coordination import DELEGATED_GOAL_KIND
+from evomesh.coordination import DELEGATED_GOAL_KIND, ContractNet, WorkItem
 from evomesh.evolution import (
     BACKLOG_MAX_SECONDS,
     BACKLOG_MAX_STEPS,
@@ -44,18 +45,28 @@ from evomesh.evolution import (
     REVIEW_COMMAND,
     SOURCE_PICKS,
     TEST_ONLY_NOTE,
+    BaselineResult,
     CandidateValidator,
     EnvironmentEvolver,
     Generation,
     GenerationStatus,
     ObjectivePick,
     PlanNode,
+    baseline_candidate,
     excerpt,
     parse_review,
     review_objective,
 )
 from evomesh.git import GitError
 from evomesh.harness_queue import HarnessGateway
+from evomesh.improvements import (
+    NOT_PICKABLE_NOW,
+    RUNTIME_SOURCE,
+    ImprovementControl,
+    ImprovementStatus,
+    ReviewVerdict,
+)
+from evomesh.improvements import Improvement as TrackedImprovement
 from evomesh.rules import (
     BELIEF_CHANGED_EVENT,
     Rule,
@@ -240,9 +251,7 @@ class GuardianBehavior(BDIBehavior):
 
     async def perceive(self, context: CycleContext) -> list[Belief]:
         states = cast("dict[str, Any]", context.service("runtime_states") or {})
-        health = cast(
-            "tuple[bool, str]", context.service("provider_health") or (False, "unknown")
-        )
+        health = cast("tuple[bool, str]", context.service("provider_health") or (False, "unknown"))
         stalled = sorted(
             str(getattr(state, "name", agent_id))
             for agent_id, state in states.items()
@@ -353,7 +362,6 @@ class GuardianBehavior(BDIBehavior):
         summary = "; ".join(findings) if findings else "mesh healthy, provider ready"
         return StepResult(summary=summary, fact=findings[0] if findings else "")
 
-
     @staticmethod
     def _diagnose(context: CycleContext, intention: Intention) -> str:
         """Answer a delegated stall diagnosis from runtime state alone."""
@@ -371,9 +379,10 @@ class GuardianBehavior(BDIBehavior):
                 parts.append(f"last error: {state.last_error}")
             if state.last_outcome:
                 parts.append(f"last outcome: {state.last_outcome}")
-            if not context.service("provider_health") or not cast(
-                "tuple[bool, str]", context.service("provider_health")
-            )[0]:
+            if (
+                not context.service("provider_health")
+                or not cast("tuple[bool, str]", context.service("provider_health"))[0]
+            ):
                 parts.append("the model provider is not ready")
             text = "; ".join(parts)
         return text
@@ -513,6 +522,9 @@ class EvolverBehavior(BDIBehavior):
         # The tree key a human was last told about, so a stall is announced
         # once, not every cycle it lasts.
         self._announced: str = ""
+        # The improvement backlog's control plane, when the environment has
+        # one (read from the cycle's services before each stage).
+        self._improvements: ImprovementControl | None = None
 
     def _stages(self) -> tuple[str, ...]:
         if not self.auto_validate:
@@ -659,6 +671,8 @@ class EvolverBehavior(BDIBehavior):
         stages = self._stages()
         if stage in stages:
             intention.cursor = stages.index(stage)
+        control = context.service("improvements")
+        self._improvements = control if isinstance(control, ImprovementControl) else None
         goal = context.goal
         objective = str(state.get("objective") or (goal.description if goal else ""))
         try:
@@ -723,6 +737,7 @@ class EvolverBehavior(BDIBehavior):
     ) -> StepResult:
         goal = context.goal
         substantive: dict[str, Any] = {}
+        tracked: TrackedImprovement | None = None
         if goal is not None and goal.recurring:
             # The standing goal names no file and no change -- concrete beats
             # vague for a small model with a step budget, and the dead-module
@@ -739,8 +754,9 @@ class EvolverBehavior(BDIBehavior):
             # generations straight.
             seed = evolver.workspace.supervisor.total_created()
             baseline_pick: ObjectivePick | None = None
+            baseline_result: BaselineResult | None = None
             if self.baseline_tests:
-                baseline = await evolver.baseline(self.validate_seconds)
+                baseline = baseline_result = await evolver.baseline(self.validate_seconds)
                 if baseline is None:
                     return StepResult(
                         summary=(
@@ -771,18 +787,20 @@ class EvolverBehavior(BDIBehavior):
             # maintenance: with only them, the best any generation could do
             # was add one test, and ~30 straight did exactly that
             # (2026-09-24) while the system itself never changed.
-            pick = baseline_pick or evolver.substantive_objective(
-                seed, scout_cap=MAX_SCOUT_ATTEMPTS if self.test_backlog else None
-            )
+            scout_cap = MAX_SCOUT_ATTEMPTS if self.test_backlog else None
+            if self._improvements is not None:
+                # Ranked by the backlog's explicit priority, not rotated by
+                # seed; discovery (a scout) only when nothing evidenced is left.
+                pick, tracked = await self._prioritized(
+                    self._improvements, evolver, baseline_result, baseline_pick
+                )
+                pick = pick or evolver.scout_pick(seed, scout_cap)
+            else:
+                pick = baseline_pick or evolver.substantive_objective(seed, scout_cap=scout_cap)
             target = evolver.backlog_target(seed) if pick is None else None
-            nudge_delete = (
-                target is not None
-                and evolver.recent_backlog_streak(target.name) >= 3
-            )
+            nudge_delete = target is not None and evolver.recent_backlog_streak(target.name) >= 3
             backlog = (
-                evolver.backlog_objective(seed, nudge_delete=nudge_delete)
-                if pick is None
-                else None
+                evolver.backlog_objective(seed, nudge_delete=nudge_delete) if pick is None else None
             )
             if pick is not None:
                 objective = _with_recent_failure(evolver, pick.objective, (pick.needle,))
@@ -866,6 +884,19 @@ class EvolverBehavior(BDIBehavior):
         if permissions is not None:
             with suppress(Exception):
                 await permissions.prune_missing_paths()
+        if tracked is not None and self._improvements is not None:
+            work = await self._improvements.begin(
+                tracked,
+                objective=objective,
+                generation=generation.number,
+                route=self._route(context),
+            )
+            if work is not None:
+                substantive["improvement_id"] = tracked.id
+                substantive["work_item_id"] = work.id
+                board = context.service("blackboard")
+                if isinstance(board, Blackboard):
+                    board.publish_work(work)
         next_stage = STAGE_DRAFT if self.auto_plan else STAGE_PROPOSE
         await evolver.set_pipeline_state(
             {
@@ -881,6 +912,61 @@ class EvolverBehavior(BDIBehavior):
             fact=f"generation {generation.number} opened for: {objective}",
             phase=AgentPhase.ACTING,
         )
+
+    @staticmethod
+    async def _prioritized(
+        control: ImprovementControl,
+        evolver: EnvironmentEvolver,
+        baseline: BaselineResult | None,
+        baseline_pick: ObjectivePick | None,
+    ) -> tuple[ObjectivePick | None, TrackedImprovement | None]:
+        """Settle the last generation's work item, fold what the evolver can
+        see now into the backlog, and take the best-scoring improvement."""
+        pairs = evolver.substantive_candidates()
+        if baseline_pick is not None and baseline is not None:
+            pairs.insert(0, (baseline_pick, baseline_candidate(baseline)))
+        present = evolver.evidence_refs(baseline)
+        await control.settle(evolver.workspace.supervisor.outcome, present)
+        await control.sync([candidate for _, candidate in pairs], present)
+        by_ref = {candidate.ref: pick for pick, candidate in pairs}
+        while (chosen := control.choose()) is not None:
+            if chosen.source_ref in by_ref:
+                return by_ref[chosen.source_ref], chosen
+            if chosen.source == RUNTIME_SOURCE:
+                return evolver.improvement_pick(chosen), chosen
+            # Still evidenced, but set aside for now (attempted too often
+            # recently): not this generation's work.
+            chosen.status = ImprovementStatus.BLOCKED
+            chosen.rejection_reason = NOT_PICKABLE_NOW
+        await control.save()
+        return None, None
+
+    @staticmethod
+    def _route(context: CycleContext) -> Callable[[WorkItem], str | None]:
+        """Award a code work item by capability. Only the agent running
+        the candidate pipeline can carry one out, so it is awarded to this
+        agent when it is among the capable bidders, and to nobody otherwise."""
+        contract_net = context.service("contract_net")
+        environment = cast("Any", context.service("environment"))
+        board = context.service("blackboard")
+
+        def route(work: WorkItem) -> str | None:
+            if not isinstance(contract_net, ContractNet):
+                return context.definition.id
+            bids = contract_net.bids(
+                work,
+                states=environment.runtime_states() if environment is not None else {},
+                active_work=list(board.work_items.values())
+                if isinstance(board, Blackboard)
+                else [],
+            )
+            return (
+                context.definition.id
+                if any(bid.agent_id == context.definition.id for bid in bids)
+                else None
+            )
+
+        return route
 
     async def _stall(self, context: CycleContext, key: str, reason: str) -> StepResult:
         """Wait instead of opening a generation, telling a human once per ``key``."""
@@ -1103,8 +1189,10 @@ class EvolverBehavior(BDIBehavior):
                     f"src/evomesh/ (only {', '.join(touched)})"
                 )
             step_path = str(work.get("path", ""))
-            if pick == PICK_IMPROVEMENT and step_path and not any(
-                path.replace("\\", "/").endswith(step_path) for path in touched
+            if (
+                pick == PICK_IMPROVEMENT
+                and step_path
+                and not any(path.replace("\\", "/").endswith(step_path) for path in touched)
             ):
                 # Found live: a job that edits the right text in the wrong
                 # file. The step names one file; landing a change elsewhere
@@ -1377,9 +1465,7 @@ class EvolverBehavior(BDIBehavior):
             phase=AgentPhase.ACTING,
         )
 
-    async def _validate(
-        self, evolver: EnvironmentEvolver, state: dict[str, Any]
-    ) -> StepResult:
+    async def _validate(self, evolver: EnvironmentEvolver, state: dict[str, Any]) -> StepResult:
         generation = evolver.candidate(int(state["generation"]))
         run = evolver.validation_run(generation.number)
         if run is None:
@@ -1441,6 +1527,10 @@ class EvolverBehavior(BDIBehavior):
                 "failure_digest": digest,
             }
         )
+        if self._improvements is not None and state.get("improvement_id") and not blocker:
+            await self._improvements.record_validation(
+                str(state["improvement_id"]), passed=result.passed
+            )
         if blocker:
             command = (result.failure() or {}).get("command")
             return StepResult(
@@ -1633,6 +1723,11 @@ class EvolverBehavior(BDIBehavior):
         verdict, reason = parse_review(answer or "")
         moved = {key: value for key, value in state.items() if key != "review_job"}
         repairs = int(state.get("repairs", 0))
+        if self._improvements is not None and state.get("improvement_id") and verdict is not None:
+            await self._improvements.record_review(
+                str(state["improvement_id"]),
+                ReviewVerdict.COMPLETE if verdict else ReviewVerdict.INCOMPLETE,
+            )
         if verdict is True:
             await evolver.set_pipeline_state({**moved, "stage": STAGE_REPORT})
             return StepResult(
@@ -1646,8 +1741,7 @@ class EvolverBehavior(BDIBehavior):
                 await evolver.set_pipeline_state({**moved, "review_attempts": attempts})
                 return StepResult(
                     summary=(
-                        f"review job {job.number} gave no verdict ({job.describe()}); "
-                        "asking again"
+                        f"review job {job.number} gave no verdict ({job.describe()}); asking again"
                     ),
                     phase=AgentPhase.ACTING,
                 )
@@ -1724,9 +1818,7 @@ class EvolverBehavior(BDIBehavior):
             )
         return StepResult(summary=summary, fact=fact, phase=AgentPhase.ACTING)
 
-    async def _report(
-        self, evolver: EnvironmentEvolver, state: dict[str, Any]
-    ) -> StepResult:
+    async def _report(self, evolver: EnvironmentEvolver, state: dict[str, Any]) -> StepResult:
         number = int(state["generation"])
         # None means validation never ran, which is not the same as failing it.
         passed = state.get("passed")
@@ -1843,11 +1935,7 @@ class EvolverBehavior(BDIBehavior):
         action = "promoted" if passed else "discarded"
         landed = (
             f" as {commit[:8]} ({evolver.last_publish}), "
-            + (
-                "restarting the mesh into it"
-                if self.auto_restart
-                else "restart the mesh to run it"
-            )
+            + ("restarting the mesh into it" if self.auto_restart else "restart the mesh to run it")
             if commit
             else ""
         )

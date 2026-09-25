@@ -5,9 +5,9 @@ import functools
 import logging
 import re
 import shutil
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,7 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
 from evomesh.improvements import (
     ImprovementBacklog,
+    ImprovementControl,
     ImprovementCoordinator,
     ImprovementScout,
     ImprovementTriage,
@@ -88,6 +89,8 @@ ASSISTANCE_TTL_SECONDS = 3600.0
 PRIVATE_BELIEF_PREFIXES = ("inbox.",)
 # Shared blackboard lines per section in every agent's world snapshot.
 WORLD_BLACKBOARD_LINES = 6
+# An open goal untouched this long is reported as stale in status.
+STALE_GOAL_SECONDS = 3600.0
 
 
 class HealthState(StrEnum):
@@ -124,12 +127,22 @@ class Environment:
         self.improvement_scout = ImprovementScout()
         self.improvement_triage = ImprovementTriage()
         self.improvement_coordinator = ImprovementCoordinator(self.improvement_backlog)
+        self.improvements = ImprovementControl(
+            self.improvement_backlog,
+            self.improvement_coordinator,
+            self.improvement_triage,
+            self.improvement_scout,
+            save=self._save_improvements,
+            announce=self.announce,
+            require_review=settings.evolution.review,
+        )
         self.events.subscribe(EventType.GOAL_UNBLOCKED, self._wake_event_owner)
         self.events.subscribe(EventType.MESSAGE_RECEIVED, self._wake_event_owner)
         self.events.subscribe(EventType.GOAL_COMPLETED, self._unblock_goal_dependents)
         for event_type in EventType:
             self.events.subscribe(event_type, self.blackboard.publish_event)
         self.events.subscribe(EventType.AGENT_STALLED, self._capture_improvement)
+        self.events.subscribe(EventType.TASK_FAILED, self._capture_improvement)
         self.events.subscribe(EventType.AGENT_STALLED, self._assist_stalled_agent)
         self.events.subscribe(EventType.BELIEF_CHANGED, self._publish_belief_fact)
         self.events.subscribe(EventType.GOAL_CREATED, self._start_delegated_work)
@@ -249,11 +262,10 @@ class Environment:
                     )
 
     async def _capture_improvement(self, event: Event) -> None:
-        proposal = self.improvement_scout.from_event(event)
-        if proposal is None:
-            return
-        item = self.improvement_backlog.add(proposal)
-        self.improvement_triage.triage(item)
+        """Runtime evidence becomes a proposal; triage decides if it is work."""
+        await self.improvements.propose_from_event(event)
+
+    async def _save_improvements(self) -> None:
         await self.repository.save_state(
             "improvement_backlog_v2", self.improvement_backlog.dump()
         )
@@ -1287,8 +1299,7 @@ class Environment:
             "blackboard": self.blackboard,
             "capabilities": self.capabilities,
             "contract_net": self.contract_net,
-            "improvement_backlog": self.improvement_backlog,
-            "improvement_coordinator": self.improvement_coordinator,
+            "improvements": self.improvements,
         }
 
     async def configure_agent_model(
@@ -1485,13 +1496,19 @@ class Environment:
             },
             "improvements": {
                 "total": len(self.improvement_backlog.items),
-                "verified": sum(
-                    item.status.value == "verified"
-                    for item in self.improvement_backlog.items.values()
-                ),
-                "rejected": sum(
-                    item.status.value == "rejected"
-                    for item in self.improvement_backlog.items.values()
-                ),
+                **Counter(item.status.value for item in self.improvement_backlog.items.values()),
+            },
+            # Open goals nobody has touched for an hour: work that is
+            # neither progressing nor failing loudly enough to be a stall.
+            "stale_goals": {
+                definition.name: len(
+                    GoalManager(definition.mind).stalled_goals(
+                        timedelta(seconds=STALE_GOAL_SECONDS)
+                    )
+                )
+                for definition in self.registry.all()
+                if GoalManager(definition.mind).stalled_goals(
+                    timedelta(seconds=STALE_GOAL_SECONDS)
+                )
             },
         }
