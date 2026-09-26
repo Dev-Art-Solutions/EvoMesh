@@ -1,0 +1,13 @@
+{
+  "user_agent": "EvoMeshCrawler/1.0 (+https://evomesh.devart.solutions)",
+  "respect_robots": true,
+  "delay_seconds": 1.0,
+  "max_pages": 10,
+  "max_chars_per_page": 4000,
+  "time_budget_seconds": 45,
+  "timeout_seconds": 15,
+  "control_port": 8765,
+  "min_interval_seconds": 300,
+  "max_tasks": 20,
+  "endpoints": {}
+}

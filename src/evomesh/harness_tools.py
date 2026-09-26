@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
+import os
 import re
 import shlex
 import tempfile
@@ -1116,9 +1117,26 @@ def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = Non
         if missing:
             raise ToolDenied(f"DENIED: {definition.name} needs: {', '.join(missing)}")
         values = [str(args[param.name]) for param in definition.parameters if param.name in args]
+        # Which agent is calling, from the runtime -- never a parameter the
+        # model fills in, so a tool acting on "its own" agent cannot be
+        # pointed at another one.
+        env = {
+            **os.environ,
+            "EVOMESH_AGENT_ID": context.agent_id or "",
+            # The mesh's own fetcher (Scrapling, see tool_fetch), for a tool
+            # that fetches pages itself: the one configured fetcher, not a
+            # second HTTP stack of its own. Empty when none is configured.
+            "EVOMESH_SCRAPER": context.scraping_executable or "",
+            "EVOMESH_SCRAPER_TIMEOUT": str(int(context.scraping_timeout)),
+        }
         try:
             result = await run_command(
-                base[0], *base[1:], *values, cwd=context.root, timeout_seconds=context.shell_seconds
+                base[0],
+                *base[1:],
+                *values,
+                cwd=context.root,
+                timeout_seconds=context.shell_seconds,
+                env=env,
             )
         except OSError as exc:
             raise ToolDenied(f"DENIED: {definition.name} could not be started: {exc}") from exc

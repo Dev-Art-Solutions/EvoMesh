@@ -4,6 +4,24 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A web-crawler template.** Give the Crawler a site and what you care about,
+  and it answers with the lines that mention it, page by page. Ask for it on a
+  schedule ("every morning at 9", "each hour") and it adds a recurring task
+  for itself. It delivers to you, to an API endpoint named in its
+  `config.json`, or to another agent. Every run is also saved under
+  `results/`.
+  - `crawl_site` fetches every page and robots.txt through the mesh's own
+    fetcher (Scrapling), with a pause between requests and caps on pages and
+    time. It refuses when no fetcher is configured.
+  - `crawl_schedule` goes through the control port and can schedule tasks
+    only for the agent calling it.
+  - `send_results` posts only to endpoints a human listed. A URL from a task
+    or a page is refused.
+  - Custom tools now get `EVOMESH_AGENT_ID` (and `EVOMESH_SCRAPER`) from the
+    runtime, never from the model.
+
 ### Fixed
 
 - **Recovering a lost acceptance ran the work again.** When a stale save had
