@@ -79,3 +79,22 @@ def test_another_revision_or_an_unearned_local_claim_is_rejected() -> None:
 def test_not_accepted_needs_no_evidence_to_be_honest() -> None:
     assert validate_manifest({"status": "NOT_ACCEPTED"}) == []
     assert validate_manifest({"status": "DONE"}) == ["unknown status 'DONE'"]
+
+
+def test_a_pending_scope_decision_is_not_acceptance() -> None:
+    pending = {
+        **_accepted(),
+        "scope_decisions": {"x": {"decision": "pending", "decided_by": ""}},
+    }
+    assert validate_manifest(pending, "abc1234def")
+    by_model = {
+        **_accepted(),
+        "scope_decisions": {"x": {"decision": "accepted", "decided_by": "model:ornith"}},
+    }
+    assert validate_manifest(by_model, "abc1234def")
+    owned = {
+        **_accepted(),
+        "scope_decisions": {"x": {"decision": "accepted", "decided_by": "operator:iliya"}},
+    }
+    assert validate_manifest(owned, "abc1234def") == []
+

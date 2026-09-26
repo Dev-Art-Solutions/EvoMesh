@@ -126,6 +126,8 @@ class Selection(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     UNRESOLVED_EFFECT = "unresolved_effect"
     POSTCONDITION_FAILED = "postcondition_failed"
+    # Delegated work whose contract only typed execution can enforce.
+    UNSUPPORTED_EXECUTION = "unsupported_execution"
 
 
 @dataclass
@@ -2433,6 +2435,17 @@ def issues_text(issues: list[Issue] | list[dict[str, str]]) -> str:
 RESERVED_PARAMETERS = frozenset({"procedure"})
 
 
+def bounded(work: WorkItem) -> bool:
+    """Work that carries limits only typed execution enforces: an allocation,
+    a deadline or a resource scope. Legacy delegation (the harness's
+    delegate_work, a stall's assistance) carries none and stays legacy."""
+    return (
+        work.budget.max_model_calls is not None
+        or work.deadline is not None
+        or bool(work.resources)
+    )
+
+
 def occurrence_id(goal: Any) -> str:
     return f"{goal.id}#{getattr(goal, 'occurrence', 0)}"
 
@@ -2531,16 +2544,19 @@ class ProcedureService:
             or match.definition is None
             or match.admission is None
         ):
-            if (
-                delegated is not None
-                and delegated.budget.max_model_calls == 0
-                and match.selection in {Selection.NO_MATCH, Selection.INCOMPATIBLE_PROCEDURE}
-            ):
-                # Falling through would hand the work to model planning,
-                # which the allocation forbids outright.
+            if delegated is not None and bounded(delegated):
+                # Falling through would hand the work to legacy planning and
+                # model-backed steps, and nothing there enforces this
+                # WorkItem's allocation, deadline, resources or contract --
+                # whatever the reason no typed procedure matched, including
+                # the emergency switch. Refused, never run half-bounded.
                 return None, MatchResult(
-                    Selection.BUDGET_EXHAUSTED,
-                    reasons=["no typed procedure, and the work allows no model call"],
+                    Selection.UNSUPPORTED_EXECUTION,
+                    reasons=[
+                        f"bounded delegated work {delegated.id} has no admitted typed "
+                        f"procedure ({match.selection.value}: "
+                        f"{'; '.join(match.reasons)[:200] or '-'})"
+                    ],
                 )
             return None, match
         values, refs = self._context(match.definition, agent)

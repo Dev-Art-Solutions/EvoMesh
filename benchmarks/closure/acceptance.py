@@ -105,6 +105,11 @@ MATRIX: dict[str, list[str]] = {
         DELEG + "test_r01b_an_expired_deadline_starts_no_operation",
         DELEG + "test_r01b_a_running_child_ends_no_later_than_its_parent",
         DELEG + "test_r01c_a_replacement_does_not_reset_the_allocation",
+        DELEG + "test_r01f1_a_positive_allocation_without_a_typed_child_is_refused",
+        DELEG + "test_r01f2_an_incompatible_procedure_does_not_erase_the_contract",
+        DELEG + "test_r01f2_disabling_typed_execution_does_not_erase_the_contract",
+        DELEG + "test_r01f3_an_expired_deadline_starts_no_fallback_either",
+        DELEG + "test_r01f5_ordinary_and_unbounded_legacy_work_still_falls_through",
     ],
     "T27": [
         CRASH + "test_a_process_that_keeps_crashing_runs_out_of_budget",
@@ -153,6 +158,9 @@ MATRIX: dict[str, list[str]] = {
         CTRL + "test_a_lost_delivery_is_redelivered_not_duplicated",
         DELEG + "test_r01d_a_replayed_delegate_runs_nothing_twice",
         DELEG + "test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused",
+        DELEG + "test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery",
+        DELEG + "test_r01g2_g3_repeated_admission_reuses_the_one_goal",
+        DELEG + "test_r01g5_admission_keeps_unrelated_agent_state",
         CTRL + "test_one_child_is_created_and_the_parent_resumes_on_its_result",
     ],
     "T45": [CTRL + "test_evidence_published_before_the_wait_begins_is_seen"],
@@ -280,6 +288,20 @@ GATES: dict[str, dict[str, Any]] = {
                       OPER + "test_the_emergency_switch",
                       LEARN + "test_emergency_disable_stops_new_typed_runs_but_settles_open_ones"]},
     "CG8": {"title": "Reproducible evidence and quality", "quality": True},
+}
+
+# A requirement the implementation meets only in part. It counts as passed
+# only once its owner has accepted the narrower scope, by name; until then it
+# is a blocking finding, never a silent pass (review of 899778e).
+SCOPE_DECISIONS: dict[str, dict[str, str]] = {
+    "separate-code-executor": {
+        "requirement": "improvement work executed by a separately selected coding agent "
+        "under its own model and tool identity, coordinated by another (plan 18.2, AC-19)",
+        "implemented": "partial: code work is routed only to the agent that owns the "
+        "candidate pipeline (known limitation 18); tests/test_w3_live.py proves that path",
+        "decision": "pending",
+        "decided_by": "",
+    },
 }
 
 ACCEPTED = {
@@ -502,6 +524,11 @@ def build(outcomes: dict[str, str], quality: list[dict[str, Any]], measured: dic
     blocking = [
         f"{key} {gate['status']}" for key, gate in gates.items() if gate["status"] != "passed"
     ]
+    blocking += [
+        f"scope decision pending: {key} ({spec['implemented']})"
+        for key, spec in SCOPE_DECISIONS.items()
+        if spec["decision"] != "accepted" or not spec["decided_by"].startswith("operator:")
+    ]
     if not clean:
         blocking.append("the working tree was not clean at the tested commit")
     if blocking:
@@ -539,6 +566,7 @@ def build(outcomes: dict[str, str], quality: list[dict[str, Any]], measured: dic
                   "(desktop build and self-tests)",
         },
         "blocking_findings": blocking,
+        "scope_decisions": SCOPE_DECISIONS,
         "deferred_nonblocking_items": "see known-limitations.md",
         "evidence_index": evidence_index,
     }
@@ -562,6 +590,11 @@ def validate_manifest(manifest: dict[str, Any], head: str | None = None) -> list
         problems.append("evidence that did not pass")
     if manifest.get("blocking_findings"):
         problems.append("unresolved blocking findings")
+    for key, spec in (manifest.get("scope_decisions") or {}).items():
+        if spec.get("decision") != "accepted" or not str(spec.get("decided_by", "")).startswith(
+            "operator:"
+        ):
+            problems.append(f"scope decision {key} is not accepted by an operator")
     if not manifest.get("working_tree_clean"):
         problems.append("not tested on a clean tree")
     if head is not None and not str(head).startswith(str(manifest.get("tested_commit"))):

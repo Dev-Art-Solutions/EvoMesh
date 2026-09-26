@@ -375,50 +375,7 @@ class AgentRuntime:
                     reply = Performative.REJECT
                     detail = "missing capabilities: " + ", ".join(sorted(missing))
                 else:
-                    # One goal per WorkItem, ever: a replayed DELEGATE after the
-                    # child finished must not run the work a second time. Goals
-                    # are pruned, so the ledger is durable state, not the goal
-                    # list; a real new attempt arrives as a new WorkItem id.
-                    first = await self.repository.save_state_once(
-                        f"delegation.accepted:{self.definition.id}:{item.id}",
-                        {"requester": incoming.sender_id},
-                    )
-                    if first and not any(
-                        goal.parameters.get("work_item_id") == item.id
-                        for goal in self.definition.mind.goals
-                    ):
-                        goal = self.definition.mind.add_goal(
-                            item.objective,
-                            kind=DELEGATED_GOAL_KIND,
-                            parameters={
-                                "work_item_id": item.id,
-                                "work_type": item.type,
-                                "requester_id": incoming.sender_id,
-                                "inputs": dict(item.inputs),
-                                # Loop and depth guards travel with the work
-                                # so a typed child can delegate further only
-                                # inside the root's envelope.
-                                "causation_chain": list(item.causation_chain),
-                                "delegation_depth": item.delegation_depth,
-                            },
-                            owner_agent_id=self.definition.id,
-                            # Ahead of a standing goal (3): someone is waiting
-                            # on this, and a recurring goal that is always
-                            # runnable would otherwise starve it forever.
-                            priority=DELEGATED_GOAL_PRIORITY,
-                        )
-                        await self.repository.save_agent(self.definition)
-                        await self.events.publish(
-                            Event(
-                                EventType.GOAL_CREATED,
-                                source="delegation",
-                                agent_id=self.definition.id,
-                                goal_id=goal.id,
-                                payload={"work_item_id": item.id, "kind": goal.kind},
-                            )
-                        )
-                    reply, detail = Performative.ACCEPT, "accepted"
-                    self.wake()
+                    reply, detail = await self._accept(item, incoming.sender_id)
             await self.bus.send(
                 semantic_message(
                     reply,
@@ -447,6 +404,61 @@ class AgentRuntime:
                 self.wake()
             return True
         return False
+
+    async def _accept(self, item: WorkItem, requester_id: str) -> tuple[Performative, str]:
+        """One goal per WorkItem, ever, and never an acceptance without it.
+
+        The ledger entry and the agent holding the new goal are written in one
+        transaction (``accept_work``): a replayed DELEGATE after the child
+        finished and its goal was pruned finds the entry and runs nothing, and
+        a crash or a failed write leaves neither, so the replay recovers the
+        work instead of being refused as a duplicate of something lost. A real
+        new attempt arrives as a new WorkItem id."""
+        mind = self.definition.mind
+        if any(goal.parameters.get("work_item_id") == item.id for goal in mind.goals):
+            return Performative.ACCEPT, "already accepted"
+        goal = mind.add_goal(
+            item.objective,
+            kind=DELEGATED_GOAL_KIND,
+            parameters={
+                "work_item_id": item.id,
+                "work_type": item.type,
+                "requester_id": requester_id,
+                "inputs": dict(item.inputs),
+                # Loop and depth guards travel with the work so a typed child
+                # can delegate further only inside the root's envelope.
+                "causation_chain": list(item.causation_chain),
+                "delegation_depth": item.delegation_depth,
+            },
+            owner_agent_id=self.definition.id,
+            # Ahead of a standing goal (3): someone is waiting on this, and a
+            # recurring goal that is always runnable would otherwise starve it.
+            priority=DELEGATED_GOAL_PRIORITY,
+        )
+        try:
+            first = await self.repository.accept_work(
+                f"delegation.accepted:{self.definition.id}:{item.id}",
+                {"requester": requester_id, "goal_id": goal.id},
+                self.definition,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the requester instead
+            mind.goals = [other for other in mind.goals if other.id != goal.id]
+            logger.warning("could not record accepting work %s: %s", item.id, exc)
+            return Performative.REJECT, f"could not record the acceptance: {exc}"[:300]
+        if not first:
+            mind.goals = [other for other in mind.goals if other.id != goal.id]
+            return Performative.ACCEPT, "already accepted"
+        await self.events.publish(
+            Event(
+                EventType.GOAL_CREATED,
+                source="delegation",
+                agent_id=self.definition.id,
+                goal_id=goal.id,
+                payload={"work_item_id": item.id, "kind": goal.kind},
+            )
+        )
+        self.wake()
+        return Performative.ACCEPT, "accepted"
 
     # -- proactive path -------------------------------------------------
 

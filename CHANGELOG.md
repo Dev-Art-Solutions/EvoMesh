@@ -31,6 +31,16 @@ Corrections from the review of the architecture closure at `9739188`.
   cancel during a write was turned back into `RUNNING` when the write was
   reconciled, and the next step ran. Cancellation is now a durable intent: the
   receipt is kept, and nothing after the cancelled step runs.
+- **Bounded delegated work could escape to legacy reasoning.** With a
+  positive model allocation, a child with no matching typed procedure (or
+  with typed execution switched off) fell through to legacy planning and
+  model-backed steps, where none of the WorkItem's limits applied. Such work
+  now fails `unsupported_execution`. Unbounded legacy delegation is
+  unchanged.
+- **A crash while accepting work could lose it for good.** The duplicate
+  ledger entry was committed before the goal, so a replay after a failure in
+  between was refused as a duplicate. Both are now written in one
+  transaction.
 - **Runtime faults were verified by unrelated activity.** The runtime log
   counted a reading whenever the mesh had run. It now counts only a fault it
   can still see. A fixed runtime fault stays `VERIFYING` until a

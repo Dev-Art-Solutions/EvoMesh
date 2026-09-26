@@ -129,10 +129,20 @@ message. The child is admitted from that committed WorkItem, not from the
 message's copy. The WorkItem's allocation is what the child runs under: its
 model calls cap the child and everything it delegates further, its deadline is
 never later than the parent's, and its `max_attempts` bounds how many
-executions the occurrence may start. A child with no model call allowed and no
-typed procedure fails; it is never handed to model planning. The recipient
-keeps a durable ledger of accepted WorkItems, so a replayed `DELEGATE`, even
-after the child finished and its goal was pruned, creates nothing.
+executions the occurrence may start. Bounded work -- any WorkItem with an
+allocation, a deadline or resources -- runs only typed. If no admitted
+procedure matches it, whether through `NO_MATCH`, `INCOMPATIBLE_PROCEDURE` or
+the emergency switch, the goal fails `unsupported_execution`. It is never
+handed to legacy planning or model-backed steps, which enforce none of those
+limits. Unbounded legacy delegation (the harness's `delegate_work`, a stall's
+assistance) still takes the legacy path.
+
+The recipient keeps a durable ledger of accepted WorkItems, and writes the
+ledger entry and the agent holding the new goal in one transaction. A replayed
+`DELEGATE` finds the entry and creates nothing, even after the child finished
+and its goal was pruned. A crash or a failed write leaves neither, and the
+requester gets a `REJECT`, so the replay recovers the work instead of being
+refused as a duplicate of something lost.
 
 Files are resolved once, in the requester's scope. The router finds every
 resource the work names: the parameters an admitted procedure binds into an

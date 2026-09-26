@@ -80,4 +80,7 @@ architecture work automatically.
     identity and a grant scoped to the candidate reach the real harness
     jobs, and the review runs read-only. It does not show a different
     agent with its own model and tools doing the work; that would be new
-    routing, not a correction.
+    routing, not a correction. This is narrower than the plan's
+    separate-executor requirement. The acceptance manifest records it as a
+    scope decision (`SCOPE_DECISIONS` in `benchmarks/closure/acceptance.py`),
+    and until an operator accepts it by name it is a blocking finding.

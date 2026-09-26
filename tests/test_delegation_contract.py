@@ -14,7 +14,12 @@ from typing import Any
 
 from evomesh.config import HarnessSettings
 from evomesh.contracts import AgentDefinition, AgentStatus, FilesystemGrant, Goal, GoalStatus
-from evomesh.coordination import DELEGATED_GOAL_KIND, Performative, semantic_message
+from evomesh.coordination import (
+    DELEGATED_GOAL_KIND,
+    Performative,
+    WorkItem,
+    semantic_message,
+)
 from evomesh.environment import Environment
 from evomesh.models import MockProvider
 from evomesh.procedure_runtime import CORE_OUTPUTS, ExecStatus, occurrence_id
@@ -706,4 +711,258 @@ async def test_r02d_the_child_cannot_write_where_the_task_did_not_say(tmp_path: 
     assert not (shared / "elsewhere.json").exists()
     execution = await environment.procedures.executor.for_occurrence(occurrence_id(child))
     assert execution is not None and execution.status is ExecStatus.FAILED
+    await environment.stop()
+
+
+# -- R01-F (review 899778e): a bounded WorkItem never escapes to legacy work -----
+
+
+def _harness_jobs_for(environment: Environment, agent: AgentDefinition) -> list[object]:
+    return [job for job in environment.harness.queue.jobs.values() if job.agent_id == agent.id]
+
+
+async def test_r01f1_a_positive_allocation_without_a_typed_child_is_refused(
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider(["1. Read doc.json\n2. Report its keys"] * 10)
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path, provider=provider)
+    # The inspector has no procedure for this work kind: NO_MATCH.
+    await _promote(environment, _parent("hand_off_one", "json_inspection", model_calls=1))
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off_one", parameters={"path": "doc.json"}
+    )
+    calls_before = len(provider.calls)
+
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    await _run_child(environment, inspector, child)
+
+    assert child.status is GoalStatus.FAILED
+    assert "unsupported_execution" in (child.last_error or "")
+    assert len(provider.calls) == calls_before, "no legacy planning, no model-backed step"
+    assert _harness_jobs_for(environment, inspector) == [], "no unscoped harness work"
+    await environment.stop()
+
+
+async def test_r01f2_an_incompatible_procedure_does_not_erase_the_contract(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path)
+    other = copy.deepcopy(JSON_INSPECTION)
+    other["parameter_schema"]["properties"] = {"document": {"type": "string", "maxLength": 500}}
+    other["parameter_schema"]["required"] = ["document"]
+    other["steps"][0]["arguments"] = {"path": ref("goal", "parameters", "document")}
+    await _promote(environment, _parent("hand_off_one", "json_inspection", model_calls=1), other)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off_one", parameters={"path": "doc.json"}
+    )
+    calls_before = len(provider.calls)
+
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    await _run_child(environment, inspector, child)
+
+    assert child.status is GoalStatus.FAILED
+    assert "unsupported_execution" in (child.last_error or "")
+    assert len(provider.calls) == calls_before
+    await environment.stop()
+
+
+async def test_r01f2_disabling_typed_execution_does_not_erase_the_contract(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path)
+    await _promote(
+        environment, _parent("hand_off_one", "json_inspection", model_calls=1), JSON_INSPECTION
+    )
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off_one", parameters={"path": "doc.json"}
+    )
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    environment.procedures.registry.enabled = False  # the operator's emergency switch
+    calls_before = len(provider.calls)
+
+    await _run_child(environment, inspector, child)
+
+    assert child.status is GoalStatus.FAILED
+    assert "unsupported_execution" in (child.last_error or "")
+    assert len(provider.calls) == calls_before
+    assert _harness_jobs_for(environment, inspector) == []
+    await environment.stop()
+
+
+async def test_r01f3_an_expired_deadline_starts_no_fallback_either(tmp_path: Path) -> None:
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path)
+    await _promote(
+        environment, _parent("hand_off_quick", "json_inspection", model_calls=1, deadline=0.05)
+    )
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off_quick", parameters={"path": "doc.json"}
+    )
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    await asyncio.sleep(0.1)
+    calls_before = len(provider.calls)
+
+    await _run_child(environment, inspector, child)
+
+    assert child.status is GoalStatus.FAILED
+    assert len(provider.calls) == calls_before
+    await environment.stop()
+
+
+async def test_r01f5_ordinary_and_unbounded_legacy_work_still_falls_through(
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider(["1. Think about it"] * 10)
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path, provider=provider)
+    # A delegation made the old way: no allocation, deadline or resources.
+    legacy = WorkItem(
+        parent_goal_id="g",
+        requester_agent_id=coordinator.id,
+        type="task",
+        objective="Summarize the weather",
+        required_capabilities=["artifact.read"],
+    )
+    legacy.assign(inspector.id)
+    environment.blackboard.publish_work(legacy)
+    await environment.bus.send(
+        semantic_message(
+            Performative.DELEGATE,
+            sender_id=coordinator.id,
+            recipient_id=inspector.id,
+            task_id=legacy.id,
+            payload=legacy.model_dump(mode="json"),
+        )
+    )
+    assert await _until(lambda: bool(_children(inspector)))
+    calls_before = len(provider.calls)
+
+    for _ in range(3):
+        await environment.cycle_agent(inspector.name)
+
+    assert _children(inspector)[0].status is not GoalStatus.FAILED
+    assert len(provider.calls) > calls_before, "legacy reasoning still serves it"
+    await environment.stop()
+
+
+# -- R01-G (review 899778e): accepting work is atomic with its goal -------------
+
+
+async def _delegate_payload(
+    environment: Environment, coordinator: AgentDefinition
+) -> tuple[str, dict[str, Any]]:
+    await environment.cycle_agent(coordinator.name)
+    repository = environment.repository
+    records = [
+        json.loads(payload)
+        for _, execution in await repository.list_procedure_executions()
+        for _, payload in await repository.list_procedure_operations(
+            json.loads(execution)["execution_id"]
+        )
+    ]
+    delegated = [record for record in records if record["kind"] == "delegate"]
+    assert delegated, "the parent delegated"
+    work = delegated[0]["arguments"]["work"]
+    return str(work["id"]), work
+
+
+async def test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    repository = environment.repository
+    # The agent's row cannot be written: the crash between the two writes.
+    trigger = (
+        "CREATE TRIGGER fail_inspector BEFORE UPDATE ON agents "
+        f"WHEN NEW.id = '{inspector.id}' BEGIN SELECT RAISE(ABORT, 'disk gone'); END"
+    )
+    await repository._write([(trigger, ())])  # pyright: ignore[reportPrivateUsage]
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+    work_id, payload = await _delegate_payload(environment, coordinator)
+    await asyncio.sleep(0.3)
+    marker = f"delegation.accepted:{inspector.id}:{work_id}"
+    assert await repository.load_state(marker) is None
+    assert _children(inspector) == [], "no goal the database does not also hold"
+    drop = "DROP TRIGGER fail_inspector"
+    await repository._write([(drop, ())])  # pyright: ignore[reportPrivateUsage]
+    await environment.stop()
+
+    # Restart from the database, the fault gone, and the delivery replayed.
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=True)
+    again = Environment(settings, {"ollama": MockProvider()})
+    await again.start()
+    restored = again.registry.get(inspector.id)
+    await again.start_agent(restored.id, start_delay=3600)
+    for _ in range(2):
+        await again.bus.send(
+            semantic_message(
+                Performative.DELEGATE,
+                sender_id=coordinator.id,
+                recipient_id=restored.id,
+                task_id=work_id,
+                goal_id=goal.id,
+                payload=payload,
+            )
+        )
+    assert await _until(lambda: bool(_children(restored)))
+    await asyncio.sleep(0.2)
+
+    assert len(_children(restored)) == 1, "exactly one recoverable goal"
+    await _run_child(again, restored, _children(restored)[0])
+    assert _children(restored)[0].status is GoalStatus.DONE, _children(restored)[0].last_error
+    await again.stop()
+
+
+async def test_r01g2_g3_repeated_admission_reuses_the_one_goal(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+    work_id, payload = await _delegate_payload(environment, coordinator)
+    await asyncio.gather(
+        *(
+            environment.bus.send(
+                semantic_message(
+                    Performative.DELEGATE,
+                    sender_id=coordinator.id,
+                    recipient_id=inspector.id,
+                    task_id=work_id,
+                    goal_id=goal.id,
+                    payload=payload,
+                )
+            )
+            for _ in range(3)
+        )
+    )
+    await asyncio.sleep(0.3)
+
+    assert len(_children(inspector)) == 1
+    await _run_child(environment, inspector, _children(inspector)[0])
+    executions = await environment.repository.list_procedure_executions()
+    children = [row for row in executions if json.loads(row[1])["agent_id"] == inspector.id]
+    assert len(children) == 1, "one logical execution"
+    await environment.stop()
+
+
+async def test_r01g5_admission_keeps_unrelated_agent_state(tmp_path: Path) -> None:
+    from evomesh.contracts import Belief
+
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    inspector.mind.revise([Belief(key="weather", statement="rain")])
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+
+    await _delegate_one(environment, coordinator, inspector, goal)
+    await asyncio.sleep(0.1)
+
+    stored = next(
+        agent for agent in await environment.repository.load_agents() if agent.id == inspector.id
+    )
+    assert stored.mind.belief("weather") is not None
+    assert any(item.kind == DELEGATED_GOAL_KIND for item in stored.mind.goals)
     await environment.stop()

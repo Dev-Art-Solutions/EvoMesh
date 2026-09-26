@@ -162,16 +162,32 @@ class SQLiteRepository:
     async def save_state(self, key: str, value: object) -> None:
         await self._upsert("state", "key", key, "value", json.dumps(value))
 
-    async def save_state_once(self, key: str, value: object) -> bool:
-        """Record ``key`` only if it has never been recorded: False when it
-        already was. One statement, so two racing callers get one True."""
-        try:
-            await self._write(
-                [("INSERT INTO state(key, value) VALUES (?, ?)", (key, json.dumps(value)))]
-            )
-        except sqlite3.IntegrityError:
-            return False
-        return True
+    async def accept_work(self, key: str, value: object, agent: AgentDefinition) -> bool:
+        """Record that ``agent`` accepted a piece of work and store the agent
+        holding its goal, in one transaction. False, with nothing written,
+        when the work was accepted before. A crash can leave neither or both
+        -- never an acceptance whose goal was lost, which a replay would then
+        refuse as a duplicate."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    "INSERT INTO state(key, value) VALUES (?, ?)", (key, json.dumps(value))
+                )
+            except sqlite3.IntegrityError:
+                await db.rollback()
+                return False
+            try:
+                await db.execute(
+                    "INSERT INTO agents(id, definition) VALUES (?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET definition = excluded.definition",
+                    (agent.id, agent.model_dump_json()),
+                )
+            except BaseException:
+                await db.rollback()
+                raise
+            await db.commit()
+            return True
 
     async def load_state(self, key: str) -> object | None:
         rows = await self._all("SELECT value FROM state WHERE key = ?", (key,))
