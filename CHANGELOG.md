@@ -2,9 +2,88 @@
 
 All notable changes to EvoMesh are documented in this file.
 
-## [Unreleased]
+## [0.4.0-alpha.1] - 2026-09-26
+
+The closed architecture. Work the mesh already knows how to do runs as a typed
+procedure. That is a validated graph with a durable journal, and it calls the
+model only for the one step that needs judgment. Nothing becomes work for the
+Evolver without evidence, and nothing enters its backlog without a human.
+
+Accepted against the closure plan's eight core gates, 60 acceptance tests and 12
+benchmarks. Two independent review passes followed, and every finding was first
+reproduced as a failing regression test and then fixed. The core is now frozen.
 
 ### Added
+
+- **Typed procedures.** A small validated graph with seven step kinds: tool,
+  cognitive, branch, validate, delegate, await and complete. Values are bound,
+  never templated. Predicates are three-valued: an unknown answer fails rather
+  than guessing.
+  - A definition is validated before it can run.
+  - A revision is immutable and approved by digest by a human, never by a model.
+  - Each cycle, an admitted procedure comes before recipes, learned plans and
+    model planning.
+  - A goal is done when its own success conditions hold against the
+    execution's evidence, not when the graph runs out of steps.
+  - Every effect is journaled under a logical key. After a crash, a write that
+    happened is reconciled from its receipt instead of repeated.
+  - An effect nobody can prove waits for an operator.
+  - Delegation and waits are durable.
+  - Learning is conservative: three verified occurrences plus an operator's
+    binding map make a candidate, which is replayed on held-out input and
+    promoted by hand.
+
+  Measured: the shipped snapshot workflow takes 0 model calls. The report
+  comparison takes exactly 1, and 18 of 18 runs on a local ornith-1.5:35b
+  completed on the first call.
+- **`/typed`** lists, shows, validates, approves (by digest), degrades and
+  retires revisions. It also explains a goal's selection; lists, pauses,
+  resumes and cancels executions; reconciles an unknown effect; and holds the
+  emergency switch. Two templates select typed goals: `json-archivist` and
+  `report-analyst`.
+- **The Idea Scout: ideas wait for a human before they become work.** A new
+  system agent is the only one that adds to `docs/evolution/improvements.md`.
+  - It looks for ideas in the code, one read-only job per idea, until
+    `ideas.max_pending` wait for review. Its jobs get only read, grep and ls.
+  - It also rewrites the rough ideas you send it (`/idea <text>`, or a message)
+    and the ones other agents send it (`PROPOSAL:` lines, the Evolver's scout)
+    into the backlog's shape.
+  - It keeps them in `workspace/ideas.md` and announces each one, in the shared
+    Telegram chat and in its own bot's chat if it has one.
+  - `/idea approve <n>`, a reply "да", or a 👍 on the Telegram message moves
+    that idea alone into the backlog and commits it. `/idea now <text>` skips
+    the review for your own idea.
+- **Improvements are verified by real observations only.** Each observation
+  has an id, an observer, what it covers and whether it was healthy. The same
+  reading counts once.
+  - Review and validation are bound to the candidate revision they judged, and
+    a cancelled required task is not success.
+  - A candidate that touches the rules that admit, verify or promote work, or
+    the tests that judge it, fails validation: the protected surface.
+  - Work is started, inspected and cancelled through a `WorkExecutor` seam
+    whose handle survives a restart.
+- **Cooperation, hardened.**
+  - Events are filtered per agent.
+  - A work item carries its requester, deadline, causation chain and
+    delegation depth.
+  - Contract Net ranks by task-specific history.
+  - Assistance refuses causation loops.
+  - The blackboard keeps conflicting fact versions with provenance.
+  - A harness job can hand a task over with `delegate_work`.
+- **Real token counts** from Ollama, OpenAI-compatible servers and Anthropic,
+  in `/status` and the call records; a server that reports none stays unknown.
+  An improvement with several steps becomes a DAG of work items. A cognitive
+  runtime benchmark drives the real runtime through eight scenarios, including
+  a live-model mode.
+
+### Changed
+
+- **An empty backlog idles the Evolver**: no scout, no dead-module busywork,
+  no model call. `evolution.scout_when_idle: true` brings exploring back,
+  except while the Idea Scout runs.
+- **A human backlog item, and a fixed runtime fault, wait in `VERIFYING`**
+  until `/improvements verify <id> <reason>`. No observer can show that
+  either one really works now.
 
 - **The Idea Scout: ideas wait for a human before they become work.** A new
   system agent is the only one that adds to `docs/evolution/improvements.md`.
@@ -57,6 +136,22 @@ Corrections from the review of the architecture closure at `9739188`.
   counted a reading whenever the mesh had run. It now counts only a fault it
   can still see. A fixed runtime fault stays `VERIFYING` until a
   target-specific probe or `/improvements verify` confirms it.
+- **A dirty checkout failed unrelated validations.** A candidate that was not
+  its own repository had its protected-surface check read the enclosing
+  checkout's uncommitted files. Git walks up the directory tree, and rule 11
+  warns about exactly this.
+- **A stalled goal was never runnable again.** A stall now pauses the goal,
+  and a one-shot goal fails after three stalls.
+- **Memory compaction sent the whole overflow to the model.** It sent 200 KB
+  in one prompt and compacted again every cycle. Compaction is now bounded by
+  the memory and prompt budgets.
+- **Finishing a goal never unblocked its dependants.** `GOAL_UNBLOCKED` was
+  never sent, and later only the first dependant was announced.
+- **Stopping the mesh mid-pipeline wedged it.** If a generation was decided
+  outside the pipeline, every cycle then failed. Such a stage now returns to
+  plan.
+- **Reconciled work after a restart was never saved.** Delegated work closed
+  at boot stayed ACTIVE in the stored blackboard.
 
 ## [0.3.0-alpha.1] - 2026-09-25
 
