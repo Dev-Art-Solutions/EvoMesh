@@ -62,3 +62,16 @@ async def test_ordinary_code_changes_are_not_protected(tmp_path: Path) -> None:
     (candidate / "src" / "evomesh" / "busy.py").write_text("X = 1\n", encoding="utf-8")
 
     assert await CandidateValidator._protected_failure(candidate) is None  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_candidate_that_is_not_its_own_repository_is_not_judged_by_its_parent(
+    tmp_path: Path,
+) -> None:
+    # Rule 11: git walks up. A dirty protected file in the enclosing checkout
+    # is not this candidate's change.
+    outer = await _candidate(tmp_path)
+    (outer / "src" / "evomesh" / "improvements.py").write_text("RULE = 0\n", encoding="utf-8")
+    nested = outer / "generations" / "1"
+    nested.mkdir(parents=True)
+
+    assert await CandidateValidator._protected_failure(nested) is None  # pyright: ignore[reportPrivateUsage]

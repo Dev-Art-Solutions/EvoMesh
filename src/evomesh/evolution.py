@@ -1158,8 +1158,21 @@ class CandidateValidator:
     async def _protected_failure(path: Path) -> dict[str, object] | None:
         """A candidate that changed the protected surface (its own oracle,
         the admission/verification rules, the reviewed approvals) is not
-        validated by the commands it could have rewritten."""
+        validated by the commands it could have rewritten.
+
+        Only the candidate's own repository is read (rule 11): git walks up
+        from a directory that is not one, and the checkout it finds -- this
+        one, for a test candidate under .pytest-tmp -- is somebody else's
+        uncommitted work, not this candidate's change."""
         try:
+            top = await run_command("git", "rev-parse", "--show-toplevel", cwd=path)
+            if top.exit_code != 0:
+                return None
+            own = await asyncio.to_thread(
+                lambda: Path(top.output.strip()).resolve() == path.resolve()
+            )
+            if not own:
+                return None
             status = await run_command("git", "status", "--porcelain", "-uall", cwd=path)
         except (OSError, FileNotFoundError):
             return None
