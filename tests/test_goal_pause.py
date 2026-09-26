@@ -63,3 +63,17 @@ async def test_pause_and_resume_from_the_console(tmp_path: Path) -> None:
     assert "back on its schedule" in resumed
     assert goal.blocked_reason != PAUSED
     await environment.stop()
+
+
+def test_a_goal_waiting_on_its_schedule_can_be_paused() -> None:
+    """Found live: a recurring goal between runs is already BLOCKED (reason
+    schedule); pausing it worked but reported that it could not."""
+    mind = MindState()
+    goal = mind.add_goal("Crawl a site", recurring=True, interval_seconds=7200)
+    manager = GoalManager(mind)
+    goal.next_attempt_at = now_utc() + timedelta(hours=2)
+    manager.refresh()
+    assert goal.status is GoalStatus.BLOCKED and goal.blocked_reason == "schedule"
+
+    assert manager.pause(goal)
+    assert goal.blocked_reason == PAUSED

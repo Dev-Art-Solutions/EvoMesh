@@ -294,9 +294,10 @@ class GoalManager:
         retry reopens it. Unlike drop, nothing is lost."""
         if goal.status in TERMINAL_GOAL_STATUSES:
             return False
-        return self.transition(
-            goal, GoalStatus.BLOCKED, reason=PAUSED, at=at, human_override=True
-        )
+        # A goal already waiting on its schedule is BLOCKED too: transition()
+        # then only relabels the reason, so success is the state it ends in.
+        self.transition(goal, GoalStatus.BLOCKED, reason=PAUSED, at=at, human_override=True)
+        return goal.status is GoalStatus.BLOCKED and goal.blocked_reason == PAUSED
 
     def resume(self, goal: Goal, *, at: datetime | None = None) -> bool:
         """Put a paused goal back on its schedule."""
