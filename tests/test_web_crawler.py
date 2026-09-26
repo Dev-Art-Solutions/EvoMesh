@@ -256,6 +256,8 @@ async def test_the_crawler_schedules_its_own_tasks_through_the_control_port(
 
     removed = await asyncio.to_thread(call, {"action": "remove", "goal_id": task.id})
     assert task.status in {GoalStatus.CANCELLED, GoalStatus.FAILED, GoalStatus.DONE}, removed
+    after = await asyncio.to_thread(call, {"action": "list"})
+    assert task.id not in after, "a removed task is no longer listed"
     await control.stop()
     await environment.stop()
 

@@ -73,8 +73,16 @@ def interval_seconds(every: str) -> int:
     return int(match.group(1)) * _UNITS[match.group(2) or "s"]
 
 
+CLOSED = ("[cancelled]", "[done]", "[failed]")
+
+
 def crawl_lines(port: int, agent: str) -> list[str]:
-    return [line.strip() for line in command(port, f"/goals {agent}").splitlines() if MARK in line]
+    """This agent's crawl tasks still scheduled; a removed one is not a task."""
+    return [
+        line.strip()
+        for line in command(port, f"/goals {agent}").splitlines()
+        if MARK in line and not any(state in line for state in CLOSED)
+    ]
 
 
 def run(request: dict, agent: str, config: dict) -> str:
