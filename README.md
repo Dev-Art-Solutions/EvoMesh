@@ -519,6 +519,12 @@ on Telegram reply "да" to its message or put a 👍 on it. Only that idea is
 appended to `improvements.md` and committed. `/idea reject <n>` or a 👎 sets it
 aside for good. `/ideas` lists what waits.
 
+Every idea goes to every chat that takes them: the shared bot's chat and, if
+the Scout has a private bot, that chat as well. A reaction in either decides the
+idea. In a Telegram group, Telegram only tells a bot about reactions when the
+bot is an administrator of the group. Replies and `/idea approve` work there
+without it.
+
 ### Publishing a generation
 
 A landed generation is committed by the mesh, under its own identity, and pushed to the remote. Both halves matter: a history where the agent's commits are signed with whatever `git config` happens to hold is a history where nobody can tell the agent's work from their own, and a generation that never leaves the machine has not really shipped.

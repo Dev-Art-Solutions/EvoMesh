@@ -223,11 +223,10 @@ class Environment:
         # so this is keyed by agent id rather than shared like notifiers above.
         self.agent_notifiers: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
         # Channels that can map a reply or a reaction back to one idea (a
-        # Telegram message id per idea): (send, dedicated). A dedicated one --
-        # the Idea Scout's own bot -- takes the ideas over from the shared one.
-        self.idea_notifiers: list[
-            tuple[Callable[[int, str], Awaitable[None]], bool]
-        ] = []
+        # Telegram message id per idea, per chat). Every one of them gets every
+        # idea: the shared chat and the Idea Scout's own bot alike, and a thumbs
+        # up in either decides it.
+        self.idea_notifiers: list[Callable[[int, str], Awaitable[None]]] = []
         # One TelegramChannel task per agent that declares its own bot, keyed
         # by agent id. Held here, not just in self.channels, because starting
         # or stopping an agent has to cancel exactly this task.
@@ -626,8 +625,7 @@ class Environment:
         text = idea.chat_text()
         self.announcement_log.append((self._next_announcement_id, now_utc(), text))
         self._next_announcement_id += 1
-        dedicated = [send for send, own in self.idea_notifiers if own]
-        for send in dedicated or [send for send, _ in self.idea_notifiers]:
+        for send in list(self.idea_notifiers):
             try:
                 await send(idea.number, text)
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh

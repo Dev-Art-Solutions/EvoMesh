@@ -226,8 +226,7 @@ class TelegramChannel:
 
     def _register_listener(self) -> None:
         if self._takes_ideas:
-            dedicated = self.locked_agent_id == IDEAS_AGENT_ID
-            self.environment.idea_notifiers.append((self.announce_idea, dedicated))
+            self.environment.idea_notifiers.append(self.announce_idea)
         if self.locked_agent_id:
             self.environment.agent_notifiers.setdefault(self.locked_agent_id, []).append(
                 self.announce
@@ -236,9 +235,8 @@ class TelegramChannel:
             self.environment.notifiers.append(self.announce)
 
     def _unregister_listener(self) -> None:
-        self.environment.idea_notifiers[:] = [
-            entry for entry in self.environment.idea_notifiers if entry[0] != self.announce_idea
-        ]
+        if self.announce_idea in self.environment.idea_notifiers:
+            self.environment.idea_notifiers.remove(self.announce_idea)
         if self.locked_agent_id:
             listeners = self.environment.agent_notifiers.get(self.locked_agent_id, [])
             if self.announce in listeners:

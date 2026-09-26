@@ -355,6 +355,39 @@ async def test_a_thumbs_up_on_the_ideas_message_moves_it(tmp_path: Path) -> None
     await environment.stop()
 
 
+async def test_the_shared_chat_gets_every_idea_even_when_the_scout_has_its_own_bot(
+    tmp_path: Path,
+) -> None:
+    environment, shared, shared_api, project = await _telegram(tmp_path)
+    own_api = FakeTelegram()
+    own = TelegramChannel(
+        environment,
+        TelegramSettings(enabled=True, token="own", allowed_chat_ids=[42]),
+        httpx.AsyncClient(transport=httpx.MockTransport(own_api.handler)),
+        locked_agent_id=IDEAS_AGENT_ID,
+        locked_agent_name="Idea Scout",
+    )
+    own._register_listener()  # pyright: ignore[reportPrivateUsage]
+    idea = await environment.ideas.add(TOTAL, "Idea Scout")
+    assert idea is not None
+
+    await environment.announce_idea(idea)
+
+    assert shared_api.sent and own_api.sent, "both chats carry the idea"
+    await shared._consume(  # pyright: ignore[reportPrivateUsage]
+        {
+            "update_id": 3,
+            "message_reaction": {
+                "chat": {"id": 42},
+                "message_id": shared_api.sent[-1]["message_id"],
+                "new_reaction": [{"type": "emoji", "emoji": "👍"}],
+            },
+        }
+    )
+    assert [item.title for item in open_improvements(project)] == [TOTAL.title]
+    await environment.stop()
+
+
 async def test_a_thumbs_down_or_a_stranger_does_not_move_it(tmp_path: Path) -> None:
     environment, channel, fake, project = await _telegram(tmp_path)
     idea = await environment.ideas.add(TOTAL, "Idea Scout")
