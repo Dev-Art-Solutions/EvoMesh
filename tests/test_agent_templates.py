@@ -355,4 +355,4 @@ def test_a_watch_block_can_set_its_command_timeout() -> None:
     assert parse_agent_template(Path("t/AGENT.md"), watched).watch_timeout_seconds == 45
     assert parse_agent_template(Path("t/AGENT.md"), VALID).watch_timeout_seconds is None
     news = REPO_TEMPLATES / "news-watcher" / "AGENT.md"
-    assert parse_agent_template(news, news.read_text(encoding="utf-8")).watch_timeout_seconds == 60
+    assert parse_agent_template(news, news.read_text(encoding="utf-8")).watch_timeout_seconds == 180
