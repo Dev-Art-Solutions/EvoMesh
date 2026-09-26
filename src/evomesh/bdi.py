@@ -92,6 +92,9 @@ TERMINAL_TYPED_FAILURES = frozenset(
         "CONTEXT_BUDGET_EXCEEDED",
         "DELEGATION_DEPTH_EXCEEDED",
         "NO_ELIGIBLE_PEER",
+        # A replacement inherits the deadline, so it would only fail again.
+        "DEADLINE_EXCEEDED",
+        "CHILD_CONTRACT_UNSATISFIED",
     }
 )
 

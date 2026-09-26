@@ -2,6 +2,40 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+Corrections from the review of the architecture closure at `9739188`.
+
+- **A delegated child ignored its WorkItem's allocation.** The child's goal
+  carried only the work's inputs, so the child started with its own
+  procedure's budget and a fresh deadline: an allocation of zero model calls
+  still reached the model, and a short deadline was reset. The child is now
+  admitted from the committed WorkItem. Its model calls, deadline (never later
+  than the parent's) and attempt count are the ones the parent allocated, and
+  a replacement execution inherits both the spend and the deadline.
+- **A replayed `DELEGATE` after the child finished ran the work again.** The
+  duplicate check only saw open goals. Recipients now keep a durable ledger of
+  accepted WorkItems.
+- **Schema-valid child output satisfied a success contract that asked for
+  evidence.** An output contract can now list `required_evidence`, validators
+  the child itself must have passed (`CHILD_CONTRACT_UNSATISFIED` otherwise).
+- **A delegated relative path could name two different files.** The requester
+  and the recipient each checked `doc.json` under their own root. Resources
+  are now resolved once, in the requester's scope, to one absolute file the
+  recipient must also be able to reach. Nested and declared resource fields
+  are checked too. The child may touch only the files the task names, and
+  the requester's authority is rechecked before each effect.
+- **Reconciling an in-flight operation erased a cancellation.** An operator's
+  cancel during a write was turned back into `RUNNING` when the write was
+  reconciled, and the next step ran. Cancellation is now a durable intent: the
+  receipt is kept, and nothing after the cancelled step runs.
+- **Runtime faults were verified by unrelated activity.** The runtime log
+  counted a reading whenever the mesh had run. It now counts only a fault it
+  can still see. A fixed runtime fault stays `VERIFYING` until a
+  target-specific probe or `/improvements verify` confirms it.
+
 ## [0.3.0-alpha.1] - 2026-09-25
 
 The cognitive runtime. Deterministic reasoning, commitments, reusable

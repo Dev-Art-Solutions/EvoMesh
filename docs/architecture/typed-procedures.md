@@ -92,6 +92,15 @@ dispatching record is reconciled, never blindly repeated:
   `NEEDS_RECONCILIATION` until an operator decides `recheck`, `not_applied`
   or `fail`.
 
+Cancellation is an intent on the execution (`cancel_requested`), not only a
+status. An operation already dispatched is settled first: a known effect keeps
+its receipt and the execution becomes `CANCELLED`; one proven not applied is
+not retried; one nobody can prove stays `NEEDS_RECONCILIATION` with the intent
+intact, and the operator's decision then ends it as `CANCELLED`. Reconciliation
+never turns a cancelled execution back to `RUNNING`, so no later step runs. A
+settlement that loses its compare-and-set to the operator's cancel reloads and
+records the receipt on the newer version.
+
 Tested windows: a crash before the claim commits, after the effect but before
 its receipt (in-process and a killed subprocess), an older ledger restored
 over newer receipts, and concurrent advances. `json_write` writes canonical
@@ -106,7 +115,8 @@ this runtime wrote it; anything else at the destination is
 
 One envelope per goal occurrence covers model calls, tool attempts, step
 attempts and reserved child model calls, plus delegation depth. Retries and
-replacement executions inherit it. A cognitive step spends at most
+replacement executions inherit it, and inherit the deadline too: a restart or
+a replan is not new time, and `DEADLINE_EXCEEDED` ends the goal. A cognitive step spends at most
 `max_model_calls + repair_calls`, and a tool-call attempt ends it at once.
 Mandatory input over the context guard fails before any call rather than being
 truncated. Unreported tokens stay `None`.
@@ -115,12 +125,34 @@ truncated. Unreported tokens stay `None`.
 
 A `delegate` step creates one child `WorkItem` with a deterministic id,
 commits it together with the parent's cursor, then delivers it as a `DELEGATE`
-message. The router picks a running peer outside the causation chain that has
-the capability and can read every path input. A requester cannot delegate a
-read it lacks itself.
+message. The child is admitted from that committed WorkItem, not from the
+message's copy. The WorkItem's allocation is what the child runs under: its
+model calls cap the child and everything it delegates further, its deadline is
+never later than the parent's, and its `max_attempts` bounds how many
+executions the occurrence may start. A child with no model call allowed and no
+typed procedure fails; it is never handed to model planning. The recipient
+keeps a durable ledger of accepted WorkItems, so a replayed `DELEGATE`, even
+after the child finished and its goal was pruned, creates nothing.
+
+Files are resolved once, in the requester's scope. The router finds every
+resource the work names: the parameters an admitted procedure binds into an
+adapter's file argument, and any path-named field at any depth. It resolves
+each to an absolute path under the requester's root, requires the requester's
+read (or write, for a destination), and rewrites the input to that absolute
+path. A peer is eligible only if the same file is inside its own root and its
+own grant covers it. A same-named file in another root is not the same
+resource, and a cross-root task with no shared file is refused. The WorkItem
+carries the resolved set as `resources`. At the child's adapter boundary a
+file outside that set is refused even when the child's own grant would allow
+it, and the requester's authority is checked again, so a revocation after
+assignment stops the effect.
 
 The child runs its own typed procedure. Its validated output settles the
-parent's operation once, and only from the assigned executor. A failed or
+parent's operation once, and only from the assigned executor. The parent then
+checks the WorkItem's contract: the output schemas, their semantic checks, and
+every validator the success contract lists in `required_evidence`, passed by
+the child itself (`CHILD_CONTRACT_UNSATISFIED` otherwise). Schema-valid output
+alone does not satisfy a contract that asks for evidence. A failed or
 cancelled child is not success. Waits re-read durable state, so evidence
 published before the wait began still counts and a lost notification changes
 nothing. Waiting never calls a model and never spends step attempts.

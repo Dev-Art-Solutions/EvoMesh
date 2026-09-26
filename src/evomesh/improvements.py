@@ -123,7 +123,13 @@ class Observation:
     the evidence kinds it can speak to, ``eligible`` how many eligible
     requests or probes it actually processed; ``values`` optionally measures
     specific evidence refs (else: 0.0 when the evidence is gone, 1.0 when it
-    is still present)."""
+    is still present).
+
+    ``targets`` is which evidence refs the reading actually exercised. None
+    means every ref of the kinds it covers (a suite run re-runs every failing
+    test). A set means only those: a log that shows the mesh ran, but not
+    that the repaired path ran, is no evidence the fault is gone -- only
+    that it came back, when it did."""
 
     observation_id: str
     observer_id: str
@@ -131,6 +137,7 @@ class Observation:
     eligible: int = 1
     healthy: bool = True
     values: Mapping[str, float] = field(default_factory=dict)
+    targets: frozenset[str] | None = None
 
 
 class VerificationPlan(BaseModel):
@@ -468,7 +475,7 @@ class ImprovementCoordinator:
     ) -> ImprovementStatus:
         """Count one real reading toward verification, or say why it does
         not count. Never VERIFIED for want of a plan, an observer or data."""
-        reason = _unusable(improvement, observation)
+        reason = _unusable(improvement, observation, present=value > 0)
         if reason or observation is None:
             improvement.inconclusive_reason = reason or "no observation"
             return improvement.status
@@ -506,7 +513,9 @@ def _waived(work: WorkItem) -> bool:
     return any(entry.startswith("waived:") for entry in work.failure_history)
 
 
-def _unusable(improvement: Improvement, observation: Observation | None) -> str:
+def _unusable(
+    improvement: Improvement, observation: Observation | None, *, present: bool = False
+) -> str:
     if improvement.verification is None:
         return "no verification plan: a human has to verify it"
     if observation is None:
@@ -517,6 +526,17 @@ def _unusable(improvement: Improvement, observation: Observation | None) -> str:
         return f"no eligible observer for {improvement.source} evidence"
     if observation.eligible <= 0:
         return f"observer {observation.observer_id} processed no eligible requests"
+    if (
+        observation.targets is not None
+        and improvement.source_ref not in observation.targets
+        and not present
+    ):
+        # Seeing the problem again is target-specific by definition; not
+        # seeing it, from an observer that cannot show the path ran, is not.
+        return (
+            f"observer {observation.observer_id} cannot show {improvement.source_ref} "
+            "was exercised; verify it by hand (/improvements verify <id> <reason>)"
+        )
     return ""
 
 

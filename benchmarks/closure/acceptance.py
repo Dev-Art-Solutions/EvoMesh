@@ -41,6 +41,9 @@ W3T = "tests/test_w3_improvement.py::"
 IDLE = "tests/test_idle_evolution.py::"
 EXEC = "tests/test_work_executor.py::"
 SURF = "tests/test_protected_surface.py::"
+DELEG = "tests/test_delegation_contract.py::"
+CANCEL = "tests/test_procedure_cancel.py::"
+LIVE = "tests/test_w3_live.py::"
 
 MATRIX: dict[str, list[str]] = {
     "T01": [PROC + "test_t01_valid_definition_round_trips_through_the_registry"],
@@ -82,6 +85,10 @@ MATRIX: dict[str, list[str]] = {
     "T19": [
         CTRL + "test_cancel_while_waiting_on_a_child_leaves_the_child_accounted",
         WIRE + "test_a_cancelled_goal_cancels_its_execution_before_the_write",
+        CANCEL + "test_r03a_cancel_during_an_applied_effect_keeps_the_receipt",
+        CANCEL + "test_r03a_a_lost_settlement_reconciled_later_stays_cancelled",
+        CANCEL + "test_r03b_an_operation_proven_not_applied_is_not_retried",
+        CANCEL + "test_r03d_a_restart_during_pending_cancellation_keeps_it",
     ],
     "T20": [CTRL + "test_waiting_does_not_spend_step_attempts"],
     "T21": [WIRE + "test_w2_clean_path_makes_exactly_one_bounded_model_call"],
@@ -92,7 +99,13 @@ MATRIX: dict[str, list[str]] = {
     ],
     "T24": [WIRE + "test_w2_oversized_mandatory_input_is_refused_not_truncated"],
     "T25": [WIRE + "test_w2_clean_path_makes_exactly_one_bounded_model_call"],
-    "T26": [MATRIX_T + "test_t26_children_cannot_spend_past_the_root_envelope"],
+    "T26": [
+        MATRIX_T + "test_t26_children_cannot_spend_past_the_root_envelope",
+        DELEG + "test_r01a_a_child_allocated_no_model_call_makes_none",
+        DELEG + "test_r01b_an_expired_deadline_starts_no_operation",
+        DELEG + "test_r01b_a_running_child_ends_no_later_than_its_parent",
+        DELEG + "test_r01c_a_replacement_does_not_reset_the_allocation",
+    ],
     "T27": [
         CRASH + "test_a_process_that_keeps_crashing_runs_out_of_budget",
         WIRE + "test_w2_fake_evidence_id_is_repaired_within_the_call_budget",
@@ -103,7 +116,16 @@ MATRIX: dict[str, list[str]] = {
         PROC + "test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch",
         WIRE + "test_w1_without_write_grant_fails_the_goal_without_fallback",
     ],
-    "T31": [WIRE + "test_delegation_cannot_launder_a_read_the_requester_lacks"],
+    "T31": [
+        WIRE + "test_delegation_cannot_launder_a_read_the_requester_lacks",
+        DELEG + "test_r02a_same_name_in_another_root_is_not_the_same_resource",
+        DELEG + "test_r02a_the_child_reads_the_requesters_file_not_its_own",
+        DELEG + "test_r02b_a_nested_path_is_checked_like_a_top_level_one",
+        DELEG + "test_r02b_a_declared_resource_under_an_innocent_name_is_checked",
+        DELEG + "test_r02c_a_revocation_after_assignment_stops_the_child",
+        DELEG + "test_r02d_a_write_needs_a_destination_the_requester_may_write",
+        DELEG + "test_r02d_the_child_cannot_write_where_the_task_did_not_say",
+    ],
     "T32": [MATRIX_T + "test_t32_data_that_names_a_handler_or_approval_stays_data"],
     "T33": [MATRIX_T + "test_t33_secret_fields_never_reach_a_trace"],
     "T34": [MATRIX_T + "test_t34_an_undeclared_external_effect_is_refused"],
@@ -122,12 +144,15 @@ MATRIX: dict[str, list[str]] = {
         CRASH + "test_t40_an_unprovable_effect_waits_for_an_operator",
         CRASH + "test_t40_only_an_operator_resolves_it",
         CRASH + "test_t40_an_operator_can_fail_it",
+        CANCEL + "test_r03c_an_unknown_effect_stays_gated_with_the_intent_intact",
     ],
     "T41": [CRASH + "test_t39_restoring_an_older_ledger_does_not_repeat_the_write"],
     "T42": [MATRIX_T + "test_t42_diagnostic_retention_never_drops_authoritative_records"],
     "T43": [LEARN + "test_an_old_database_migrates_idempotently_and_keeps_its_data"],
     "T44": [
         CTRL + "test_a_lost_delivery_is_redelivered_not_duplicated",
+        DELEG + "test_r01d_a_replayed_delegate_runs_nothing_twice",
+        DELEG + "test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused",
         CTRL + "test_one_child_is_created_and_the_parent_resumes_on_its_result",
     ],
     "T45": [CTRL + "test_evidence_published_before_the_wait_begins_is_seen"],
@@ -140,7 +165,11 @@ MATRIX: dict[str, list[str]] = {
         CTRL + "test_no_eligible_peer_fails_without_a_child",
     ],
     "T48": [WIRE + "test_delegation_runs_parent_peer_parent_without_a_model"],
-    "T49": [CTRL + "test_a_failed_or_cancelled_child_is_not_success"],
+    "T49": [
+        CTRL + "test_a_failed_or_cancelled_child_is_not_success",
+        DELEG + "test_r01e_schema_valid_output_without_the_required_evidence_fails",
+        DELEG + "test_r01e_the_required_evidence_from_the_child_satisfies_it",
+    ],
     "T50": [
         "tests/test_events_and_progress.py::"
         "test_assistance_causation_loop_escalates_without_new_work",
@@ -163,7 +192,10 @@ MATRIX: dict[str, list[str]] = {
         LEARN + "test_a_validation_regression_degrades_the_procedure",
         PROC + "test_t30_a_capability_lost_mid_run_blocks_the_next_dispatch",
     ],
-    "T56": [W3T + "test_w3_a_real_defect_goes_from_failing_check_to_verified"],
+    "T56": [
+        W3T + "test_w3_a_real_defect_goes_from_failing_check_to_verified",
+        LIVE + "test_w3_live_the_routed_agent_runs_the_real_jobs",
+    ],
     "T57": [
         W3T + "test_a_candidate_edit_invalidates_the_old_review",
         W3T + "test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass",
@@ -178,6 +210,10 @@ MATRIX: dict[str, list[str]] = {
         W3T + "test_zero_eligible_probes_never_verify",
         W3T + "test_the_same_reading_counts_once",
         W3T + "test_empty_syncs_are_not_observations",
+        W3T + "test_r04a_unrelated_runs_never_verify_a_runtime_fault",
+        W3T + "test_r04b_absent_unhealthy_idle_or_repeated_observers_add_no_coverage",
+        W3T + "test_r04c_target_specific_probes_verify",
+        W3T + "test_r04c_a_fault_seen_again_counts_even_from_a_coarse_observer",
     ],
     "T60": [
         W3T + "test_w3_a_real_defect_goes_from_failing_check_to_verified",
@@ -207,8 +243,9 @@ BENCHMARKS: dict[str, dict[str, Any]] = {
            "extra": [CTRL + "test_cancel_before_a_write_stops_new_operations"]},
     "B9": {"title": "Procedure contract regression", "mode": "runtime_integration",
            "tests": ["T55"]},
-    "B10": {"title": "W3 actual isolated candidate workflow", "mode": "real_adapter",
-            "tests": ["T56", "T57"]},
+    "B10": {"title": "W3 actual isolated candidate workflow", "mode": "runtime_integration",
+            "tests": ["T56", "T57"],
+            "extra": [LIVE + "test_w3_live_the_routed_agent_runs_the_real_jobs"]},
     "B11": {"title": "Empty backlog or broken observer", "mode": "runtime_integration",
             "tests": ["T58", "T59"]},
     "B12": {"title": "Old persisted state and restart", "mode": "unit",

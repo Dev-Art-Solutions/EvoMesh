@@ -59,6 +59,9 @@ class WorkItem(BaseModel):
     objective: str
     required_capabilities: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
+    # The files this work may touch, resolved once in the requester's scope
+    # ("read"/"write" -> absolute paths). Empty for work that names none.
+    resources: dict[str, list[str]] = Field(default_factory=dict)
     expected_outputs: list[str] = Field(default_factory=list)
     success_conditions: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)

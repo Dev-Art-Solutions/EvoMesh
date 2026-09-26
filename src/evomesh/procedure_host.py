@@ -33,7 +33,7 @@ from evomesh.procedure_runtime import (
     typed_request,
 )
 from evomesh.procedure_traces import TraceRecorder, typed_harness_tools
-from evomesh.procedures import validate_definition
+from evomesh.procedures import SideEffect, ToolStep, validate_definition
 
 if TYPE_CHECKING:
     from evomesh.environment import Environment
@@ -41,16 +41,88 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PATH_INPUT_KEYS = ("path", "source", "destination")
+WRITE_INPUT_KEYS = ("destination",)
 
 
-def _path_inputs(inputs: dict[str, Any]) -> list[str]:
-    """Input values that name a file: the ones whose authority must travel
-    with the requester, so delegation cannot launder a denied read."""
-    return [
-        str(value)
-        for key, value in inputs.items()
-        if isinstance(value, str) and value and (key in PATH_INPUT_KEYS or key.endswith("_path"))
-    ]
+def _path_key(key: str) -> bool:
+    return key in PATH_INPUT_KEYS or key.endswith("_path")
+
+
+def declared_resources(registry: ProcedureRegistry, work_kind: str) -> dict[str, str]:
+    """Parameter name -> "read"/"write", from the admitted procedures that
+    serve ``work_kind``: every parameter a tool step binds straight into an
+    adapter's file argument. This is the contract; field names are only a
+    fallback for work no procedure declares."""
+    declared: dict[str, str] = {}
+    for key, definition in registry.definitions.items():
+        admission = registry.admissions.get(key)
+        if definition.goal_kind != work_kind or admission is None:
+            continue
+        for step in definition.steps:
+            if not isinstance(step, ToolStep):
+                continue
+            contract = registry.catalog.adapters.get(step.adapter)
+            if contract is None:
+                continue
+            mode = (
+                "read" if contract.side_effect in {SideEffect.PURE, SideEffect.READ} else "write"
+            )
+            for name in contract.resource_arguments:
+                binding = step.arguments.get(name)
+                ref = binding.get("ref") if isinstance(binding, dict) else None
+                path = ref.get("path") if isinstance(ref, dict) else None
+                if (
+                    isinstance(ref, dict)
+                    and ref.get("scope") == "goal"
+                    and isinstance(path, list)
+                    and len(path) == 2
+                    and path[0] == "parameters"
+                ):
+                    parameter = str(path[1])
+                    declared[parameter] = (
+                        "write" if "write" in {mode, declared.get(parameter)} else "read"
+                    )
+    return declared
+
+
+def resource_inputs(
+    inputs: dict[str, Any], declared: dict[str, str]
+) -> tuple[list[tuple[tuple[str | int, ...], str, str]], str]:
+    """Every place in ``inputs`` that names a file: (location, value, mode),
+    or a refusal for a resource in a form no adapter supports. Nested
+    values are walked too -- hiding a path one level down must not hide it
+    from the authority check."""
+    found: list[tuple[tuple[str | int, ...], str, str]] = []
+
+    def walk(node: Any, at: tuple[str | int, ...]) -> str:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                name = str(key)
+                is_resource = (len(at) == 0 and name in declared) or _path_key(name)
+                if is_resource:
+                    if not isinstance(value, str) or not value:
+                        return f"{'.'.join(map(str, (*at, name)))} is not a plain file path"
+                    mode = declared.get(name) if len(at) == 0 else None
+                    mode = mode or ("write" if name in WRITE_INPUT_KEYS else "read")
+                    found.append(((*at, name), value, mode))
+                    continue
+                problem = walk(value, (*at, name))
+                if problem:
+                    return problem
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                problem = walk(value, (*at, index))
+                if problem:
+                    return problem
+        return ""
+
+    return found, walk(inputs, ())
+
+
+def _replace(node: Any, at: tuple[str | int, ...], value: str) -> None:
+    for part in at[:-1]:
+        node = node[part]
+    node[at[-1]] = value
 
 
 class EnvironmentProcedureHost:
@@ -122,26 +194,59 @@ class EnvironmentProcedureHost:
             format=dict(schema),
         )
 
-    async def _may_read(self, agent_id: str, root: Path, path: str) -> bool:
-        target = Path(path)
-        if not target.is_absolute():
-            target = root / target
+    async def _may(self, agent_id: str, target: Path, mode: str) -> bool:
         try:
-            await self.environment.permissions.require(agent_id, target, "read")
+            await self.environment.permissions.require(agent_id, target, mode)
         except PermissionDeniedError:
             return False
         return True
 
+    async def _recipient_refusal(
+        self, agent_id: str, resources: list[tuple[Path, str]]
+    ) -> str:
+        """Why ``agent_id`` cannot work on these exact files, or "". The same
+        absolute file, inside the recipient's own root, under its own grant:
+        both having *a* doc.json is not both having this one."""
+        root = self.root_for(agent_id).resolve(strict=False)
+        for target, mode in resources:
+            if target != root and root not in target.parents:
+                return f"{target} is outside its root"
+            if not await self._may(agent_id, target, mode):
+                return f"may not {mode} {target}"
+        return ""
+
     async def route(self, work: WorkItem, requester_id: str) -> tuple[str | None, str]:
         """Capability-eligible, running, outside the causation chain, and
-        allowed to read every path the requester itself may read for this
-        work. A requester without that read cannot delegate it away."""
+        allowed to act on every file this work names -- resolved once, in the
+        requester's own scope, into the absolute file the requester is
+        authorized for. The WorkItem then carries that file, not the relative
+        name, so the child cannot resolve it to a different one; its
+        ``resources`` are the task's scope, enforced again at the child's
+        adapter boundary. A requester without the authority cannot delegate
+        it away, and a write needs a destination the requester may write."""
         environment = self.environment
-        requester_root = self.root_for(requester_id)
-        paths = _path_inputs(work.inputs)
-        for path in paths:
-            if not await self._may_read(requester_id, requester_root, path):
-                return None, f"the requester may not read {path}"
+        requester_root = self.root_for(requester_id).resolve(strict=False)
+        declared = declared_resources(environment.procedures.registry, work.type)
+        found, problem = resource_inputs(work.inputs, declared)
+        if problem:
+            return None, f"unsupported resource: {problem}"
+        resolved: list[tuple[Path, str]] = []
+        scope: dict[str, list[str]] = {}
+        for location, raw, mode in found:
+            candidate = Path(raw)
+            target = (
+                candidate if candidate.is_absolute() else requester_root / candidate
+            ).resolve(strict=False)
+            if target != requester_root and requester_root not in target.parents:
+                return None, f"{raw} is outside the requester's root"
+            if not await self._may(requester_id, target, mode):
+                return None, f"the requester may not {mode} {raw}"
+            _replace(work.inputs, location, str(target))
+            resolved.append((target, mode))
+            scope.setdefault(mode, [])
+            if str(target) not in scope[mode]:
+                scope[mode].append(str(target))
+        work.resources = scope
         excluded = {requester_id, *work.causation_chain}
         states = environment.runtime_states()
         bids = environment.contract_net.bids(
@@ -156,10 +261,9 @@ class EnvironmentProcedureHost:
             if bid.agent_id not in environment.runtimes:
                 refused.append(f"{bid.agent_id}: not running")
                 continue
-            root = self.root_for(bid.agent_id)
-            denied = [path for path in paths if not await self._may_read(bid.agent_id, root, path)]
-            if denied:
-                refused.append(f"{bid.agent_id}: may not read {denied[0]}")
+            refusal = await self._recipient_refusal(bid.agent_id, resolved)
+            if refusal:
+                refused.append(f"{bid.agent_id}: {refusal}")
                 continue
             return bid.agent_id, "eligible"
         if not bids:

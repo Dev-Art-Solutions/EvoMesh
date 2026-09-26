@@ -607,6 +607,9 @@ class AdapterContract:
     reconcile_supported: bool = False
     uses_model: bool = False
     timeout_seconds: float = 30.0
+    # Arguments that name a file: what delegated work must have been
+    # granted by its requester before this adapter may touch it.
+    resource_arguments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -626,6 +629,9 @@ class OutputContract:
     schema_id: str
     schema: Mapping[str, Any]
     semantic_check: Callable[[Any, Mapping[str, Any]], list[str]] | None = None
+    # Used as a delegation's success contract: validator checks the child's
+    # own execution must have passed. A schema-valid result is not enough.
+    required_evidence: tuple[str, ...] = ()
 
 
 @dataclass

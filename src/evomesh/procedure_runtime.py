@@ -501,6 +501,11 @@ class ProcedureExecution(BaseModel):
     path: str = "typed_authored"
     status: ExecStatus = ExecStatus.RUNNING
     status_reason: str = ""
+    # Cancellation intent outlives any status: reconciling an operation that
+    # was in flight when the operator cancelled settles that operation, and
+    # must never be what turns the execution back to RUNNING.
+    cancel_requested: bool = False
+    cancel_reason: str = ""
     current_step_id: str
     parameters: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
@@ -521,6 +526,10 @@ class ProcedureExecution(BaseModel):
     @property
     def terminal(self) -> bool:
         return self.status in TERMINAL
+
+    @property
+    def cancelling(self) -> bool:
+        return self.cancel_requested or self.status is ExecStatus.CANCEL_REQUESTED
 
 
 class OperationRecord(BaseModel):
@@ -640,6 +649,7 @@ class JsonRead:
         required_capabilities=("artifact.read",),
         side_effect=SideEffect.READ,
         retry=RetrySemantics.SAFE,
+        resource_arguments=("path",),
     )
 
     async def invoke(self, context: AdapterContext, arguments: dict[str, Any]) -> AdapterResult:
@@ -709,6 +719,7 @@ class JsonWrite:
         side_effect=SideEffect.LOCAL_WRITE,
         retry=RetrySemantics.NONE,
         reconcile_supported=True,
+        resource_arguments=("path",),
     )
 
     @staticmethod
@@ -1232,16 +1243,74 @@ class ProcedureExecutor:
         work: dict[str, Any] | None = None,
         work_item_id: str | None = None,
         budget: Budget | None = None,
+        deadline_at: datetime | None = None,
+        max_executions: int | None = None,
     ) -> ProcedureExecution:
         """A new execution, or the open one this occurrence already has
-        (resume before reselect; plan 12.2)."""
+        (resume before reselect; plan 12.2).
+
+        ``deadline_at`` and ``max_executions`` come from delegated work: the
+        tighter of the two deadlines applies, and a replacement neither gets
+        new time nor, past ``max_executions``, starts at all."""
         open_ones = await self.repository.list_procedure_executions(
             occurrence_id=occurrence_id, open_only=True
         )
         if open_ones:
             return ProcedureExecution.model_validate_json(open_ones[0][1])
         previous = await self.repository.list_procedure_executions(occurrence_id=occurrence_id)
-        envelope = budget or Budget(
+        if max_executions is not None and len(previous) >= max_executions:
+            raise ProcedureError(
+                "ATTEMPTS_EXHAUSTED", f"{len(previous)} of {max_executions} attempt(s) used"
+            )
+        envelope = budget or self.default_budget(definition)
+        deadline = self.clock() + timedelta(seconds=self.limits.default_execution_deadline_seconds)
+        if deadline_at is not None:
+            deadline = min(deadline, deadline_at)
+        if previous:
+            # A replacement inherits what the occurrence already spent, and
+            # the time it already used: a restart is not a fresh allowance.
+            last = ProcedureExecution.model_validate_json(previous[-1][1])
+            spent = last.budget
+            envelope.model_calls = spent.model_calls
+            envelope.tool_attempts = spent.tool_attempts
+            envelope.step_attempts = spent.step_attempts
+            envelope.child_model_calls_reserved = spent.child_model_calls_reserved
+            deadline = min(deadline, last.deadline_at)
+        execution = ProcedureExecution(
+            execution_id=uuid.uuid4().hex,
+            agent_id=agent_id,
+            goal_id=goal_id,
+            occurrence_id=occurrence_id,
+            work_item_id=work_item_id,
+            procedure_id=definition.procedure_id,
+            revision=definition.revision,
+            digest=definition.digest(),
+            path="typed_learned" if admission.source == "learned" else "typed_authored",
+            current_step_id=definition.entry_step_id,
+            parameters=parameters,
+            context=dict(context or {}),
+            context_refs=dict(context_refs or {}),
+            work=dict(work or {}),
+            deadline_at=deadline,
+            budget=envelope,
+        )
+        created = await self.repository.create_procedure_execution(
+            execution.execution_id,
+            occurrence_id,
+            agent_id,
+            execution.status.value,
+            execution.model_dump_json(),
+        )
+        if not created:
+            open_ones = await self.repository.list_procedure_executions(
+                occurrence_id=occurrence_id, open_only=True
+            )
+            return ProcedureExecution.model_validate_json(open_ones[0][1])
+        return execution
+
+    def default_budget(self, definition: ProcedureDefinition) -> Budget:
+        """The root envelope a definition gets when nobody allocated one."""
+        return Budget(
             max_model_calls=min(
                 self.limits.max_root_model_calls,
                 sum(
@@ -1259,45 +1328,6 @@ class ProcedureExecutor:
             ),
             max_delegation_depth=self.limits.max_delegation_depth,
         )
-        if previous:
-            # A replacement inherits what the occurrence already spent.
-            spent = ProcedureExecution.model_validate_json(previous[-1][1]).budget
-            envelope.model_calls = spent.model_calls
-            envelope.tool_attempts = spent.tool_attempts
-            envelope.step_attempts = spent.step_attempts
-            envelope.child_model_calls_reserved = spent.child_model_calls_reserved
-        execution = ProcedureExecution(
-            execution_id=uuid.uuid4().hex,
-            agent_id=agent_id,
-            goal_id=goal_id,
-            occurrence_id=occurrence_id,
-            work_item_id=work_item_id,
-            procedure_id=definition.procedure_id,
-            revision=definition.revision,
-            digest=definition.digest(),
-            path="typed_learned" if admission.source == "learned" else "typed_authored",
-            current_step_id=definition.entry_step_id,
-            parameters=parameters,
-            context=dict(context or {}),
-            context_refs=dict(context_refs or {}),
-            work=dict(work or {}),
-            deadline_at=self.clock()
-            + timedelta(seconds=self.limits.default_execution_deadline_seconds),
-            budget=envelope,
-        )
-        created = await self.repository.create_procedure_execution(
-            execution.execution_id,
-            occurrence_id,
-            agent_id,
-            execution.status.value,
-            execution.model_dump_json(),
-        )
-        if not created:
-            open_ones = await self.repository.list_procedure_executions(
-                occurrence_id=occurrence_id, open_only=True
-            )
-            return ProcedureExecution.model_validate_json(open_ones[0][1])
-        return execution
 
     async def load(self, execution_id: str) -> tuple[int, ProcedureExecution]:
         row = await self.repository.load_procedure_execution(execution_id)
@@ -1329,8 +1359,16 @@ class ProcedureExecutor:
                 for op in await self.operations(execution_id)
                 if op.state in {OpState.DISPATCHING, OpState.UNKNOWN}
             ]
-            execution.status = ExecStatus.CANCEL_REQUESTED if in_flight else ExecStatus.CANCELLED
-            execution.status_reason = reason
+            execution.cancel_requested = True
+            execution.cancel_reason = execution.cancel_reason or reason
+            if not in_flight:
+                execution.status = ExecStatus.CANCELLED
+                execution.status_reason = execution.cancel_reason
+            elif execution.status is not ExecStatus.NEEDS_RECONCILIATION:
+                # An unresolved effect stays visibly unresolved; the intent is
+                # the flag, whatever the status says.
+                execution.status = ExecStatus.CANCEL_REQUESTED
+                execution.status_reason = execution.cancel_reason
             if await self._commit(version, execution):
                 return execution
         raise ProcedureError("CONTENDED", "could not record the cancellation")
@@ -1341,7 +1379,7 @@ class ProcedureExecutor:
             return execution
         if paused and execution.status in {ExecStatus.RUNNING, ExecStatus.WAITING}:
             execution.status = ExecStatus.PAUSED
-        elif not paused and execution.status is ExecStatus.PAUSED:
+        elif not paused and execution.status is ExecStatus.PAUSED and not execution.cancelling:
             execution.status = ExecStatus.RUNNING
         await self._commit(version, execution)
         return execution
@@ -1385,21 +1423,16 @@ class ProcedureExecutor:
                 version, execution, "DEFINITION_UNAVAILABLE", "pinned revision is gone"
             )
         step = definition.step(execution.current_step_id)
-        if execution.status is ExecStatus.PAUSED:
+        if execution.status is ExecStatus.PAUSED and not execution.cancelling:
             return StepOutcome("waiting", step.id, "PAUSED", "paused")
         pending = await self._pending_operation(execution, step.id)
         if pending is not None and pending.operation_key in self._in_flight:
             return StepOutcome("busy", step.id, "IN_FLIGHT", "another advance holds this step")
-        if execution.status is ExecStatus.CANCEL_REQUESTED and pending is None:
-            execution.status = ExecStatus.CANCELLED
-            await self._commit(version, execution)
-            return StepOutcome("cancelled", step.id, message=execution.status_reason)
         if pending is not None and pending.state in {OpState.DISPATCHING, OpState.UNKNOWN}:
+            # Settled first even when cancelling: the effect may have happened.
             return await self._recover(version, execution, definition, step, pending, host)
-        if execution.status is ExecStatus.CANCEL_REQUESTED:
-            execution.status = ExecStatus.CANCELLED
-            await self._commit(version, execution)
-            return StepOutcome("cancelled", step.id, message=execution.status_reason)
+        if execution.cancelling:
+            return await self._finish_cancel(version, execution, step.id)
         now = self.clock()
         if now >= execution.deadline_at:
             return await self._fail(
@@ -1513,6 +1546,21 @@ class ProcedureExecutor:
         if admission is not None and admission.status is AdmissionStatus.PROMOTED:
             await self.registry.degrade(key, f"{code} in {execution.execution_id}: {message}"[:300])
 
+    async def _finish_cancel(
+        self,
+        version: int,
+        execution: ProcedureExecution,
+        step_id: str,
+        operations: tuple[tuple[OperationRecord, str | None], ...] = (),
+    ) -> StepOutcome:
+        execution.status = ExecStatus.CANCELLED
+        execution.status_reason = execution.cancel_reason or execution.status_reason
+        execution.wait = None
+        execution.next_eligible_at = None
+        if not await self._commit(version, execution, operations):
+            return StepOutcome("busy", step_id, "CLAIM_LOST", "cancellation lost its version")
+        return StepOutcome("cancelled", step_id, message=execution.status_reason)
+
     def _advance_to(
         self, execution: ProcedureExecution, step_id: str, target: str, result: Any
     ) -> None:
@@ -1570,6 +1618,9 @@ class ProcedureExecutor:
             return await self._fail(
                 version, execution, "BUDGET_EXHAUSTED", "tool attempts exhausted"
             )
+        refusal = await self._outside_task_scope(execution, adapter.contract, arguments, host)
+        if refusal:
+            return await self._fail(version, execution, "PERMISSION_DENIED", refusal)
         key = self.operation_key(execution, step.id)
         argument_digest = digest_of(canonical_json(arguments))
         prior = await self._pending_operation(execution, step.id)
@@ -1602,6 +1653,43 @@ class ProcedureExecutor:
         version += 1
         self.fault("after_claim", key)
         return await self._dispatch(version, execution, definition, step, adapter, record, host)
+
+    async def _outside_task_scope(
+        self,
+        execution: ProcedureExecution,
+        contract: AdapterContract,
+        arguments: Mapping[str, Any],
+        host: ProcedureHost,
+    ) -> str:
+        """Delegated work runs inside the intersection of two authorities:
+        the child's own grants (the adapter checks those) and what the
+        requester resolved and authorized for this task. A file the task did
+        not name is refused even if the child could reach it itself, and the
+        requester's authority is checked again now, so a revocation after
+        assignment stops the effect."""
+        if "resources" not in execution.work or not contract.resource_arguments:
+            return ""
+        resources: Mapping[str, list[str]] = execution.work.get("resources") or {}
+        mode = "read" if contract.side_effect in {SideEffect.PURE, SideEffect.READ} else "write"
+        requester = str(execution.work.get("requester_id") or "")
+        own = host.tool_context(execution.agent_id)
+        for name in contract.resource_arguments:
+            raw = arguments.get(name)
+            if not isinstance(raw, str):
+                return f"{name} is not a file reference"
+            try:
+                target = _resolve(own, raw)
+            except ToolDenied as exc:
+                return str(exc)
+            if str(target) not in set(resources.get(mode, [])):
+                return f"the delegated task grants no {mode} of {raw}"
+            if not requester:
+                return "delegated work names no requester"
+            try:
+                await _permit(host.tool_context(requester), target, mode)
+            except ToolDenied as exc:
+                return f"the requester's authority is gone: {exc}"
+        return ""
 
     async def _dispatch(
         self,
@@ -1694,19 +1782,32 @@ class ProcedureExecutor:
             execution.status_reason = "RESULT_SCHEMA_INVALID"
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome("failed", step.id, "RESULT_SCHEMA_INVALID", "; ".join(problems[:3]))
-        self._advance_to(execution, step.id, step.next, result)
-        execution.evidence.append(
-            {
-                "kind": "receipt",
-                "step_id": step.id,
-                "operation_key": record.operation_key,
-                "adapter": step.adapter,
-                "occurrence_id": execution.occurrence_id,
-            }
-        )
-        if not await self._commit(version, execution, ((record, "*"),)):
-            return StepOutcome("busy", step.id, "CLAIM_LOST", "settlement lost its version")
-        return StepOutcome("advanced", step.id, result=result)
+        receipt_evidence = {
+            "kind": "receipt",
+            "step_id": step.id,
+            "operation_key": record.operation_key,
+            "adapter": step.adapter,
+            "occurrence_id": execution.occurrence_id,
+        }
+        for _ in range(3):
+            if execution.cancelling:
+                # The effect is known, so it is recorded; nothing after it runs.
+                execution.results[step.id] = result
+                execution.completed_steps.append(step.id)
+                execution.evidence.append(receipt_evidence)
+                return await self._finish_cancel(version, execution, step.id, ((record, "*"),))
+            self._advance_to(execution, step.id, step.next, result)
+            execution.evidence.append(receipt_evidence)
+            if await self._commit(version, execution, ((record, "*"),)):
+                return StepOutcome("advanced", step.id, result=result)
+            # Someone moved the execution while the adapter ran -- an operator
+            # cancelling, typically. The receipt is still this operation's:
+            # settle it onto the newer version rather than lose it.
+            version, execution = await self.load(execution.execution_id)
+            row = await self.repository.load_procedure_operation(record.operation_key)
+            if execution.terminal or row is None or row[0] != OpState.DISPATCHING.value:
+                break
+        return StepOutcome("busy", step.id, "CLAIM_LOST", "settlement lost its version")
 
     async def _retry_or_fail(
         self,
@@ -1747,6 +1848,8 @@ class ProcedureExecutor:
             # (and charged) by the normal path once the record is settled.
             record.state = OpState.REJECTED
             record.error = "LOST_IN_FLIGHT"
+            if execution.cancelling:
+                return await self._finish_cancel(version, execution, step.id, ((record, "*"),))
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome(
                 "waiting", step.id, "RECOVERED", "lost cognitive call will be re-issued"
@@ -1758,8 +1861,10 @@ class ProcedureExecutor:
         if contract.retry is RetrySemantics.SAFE:
             record.state = OpState.REJECTED
             record.error = "LOST_IN_FLIGHT"
-            execution.status = ExecStatus.RUNNING
             self._release_attempt(execution, step.id)
+            if execution.cancelling:
+                return await self._finish_cancel(version, execution, step.id, ((record, "*"),))
+            execution.status = ExecStatus.RUNNING
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome("waiting", step.id, "RECOVERED", "safe operation will be repeated")
         if not contract.reconcile_supported and contract.retry is not RetrySemantics.IDEMPOTENT:
@@ -1774,15 +1879,19 @@ class ProcedureExecutor:
             self._adapter_context(execution, host, record.operation_key), record.arguments
         )
         if state is ReconcileState.APPLIED and result is not None:
-            execution.status = ExecStatus.RUNNING
+            if not execution.cancelling:
+                execution.status = ExecStatus.RUNNING
             return await self._settle_success(
                 version, execution, definition, step, adapter, record, result, {"reconciled": True}
             )
         if state is ReconcileState.NOT_APPLIED:
             record.state = OpState.REJECTED
             record.error = "NOT_APPLIED"
-            execution.status = ExecStatus.RUNNING
             self._release_attempt(execution, step.id)
+            if execution.cancelling:
+                # Proven not to have happened, and nobody wants it any more.
+                return await self._finish_cancel(version, execution, step.id, ((record, "*"),))
+            execution.status = ExecStatus.RUNNING
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome(
                 "waiting", step.id, "RECOVERED", "the operation did not apply; it may be retried"
@@ -1837,9 +1946,11 @@ class ProcedureExecutor:
         if decision == "not_applied":
             record.state = OpState.REJECTED
             record.error = "NOT_APPLIED_BY_OPERATOR"
+            self._release_attempt(execution, step.id)
+            if execution.cancelling:
+                return await self._finish_cancel(version, execution, step.id, ((record, "*"),))
             execution.status = ExecStatus.RUNNING
             execution.status_reason = ""
-            self._release_attempt(execution, step.id)
             await self._commit(version, execution, ((record, "*"),))
             return StepOutcome("waiting", step.id, "RECOVERED", f"{actor}: not applied")
         return await self._recover(version, execution, definition, step, record, host)
@@ -2088,12 +2199,19 @@ class ProcedureExecutor:
             inputs=inputs,
             expected_outputs=[step.output_schema],
             success_conditions=[step.success_contract],
-            deadline=self.clock() + timedelta(seconds=step.budget.deadline_seconds),
+            # Never later than the parent's own deadline: a child of a child
+            # cannot outlive the root either.
+            deadline=min(
+                self.clock() + timedelta(seconds=step.budget.deadline_seconds),
+                execution.deadline_at,
+            ),
             causation_chain=[*chain, execution.agent_id],
             delegation_depth=depth,
         )
         work.budget.max_attempts = step.budget.max_attempts
         work.budget.max_model_calls = step.budget.max_model_calls
+        work.budget.max_seconds = step.budget.deadline_seconds
+        work.budget.max_delegation_depth = execution.budget.max_delegation_depth
         assignee, reason = await host.route(work, execution.agent_id)
         if assignee is None:
             return await self._fail(version, execution, "NO_ELIGIBLE_PEER", reason)
@@ -2182,6 +2300,33 @@ class ProcedureExecutor:
             key, OpState.WAITING.value, record.state.value, record.model_dump_json()
         )
 
+    def _contract_problems(self, record: OperationRecord, child: Mapping[str, Any]) -> list[str]:
+        """The delegated work's declared contract, checked against what the
+        child settled: its output schemas and semantic checks, and every
+        validator the success contract requires, passed by the child itself."""
+        work = WorkItem.model_validate(record.arguments["work"])
+        result = child.get("result")
+        passed = {
+            str(item.get("check"))
+            for item in child.get("evidence") or []
+            if isinstance(item, dict) and item.get("kind") == "validator" and item.get("passed")
+        }
+        problems: list[str] = []
+        for schema_id in dict.fromkeys([*work.expected_outputs, *work.success_conditions]):
+            contract = self.registry.catalog.outputs.get(schema_id)
+            if contract is None:
+                problems.append(f"unknown contract {schema_id}")
+                continue
+            problems += schema_errors(result, contract.schema, "child")
+            if not problems and contract.semantic_check is not None:
+                problems += contract.semantic_check(result, work.inputs)
+            problems += [
+                f"{schema_id} needs passed validator {check!r} from the child"
+                for check in contract.required_evidence
+                if check not in passed
+            ]
+        return problems
+
     async def _await(
         self, version: int, execution: ProcedureExecution, step: AwaitStep, host: ProcedureHost
     ) -> StepOutcome:
@@ -2240,6 +2385,11 @@ class ProcedureExecutor:
                 return await self._fail(
                     version, execution, "CHILD_RESULT_INVALID", "; ".join(problems[:3])
                 )
+        unmet = self._contract_problems(record, child)
+        if unmet:
+            return await self._fail(
+                version, execution, "CHILD_CONTRACT_UNSATISFIED", "; ".join(unmet[:3])
+            )
         self._advance_to(execution, step.id, step.next, result)
         execution.evidence.append(
             {
@@ -2358,6 +2508,21 @@ class ProcedureService:
         kind, parameters, explicit, work = typed_request(goal)
         if not kind:
             return None, None
+        delegated: WorkItem | None = None
+        if work:
+            delegated, refusal = await self._canonical_work(work, agent.id)
+            if delegated is None:
+                return None, MatchResult(Selection.PERMISSION_DENIED, reasons=[refusal])
+            kind, parameters = delegated.type, dict(delegated.inputs)
+            work = {
+                **work,
+                "causation_chain": list(delegated.causation_chain),
+                "delegation_depth": delegated.delegation_depth,
+                "requester_id": delegated.requester_agent_id,
+                "expected_outputs": list(delegated.expected_outputs),
+                "success_conditions": list(delegated.success_conditions),
+                "resources": {mode: list(paths) for mode, paths in delegated.resources.items()},
+            }
         match = self.registry.select(
             kind, parameters, self.host.capabilities(agent.id), explicit=explicit
         )
@@ -2366,21 +2531,85 @@ class ProcedureService:
             or match.definition is None
             or match.admission is None
         ):
+            if (
+                delegated is not None
+                and delegated.budget.max_model_calls == 0
+                and match.selection in {Selection.NO_MATCH, Selection.INCOMPATIBLE_PROCEDURE}
+            ):
+                # Falling through would hand the work to model planning,
+                # which the allocation forbids outright.
+                return None, MatchResult(
+                    Selection.BUDGET_EXHAUSTED,
+                    reasons=["no typed procedure, and the work allows no model call"],
+                )
             return None, match
         values, refs = self._context(match.definition, agent)
-        execution = await self.executor.start(
-            match.definition,
-            match.admission,
-            agent_id=agent.id,
-            goal_id=goal.id,
-            occurrence_id=occurrence,
-            parameters=parameters,
-            context=values,
-            context_refs=refs,
-            work=work,
-            work_item_id=work.get("work_item_id"),
-        )
+        budget: Budget | None = None
+        deadline_at: datetime | None = None
+        max_executions: int | None = None
+        if delegated is not None:
+            budget = self.allocation(match.definition, delegated)
+            deadline_at = delegated.deadline
+            max_executions = delegated.budget.max_attempts
+        try:
+            execution = await self.executor.start(
+                match.definition,
+                match.admission,
+                agent_id=agent.id,
+                goal_id=goal.id,
+                occurrence_id=occurrence,
+                parameters=parameters,
+                context=values,
+                context_refs=refs,
+                work=work,
+                work_item_id=work.get("work_item_id"),
+                budget=budget,
+                deadline_at=deadline_at,
+                max_executions=max_executions,
+            )
+        except ProcedureError as exc:
+            return None, MatchResult(Selection.BUDGET_EXHAUSTED, reasons=[exc.message])
         return execution, match
+
+    def allocation(self, definition: ProcedureDefinition, work: WorkItem) -> Budget:
+        """What a delegated child may spend: the definition's own envelope,
+        cut down to the allocation its WorkItem carries. Model calls for the
+        child and for anything it delegates further share that one
+        allocation, so no descendant starts a fresh root allowance."""
+        budget = self.executor.default_budget(definition)
+        allowed = work.budget.max_model_calls
+        if allowed is not None:
+            budget.max_model_calls = min(budget.max_model_calls, allowed)
+            budget.max_child_model_calls = min(
+                budget.max_child_model_calls, max(0, allowed - budget.max_model_calls)
+            )
+        budget.max_delegation_depth = min(
+            budget.max_delegation_depth, work.budget.max_delegation_depth
+        )
+        return budget
+
+    async def _canonical_work(
+        self, work: Mapping[str, Any], agent_id: str
+    ) -> tuple[WorkItem | None, str]:
+        """The durable WorkItem a delegated goal stands for -- the one the
+        requester's delegation committed, not the copy its message carried.
+        Typed delegation records it with the parent's operation; other
+        delegation publishes it on the blackboard."""
+        work_id = str(work.get("work_item_id") or "")
+        row = await self.executor.repository.load_procedure_operation(f"delegate:{work_id}")
+        if row is not None:
+            record = OperationRecord.model_validate_json(row[1])
+            item = WorkItem.model_validate(record.arguments["work"])
+            if (record.child or {}).get("assignee") != agent_id:
+                return None, f"work {work_id} is assigned to someone else"
+            return item, ""
+        board = self.host.blackboard
+        item = board.work_items.get(work_id) if board is not None else None
+        if item is None:
+            return None, f"no durable record of work {work_id}"
+        if item.assigned_agent_id not in {None, agent_id}:
+            return None, f"work {work_id} is assigned to someone else"
+        return item, ""
 
     async def advance(self, execution_id: str) -> StepOutcome:
         return await self.executor.advance(execution_id, self.host)

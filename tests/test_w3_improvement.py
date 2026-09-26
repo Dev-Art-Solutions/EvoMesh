@@ -365,3 +365,85 @@ async def test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass(
 
     assert validator.runs == [False], "the protected oracle still fails"
     assert (project / "src" / "evomesh" / "pricing.py").read_text(encoding="utf-8") == DEFECT
+
+
+# -- R04 (closure audit 9739188): coverage of the repaired path, not of the mesh --
+
+
+def _probe(name: str, *, targets: frozenset[str] | None = None, **kwargs) -> Observation:  # type: ignore[no-untyped-def]
+    return Observation(
+        name,
+        "fault_probe",
+        frozenset({EVIDENCE_RUNTIME_FAULT}),
+        targets=frozenset({_fault().ref}) if targets is None else targets,
+        **kwargs,
+    )
+
+
+async def test_r04a_unrelated_runs_never_verify_a_runtime_fault(tmp_path: Path) -> None:
+    from evomesh.evolution import CandidateWorkspace
+    from evomesh.storage import SQLiteRepository
+    from tests.test_cycles import git_project
+
+    root = tmp_path / "project"
+    (root / "src" / "evomesh").mkdir(parents=True)
+    (root / "src" / "evomesh" / "__init__.py").write_text('"""P."""\n', encoding="utf-8")
+    project = await git_project(root)
+    repository = SQLiteRepository(tmp_path / "state.db")
+    await repository.initialize()
+    evolver = EnvironmentEvolver(CandidateWorkspace(project, tmp_path / "generations"), repository)
+    log = project / ".runtime" / "logs" / "mesh.log"
+    log.parent.mkdir(parents=True)
+    plane, item = await _verifying()
+
+    for index in range(6):
+        # Other agents busy, the faulting path never called.
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f'{{"time":"2026-09-26T10:00:0{index}","level":"INFO",'
+                f'"message":"Guardian cycle {index}"}}\n'
+            )
+        await plane.sync([], set(), evolver.observations())
+
+    assert item.status is ImprovementStatus.VERIFYING
+    assert "cannot show" in item.inconclusive_reason
+    assert item.verification is not None and item.verification.observation_ids == []
+
+
+async def test_r04b_absent_unhealthy_idle_or_repeated_observers_add_no_coverage() -> None:
+    plane, item = await _verifying()
+
+    await plane.sync([], set(), [])  # absent
+    await plane.sync([], set(), [_probe("down", healthy=False)])
+    await plane.sync([], set(), [_probe("idle", eligible=0)])
+    for _ in range(3):
+        await plane.sync([], set(), [_probe("probe:1")])
+
+    assert item.status is ImprovementStatus.VERIFYING
+    assert item.verification is not None
+    assert item.verification.observation_ids == ["probe:1"], "one reading, counted once"
+
+
+async def test_r04c_target_specific_probes_verify(tmp_path: Path) -> None:
+    plane, item = await _verifying()
+
+    await plane.sync([], set(), [_probe("probe:1")])
+    await plane.sync([], set(), [_probe("probe:2")])
+
+    assert item.status is ImprovementStatus.VERIFIED
+    # Counterevidence reopens it: the fault is back.
+    await plane.sync([_fault()], {_fault().ref})
+    assert item.status is ImprovementStatus.READY
+    assert item.rejection_reason == "regressed after verification"
+
+
+async def test_r04c_a_fault_seen_again_counts_even_from_a_coarse_observer() -> None:
+    plane, item = await _verifying()
+    coarse = Observation(
+        "log:2", "runtime_log", frozenset({EVIDENCE_RUNTIME_FAULT}), targets=frozenset()
+    )
+
+    await plane.sync([], set(), [_probe("probe:1")])
+    await plane.sync([], {_fault().ref}, [coarse])
+
+    assert item.status is ImprovementStatus.INEFFECTIVE, item.inconclusive_reason

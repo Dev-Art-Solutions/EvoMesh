@@ -35,9 +35,14 @@ architecture work automatically.
 
 ## Known gaps, bounded
 
-7. **Coarse runtime-log observer.** It counts a reading when the mesh ran
-   since the last one, not when the specific code path ran. A fault needs
-   three such readings, which mitigates this without making it per-path.
+7. **The runtime log cannot verify a fixed fault.** It shows that the mesh
+   ran, not that the repaired path did, so its readings no longer count
+   toward verifying a runtime fault or a runtime event (corrected after the
+   9739188 audit; before, three readings of unrelated activity verified one).
+   It still counts a fault that comes back. A fixed runtime fault stays
+   `VERIFYING`, naming the reason, until a target-specific probe reports on
+   it or an operator runs `/improvements verify <id> <reason>`. No such probe
+   ships yet.
 8. **Trace model-call counts use the diagnostic call log.** That log holds
    2048 records. On a very busy mesh the count can be low. The per-execution
    budget counters are durable and exact (T42).
@@ -67,3 +72,12 @@ architecture work automatically.
 17. **Local effects only.** The effect adapters are `core.json_read` and
     `core.json_write` (local, with receipts) plus the idempotent blackboard
     fact publish. External effects are refused at validation.
+18. **Only the pipeline owner carries out code work.** Capability routing
+    awards an improvement's work item to the agent running the candidate
+    pipeline, and to nobody when that agent is not among the capable
+    bidders. A second code-capable agent is never selected for it. The
+    live W3 trace (`tests/test_w3_live.py`) proves this path: the owner's
+    identity and a grant scoped to the candidate reach the real harness
+    jobs, and the review runs read-only. It does not show a different
+    agent with its own model and tools doing the work; that would be new
+    routing, not a correction.

@@ -1757,8 +1757,20 @@ class EnvironmentEvolver:
         reading = (stat.st_size, stat.st_mtime_ns)
         ran = self._last_log_reading is not None and reading != self._last_log_reading
         self._last_log_reading = reading
+        # The log shows that the mesh ran, never that a repaired path did: a
+        # fault it still shows is target-specific, its absence is not. So it
+        # speaks only for the faults it can see; the rest stay VERIFYING
+        # until a real probe or a human verifies them.
+        seen = frozenset(
+            fault_candidate(fault).ref
+            for fault in runtime_faults(self.workspace.repository_root)
+        )
         return Observation(
-            f"log:{reading[0]}:{reading[1]}", "runtime_log", covers, eligible=1 if ran else 0
+            f"log:{reading[0]}:{reading[1]}",
+            "runtime_log",
+            covers,
+            eligible=1 if ran else 0,
+            targets=seen,
         )
 
     async def candidate_revision(self, generation: Generation) -> str:

@@ -321,6 +321,7 @@ KNOWN_ROOT_FILES = frozenset(
 PROTECTED_PATHS: tuple[str, ...] = (
     "src/evomesh/procedures.py",
     "src/evomesh/procedure_runtime.py",
+    "src/evomesh/procedure_host.py",
     "src/evomesh/procedure_traces.py",
     "src/evomesh/improvements.py",
     "procedures/*",
@@ -328,6 +329,8 @@ PROTECTED_PATHS: tuple[str, ...] = (
     "docs/architecture/closure-evidence/*",
     "tests/test_procedure*.py",
     "tests/test_w3_improvement.py",
+    "tests/test_w3_live.py",
+    "tests/test_delegation_contract.py",
     "tests/test_idle_evolution.py",
     "tests/test_work_executor.py",
     "tests/test_protected_surface.py",

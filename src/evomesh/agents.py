@@ -375,8 +375,16 @@ class AgentRuntime:
                     reply = Performative.REJECT
                     detail = "missing capabilities: " + ", ".join(sorted(missing))
                 else:
-                    if not any(
-                        goal.parameters.get("work_item_id") == item.id and goal.is_open
+                    # One goal per WorkItem, ever: a replayed DELEGATE after the
+                    # child finished must not run the work a second time. Goals
+                    # are pruned, so the ledger is durable state, not the goal
+                    # list; a real new attempt arrives as a new WorkItem id.
+                    first = await self.repository.save_state_once(
+                        f"delegation.accepted:{self.definition.id}:{item.id}",
+                        {"requester": incoming.sender_id},
+                    )
+                    if first and not any(
+                        goal.parameters.get("work_item_id") == item.id
                         for goal in self.definition.mind.goals
                     ):
                         goal = self.definition.mind.add_goal(
