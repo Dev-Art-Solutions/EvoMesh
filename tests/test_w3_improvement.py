@@ -357,7 +357,9 @@ async def test_w3_a_candidate_that_weakens_its_own_oracle_does_not_pass(
         test_backlog=False, scout_when_idle=False,
     )
 
-    for _ in range(40):
+    # The validation is a real pytest run in the background: bounded like
+    # _until_promoted, not by a count a loaded machine can outrun.
+    for _ in range(300):
         await behavior.cycle(context)
         if validator.runs:
             break
