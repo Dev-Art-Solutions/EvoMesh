@@ -14,8 +14,10 @@ config.json's "pages" are whole pages to report in full, not feeds:
 wsj.com's stock news, say, which has no RSS and sits behind an anti-bot wall
 (DataDome) that turns away urllib and even a headless browser. Those go
 through the mesh's one crawling tool, Scrapling, as a real, headed Chrome --
-the only mode wsj.com let through, found live 2026-09-27 -- placed off
-screen by page_fetch.py so no window ever shows or takes focus. Their
+the only mode wsj.com let through, found live 2026-09-27 -- that never
+shows: on Windows it runs on a desktop of its own that is never displayed
+(_run_hidden), so not even a taskbar button appears; elsewhere page_fetch.py
+places the window off screen. Their
 headlines come from the page's own schema.org ItemList. A browser per fetch
 is why a page is fetched at most every "page_minutes" (default 30); between
 fetches its last result stands in.
@@ -32,6 +34,7 @@ the network at all. Entries older than config.json's "cache_days" (default
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -237,6 +240,97 @@ def _page_command(scraper: list[str], url: str, output: Path, config: dict) -> l
     return [*scraper, "extract", mode, url, str(output), *flags]
 
 
+HIDDEN_DESKTOP = "evomesh-hidden"
+
+
+def _run_hidden(argv: list[str], timeout: float) -> int:
+    """Run argv on a Windows desktop that is never displayed, and wait.
+
+    Everything it starts -- Playwright's driver, every Chrome process --
+    inherits that desktop, so a headed Chrome renders (what wsj.com checks)
+    with no window and no taskbar button on the owner's screen. Off screen
+    alone still left a taskbar button (found live 2026-09-27). A job object
+    kills the whole tree on a timeout, so no Chrome outlives it unseen."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    from ctypes import wintypes
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [  # noqa: RUF012 - ctypes layout
+            ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+        ]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [  # noqa: RUF012 - ctypes layout
+            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+        ]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [  # noqa: RUF012 - ctypes layout
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [  # noqa: RUF012 - ctypes layout
+            ("BasicLimitInformation", BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    user32.CreateDesktopW.restype = wintypes.HANDLE
+    user32.CreateDesktopW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    ]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    desktop_all_access = 0x01FF | 0x000F0000
+    desktop = user32.CreateDesktopW(HIDDEN_DESKTOP, None, None, 0, desktop_all_access, None)
+    if not desktop:
+        raise OSError(ctypes.get_last_error(), "could not create the hidden desktop")
+    job = kernel32.CreateJobObjectW(None, None)
+    limits = ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+    kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))
+    startup = StartupInfo()
+    startup.cb = ctypes.sizeof(startup)
+    startup.lpDesktop = HIDDEN_DESKTOP
+    process = ProcessInformation()
+    command = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+    create_suspended, create_no_window = 0x4, 0x08000000
+    try:
+        if not kernel32.CreateProcessW(
+            None, command, None, None, False, create_suspended | create_no_window,
+            None, None, ctypes.byref(startup), ctypes.byref(process),
+        ):
+            raise OSError(ctypes.get_last_error(), "could not start the fetch")
+        kernel32.AssignProcessToJobObject(job, process.hProcess)
+        kernel32.ResumeThread(process.hThread)
+        if kernel32.WaitForSingleObject(process.hProcess, int(timeout * 1000)) != 0:
+            raise OSError("the fetch did not finish in time")
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(process.hProcess, ctypes.byref(code))
+        return int(code.value)
+    finally:
+        for handle in (process.hProcess, process.hThread):
+            if handle:
+                kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(job)  # kills whatever of the tree is left
+        user32.CloseDesktop(desktop)
+
+
 def _fetch_page(url: str, config: dict) -> str:
     """One page's HTML through Scrapling. Raises OSError when it fails."""
     scraper = _scraper(config)
@@ -244,18 +338,25 @@ def _fetch_page(url: str, config: dict) -> str:
         raise OSError("Scrapling is not installed (scripts/install-scrapling.ps1)")
     with tempfile.TemporaryDirectory(prefix="evomesh-news-") as scratch:
         output = Path(scratch) / "page.html"
-        try:
-            run = subprocess.run(  # noqa: S603 - the mesh's own configured fetcher
-                _page_command(scraper, url, output, config),
-                capture_output=True,
-                timeout=PAGE_FETCH_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise OSError(f"{url}: the fetch did not finish in time") from exc
-        if run.returncode != 0 or not output.is_file():
+        command = _page_command(scraper, url, output, config)
+        if os.name == "nt" and Path(command[1]).name == "page_fetch.py":
+            try:
+                code = _run_hidden(command, PAGE_FETCH_TIMEOUT_SECONDS)
+            except OSError as exc:
+                raise OSError(f"{url}: {exc}") from exc
+            error = Path(f"{output}.error")
+            detail = error.read_text(encoding="utf-8") if error.is_file() else ""
+        else:
+            try:
+                run = subprocess.run(  # noqa: S603 - the mesh's own configured fetcher
+                    command, capture_output=True, timeout=PAGE_FETCH_TIMEOUT_SECONDS, check=False
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise OSError(f"{url}: the fetch did not finish in time") from exc
+            code = run.returncode
             detail = (run.stdout or run.stderr or b"").decode("utf-8", errors="replace")
-            raise OSError(f"{url}: {detail.strip()[-300:] or f'exit {run.returncode}'}")
+        if code != 0 or not output.is_file():
+            raise OSError(f"{url}: {detail.strip()[-300:] or f'exit {code}'}")
         return output.read_text(encoding="utf-8", errors="replace")
 
 

@@ -1,5 +1,10 @@
 """Fetch one page through Scrapling as a real Chrome that never shows.
 
+On Windows news_fetch runs this on a desktop of its own that is never
+displayed (see _run_hidden there); the off-screen position below is what
+keeps the window out of sight anywhere else. A failure is written to
+<output>.error, since a hidden run has no console to read.
+
 Run by news_fetch.py with Scrapling's own Python (the venv beside its
 executable): argv = <url> <output.html>. wsj.com's DataDome turns away every
 headless mode (a 401) and only lets a headed real Chrome through -- which,
@@ -26,6 +31,15 @@ def _off_screen(flags: tuple[str, ...]) -> tuple[str, ...]:
 
 def main() -> int:
     url, output = sys.argv[1], sys.argv[2]
+    try:
+        return _fetch(url, output)
+    except Exception as exc:  # noqa: BLE001 - reported to news_fetch, not raised
+        with open(f"{output}.error", "w", encoding="utf-8") as handle:
+            handle.write(f"{type(exc).__name__}: {exc}")
+        return 1
+
+
+def _fetch(url: str, output: str) -> int:
     base = importlib.import_module("scrapling.engines._browsers._base")
     for name in ("DEFAULT_ARGS", "STEALTH_ARGS"):
         setattr(base, name, _off_screen(tuple(getattr(base, name))))
@@ -37,7 +51,8 @@ def main() -> int:
         url, headless=False, real_chrome=True, wait=6000, timeout=90000
     )
     if page.status != 200:
-        print(f"HTTP {page.status}")
+        with open(f"{output}.error", "w", encoding="utf-8") as handle:
+            handle.write(f"HTTP {page.status}")
         return 1
     with open(output, "w", encoding="utf-8") as handle:
         handle.write(page.html_content)

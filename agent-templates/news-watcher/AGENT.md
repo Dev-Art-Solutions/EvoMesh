@@ -40,8 +40,9 @@ headlines to keep on disk, default 3):
 keyword -- `["https://www.wsj.com/finance/stocks?page=1"]` reports every
 headline on WSJ's stocks page the first time it appears there, once. They
 are fetched through Scrapling (the mesh's crawling tool) as a real, headed
-Chrome -- the only way wsj.com let a fetch through -- placed off screen, so
-no window pops up or takes focus; each page is fetched at most every
+Chrome -- the only way wsj.com let a fetch through -- on a Windows desktop
+of its own that is never displayed, so no window and no taskbar button
+appear (elsewhere, placed off screen); each page is fetched at most every
 `page_minutes` (default 30). A story is reported once
 however it recurs: the same link, the same WSJ story id under a new slug,
 or the same headline.

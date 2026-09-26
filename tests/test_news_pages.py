@@ -219,3 +219,30 @@ def test_a_failed_page_fetch_is_silent_and_keeps_the_last_result(
 
     assert [item["title"] for item in items] == ["Stocks Rise"]
     assert "page fetch failed" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the hidden desktop is Windows-only")
+def test_on_windows_the_page_fetch_runs_on_a_hidden_desktop(
+    playground: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off screen still left a taskbar button: the whole fetch runs on a
+    desktop that is never displayed instead."""
+    ran: list[list[str]] = []
+
+    def hidden(argv: list[str], timeout: float) -> int:
+        ran.append(argv)
+        Path(argv[-1]).write_text(
+            _page(("Stocks Rise", "https://www.wsj.com/a/stocks-rise-de1cba89")), encoding="utf-8"
+        )
+        return 0
+
+    def command(scraper: list[str], url: str, output: Path, config: dict) -> list[str]:
+        return ["py", "page_fetch.py", url, str(output)]
+
+    monkeypatch.setattr(news_fetch, "_page_command", command)
+    monkeypatch.setattr(news_fetch, "_run_hidden", hidden)
+
+    html = news_fetch._fetch_page(PAGE, {})
+
+    assert len(ran) == 1 and ran[0][2] == PAGE
+    assert [item["title"] for item in news_fetch.parse_page(html)] == ["Stocks Rise"]
