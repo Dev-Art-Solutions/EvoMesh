@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -70,8 +71,9 @@ def main() -> int:
 
     collected = news_fetch.fetch_and_cache(feeds, config)
 
+    patterns = [keyword_pattern(keyword) for keyword in keywords]
     matches = [
-        item for item in collected if any(keyword in item["title"].lower() for keyword in keywords)
+        item for item in collected if any(pattern.search(item["title"]) for pattern in patterns)
     ]
     new_matches = [item for item in matches if item["link"] not in seen]
 
@@ -86,6 +88,14 @@ def main() -> int:
     except OSError:
         pass
     return 0
+
+
+def keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """A keyword as a whole word or phrase, case-insensitive. Found live
+    2026-09-26: as a plain substring, "ETH" matched "Ethiopia", "AI" matched
+    "said" and "oil" matched "turmoil", so the watcher reported war news as a
+    crypto signal."""
+    return re.compile(rf"(?<![0-9A-Za-z]){re.escape(keyword)}(?![0-9A-Za-z])", re.IGNORECASE)
 
 
 if __name__ == "__main__":

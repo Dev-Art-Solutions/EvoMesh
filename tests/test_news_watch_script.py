@@ -108,3 +108,15 @@ def test_state_file_remembers_seen_links_across_runs(tmp_path):
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert "https://example.com/gold-1" in saved["seen"]
+
+
+def test_a_keyword_matches_whole_words_only() -> None:
+    eth = watch_news.keyword_pattern("eth")
+    assert not eth.search("Is Ethiopia on the verge of another civil war?")
+    assert eth.search("ETH rallies past $4,000")
+    assert not watch_news.keyword_pattern("ai").search("The minister said again")
+    assert watch_news.keyword_pattern("ai").search("AI chip stocks jump")
+    assert not watch_news.keyword_pattern("oil").search("Political turmoil in Paris")
+    assert watch_news.keyword_pattern("oil").search("Oil climbs on supply fears")
+    assert watch_news.keyword_pattern("eur/usd").search("EUR/USD slips below 1.08")
+    assert watch_news.keyword_pattern("interest rates").search("Fed holds interest rates")
