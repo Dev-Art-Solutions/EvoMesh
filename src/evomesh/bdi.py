@@ -133,7 +133,21 @@ HARNESS_VERBS = (
     # that it had no way to call it.
     "fetch",
     "gather",
+    # The web-crawler template's scheduled tasks read "Crawl <site> ..."; found
+    # live 2026-09-26: without these a scheduled crawl ran with no tools and
+    # reported that none were available.
+    "crawl",
+    "scrape",
 )
+
+# A leading "[tag] " on a step (a scheduled crawl task is "[crawl] Crawl ...")
+# labels it for listing; it is not the step's first word.
+_STEP_TAG = re.compile(r"^(?:\[[^\]]{1,20}\]\s*)+")
+
+
+def wants_tools(description: str) -> bool:
+    """Whether a step starts with a verb that means "look something up"."""
+    return _STEP_TAG.sub("", description.strip()).lower().startswith(HARNESS_VERBS)
 
 # Told to an agent that has tools, since it decides which of its steps get them.
 PLAN_TOOL_HINT = (
@@ -695,8 +709,8 @@ class BDIReasoner:
         steps = parse_plan(raw, self.max_steps)
         if (
             tooled
-            and goal.description.strip().lower().startswith(HARNESS_VERBS)
-            and not any(step.strip().lower().startswith(HARNESS_VERBS) for step in steps)
+            and wants_tools(goal.description)
+            and not any(wants_tools(step) for step in steps)
         ):
             return [goal.description]
         return steps or [goal.description]
@@ -905,8 +919,7 @@ class BDIBehavior:
         harness = context.service("harness")
         if not root or harness is None or not isinstance(harness, HarnessGateway):
             return None
-        wanted = step.description.strip().lower()
-        if not wanted.startswith(HARNESS_VERBS):
+        if not wants_tools(step.description):
             return None
         # The job is remembered on the *step*, not on the agent: when it
         # finishes, the step that asked for it is the one that consumes the

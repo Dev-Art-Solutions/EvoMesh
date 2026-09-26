@@ -262,6 +262,40 @@ async def test_the_crawler_schedules_its_own_tasks_through_the_control_port(
     await environment.stop()
 
 
+def test_a_tagged_crawl_step_is_taken_with_tools() -> None:
+    from evomesh.bdi import wants_tools
+
+    assert wants_tools("[crawl] Crawl https://www.idealo.de/ for related products")
+    assert wants_tools("Scrape https://example.com for prices")
+    assert not wants_tools("[crawl] tell the human hello")
+    assert not wants_tools("Summarize what you know")
+
+
+async def test_a_scheduled_crawl_task_runs_with_tools(tmp_path: Path) -> None:
+    """Found live: "[crawl] Crawl ..." was taken without tools (the tag hid the
+    verb, and "crawl" was not a tool verb), so the agent reported that no
+    crawl tool was available."""
+    from evomesh.config import HarnessSettings
+
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    settings.harness = HarnessSettings(enabled=True, allow_write=True, shell_allow=["python"])
+    environment = Environment(settings, {"ollama": MockProvider(["no plan"])})
+    await environment.start()
+    await environment.agent_templates.install_directory(TEMPLATE)
+    crawler = await environment.agent_templates.instantiate(environment, "web-crawler")
+    runtime = environment.runtimes[crawler.id]
+    crawler.mind.add_goal(
+        "[crawl] Crawl https://example.com/ for prices", recurring=True, interval_seconds=7200
+    )
+
+    await runtime.run_cycle()
+
+    jobs = [job for job in environment.harness.queue.jobs.values() if job.agent_id == crawler.id]
+    assert jobs, "the scheduled crawl went to the harness, where its tools are"
+    assert "Crawl https://example.com/" in jobs[0].objective
+    await environment.stop()
+
+
 async def test_the_template_spawns_with_its_tools_and_skill(tmp_path: Path) -> None:
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
     environment = Environment(settings, {"ollama": MockProvider()})
