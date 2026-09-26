@@ -125,7 +125,7 @@ def test_the_real_fetcher_crawls_the_site(site: Site, monkeypatch: pytest.Monkey
 
     assert [page["url"] for page in result["pages"]][:2] == [f"{site.base}/", f"{site.base}/a"]
     assert any("robots" in item for item in result["skipped"])
-    assert result["pages"][1]["matches"] == ["Gold price rises today."]
+    assert result["pages"][1]["matches"][0].startswith("Gold price rises today.")
 
 
 def test_without_a_fetcher_the_crawl_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,7 +146,31 @@ def test_a_crawl_stays_on_the_site_honours_robots_and_finds_the_focus(site: Site
     home, first = result["pages"][0], result["pages"][1]
     assert "var x" not in home["text"], "scripts are not page text"
     assert home["matches"] == []
-    assert first["matches"] == ["Gold price rises today."], "whole words, not 'golden'"
+    assert len(first["matches"]) == 1, "one match: whole words, not 'golden'"
+    assert first["matches"][0].startswith("Gold price rises today.")
+
+
+def test_the_answer_fits_the_harness_and_shows_matches_first(
+    site: Site, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: as indented JSON the page text was one 4000-character line
+    before the matches, the harness cut it, and the model saw no content."""
+    from evomesh.harness_tools import ToolLimits, _clip  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.chdir(tmp_path)
+    config = {**crawl_site.DEFAULTS, "delay_seconds": 0.0}
+    result = crawl_site.crawl({"url": f"{site.base}/", "focus": ["gold"]}, config)
+    result["pages"][0]["text"] = "long navigation text " * 2000  # a real page's bulk
+    saved = crawl_site.save_full(result, {"url": site.base}).relative_to(tmp_path).as_posix()
+
+    text = crawl_site.render(result, saved)
+    shown = _clip(text, ToolLimits(), unit="lines")
+
+    assert len(text) <= crawl_site.OUTPUT_BUDGET
+    assert "- Gold price rises today." in shown, "the match survives the harness's clip"
+    assert shown.index("Matches:") < shown.index("Excerpt:")
+    assert saved.startswith("crawls/") and saved in shown
+    assert "long navigation text" in (tmp_path / saved).read_text(encoding="utf-8")
 
 
 def test_max_pages_and_follow_bound_the_crawl(site: Site) -> None:
