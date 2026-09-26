@@ -63,6 +63,7 @@ class FakeHarness(HarnessGateway):
         priority: bool = False,
         allow_write: bool = True,
         catalog: bool = True,
+        reading_only: bool = False,
     ) -> HarnessJob:
         self.objectives.append(objective)
         self.labels.append(label)

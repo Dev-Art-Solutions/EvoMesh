@@ -487,6 +487,7 @@ class IdeaScoutBehavior:
             notify=False,
             allow_write=False,
             catalog=False,
+            reading_only=True,
         )
         self.job, self.job_draft = job.number, draft
         await self._save(context)

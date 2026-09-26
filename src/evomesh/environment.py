@@ -1442,6 +1442,9 @@ class Environment:
             raise RuntimeError(f"Provider '{provider_name}' is not configured")
         session = HarnessSession(next_session_path(settings.session_path))
         job_num_ctx = self.resolve_num_ctx(provider_name, model, num_ctx_override)
+        # A reading-only job gets read, grep and ls and nothing that acts.
+        reading = job.reading_only
+        acting = bool(job.agent_id) and not reading
         runner = build_runner(
             provider,
             job.root,
@@ -1454,30 +1457,30 @@ class Environment:
             max_steps=job.max_steps if job.max_steps is not None else settings.max_steps,
             max_seconds=job.max_seconds if job.max_seconds is not None else settings.max_seconds,
             transcript_chars=settings.transcript_chars_for_num_ctx(job_num_ctx),
-            shell_allow=settings.shell_programs(),
+            shell_allow=frozenset() if reading else settings.shell_programs(),
             shell_seconds=settings.shell_seconds,
-            read_only=not job.allow_write,
-            allow_write=job.allow_write,
+            read_only=not job.allow_write or reading,
+            allow_write=job.allow_write and not reading,
             write_prefix=job.write_prefix,
             num_ctx=job_num_ctx,
             scraping_executable=(
-                self.settings.scraping.executable if self.settings.scraping.enabled else ""
+                self.settings.scraping.executable
+                if self.settings.scraping.enabled and not reading
+                else ""
             ),
             scraping_timeout=self.settings.scraping.timeout_seconds,
-            ask_agent=self._make_ask_agent(job.agent_id) if job.agent_id else None,
-            delegate_work=self._make_delegate_work(job.agent_id) if job.agent_id else None,
+            ask_agent=self._make_ask_agent(job.agent_id) if acting else None,
+            delegate_work=self._make_delegate_work(job.agent_id) if acting else None,
             learn_skill=(
-                self._make_learn_skill(job.agent_id)
-                if job.agent_id and can_learn_skills
-                else None
+                self._make_learn_skill(job.agent_id) if acting and can_learn_skills else None
             ),
             patch_skill=(
-                self._make_patch_skill(job.agent_id)
-                if job.agent_id and can_learn_skills
-                else None
+                self._make_patch_skill(job.agent_id) if acting and can_learn_skills else None
             ),
             skills_root=self.skills.root,
-            custom_tools=custom_tools
+            custom_tools=()
+            if reading
+            else custom_tools
             + await self.active_mcp_tools(job.agent_id or "")
             + (
                 self.procedure_learning.tools_for(

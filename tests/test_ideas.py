@@ -174,6 +174,34 @@ async def test_the_scout_reads_the_code_and_asks_a_human(tmp_path: Path) -> None
     await environment.stop()
 
 
+async def test_the_scouts_jobs_can_only_read_whatever_the_mesh_allows(tmp_path: Path) -> None:
+    from evomesh.models import ToolCall
+
+    project = await _project(tmp_path)
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=True, shell_allow=["python"])
+    provider = MockProvider(
+        ["no plan"],
+        turns=[
+            ChatTurn(tool_calls=[ToolCall("shell", {"command": "python -c print(1)"})]),
+            ChatTurn(text=ANSWER),
+        ],
+    )
+    environment = Environment(settings, {"ollama": provider})
+    await environment.start()
+    environment.ideas = IdeaBook(tmp_path / "workspace" / "ideas.md", project)
+    await environment.start_agent(IDEAS_AGENT_ID, start_delay=3600)
+
+    await _cycle_until(environment, lambda: bool(environment.ideas.pending()))
+
+    job = next(iter(environment.harness.queue.jobs.values()))
+    assert job.reading_only and not job.allow_write
+    refusal = str(provider.chats[1][-1].content)
+    assert "shell" in refusal and "print(1)" not in refusal.replace("python -c print(1)", "")
+    assert "1\n" not in refusal, "the command never ran"
+    await environment.stop()
+
+
 async def test_the_scout_waits_once_enough_ideas_wait(tmp_path: Path) -> None:
     environment, _, _ = await _mesh(tmp_path, [ChatTurn(text=ANSWER)])
     await environment.ideas.add(TOTAL, "Idea Scout")

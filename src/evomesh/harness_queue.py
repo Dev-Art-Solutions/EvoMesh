@@ -81,6 +81,10 @@ class HarnessJob:
     # a small model's transcript is better spent on the code the job is about
     # than on news and trading skills it will never read.
     catalog: bool = True
+    # Only the reading tools (read, grep, ls): no shell, fetch, ask_agent,
+    # delegate_work or custom tools, whatever the mesh has configured. For a
+    # job whose whole output is its answer -- the Idea Scout's.
+    reading_only: bool = False
     result: HarnessResult | None = None
     detail: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -205,6 +209,7 @@ class HarnessQueue:
         notify: bool = True,
         priority: bool = False,
         catalog: bool = True,
+        reading_only: bool = False,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -227,6 +232,7 @@ class HarnessQueue:
             notify=notify,
             priority=priority,
             catalog=catalog,
+            reading_only=reading_only,
         )
         self._next += 1
         self.jobs[job.number] = job
@@ -345,6 +351,7 @@ class HarnessGateway:
         priority: bool = False,
         allow_write: bool = True,
         catalog: bool = True,
+        reading_only: bool = False,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -358,6 +365,7 @@ class HarnessGateway:
             max_seconds=max_seconds,
             notify=notify,
             catalog=catalog,
+            reading_only=reading_only,
         )
 
     def job(self, number: int) -> HarnessJob | None:
