@@ -32,6 +32,8 @@ d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness_tools.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_harness_tools.py:3:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_http_retry.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_http_retry.py:20:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_ideas.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_ideas.py:13:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_idle_evolution.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_idle_evolution.py:12:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_improvement_control.py
@@ -76,7 +78,7 @@ d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_live.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_live.py:20:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py:11:8 - error: Import "pytest" could not be resolved (reportMissingImports)
-39 errors, 0 warnings, 0 informations
+40 errors, 0 warnings, 0 informations
 WARNING: there is a new pyright version available (v1.1.411 -> v1.1.414).
 Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
 

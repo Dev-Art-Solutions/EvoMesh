@@ -1,5 +1,5 @@
 {
-  "tested_commit": "0736eeb81ee5d69a77333a6d51f6a70b00bbc782",
+  "tested_commit": "cc74aefe65c0049011967dd661f5d4b87dcfacb0",
   "benchmarks": {
     "B1": {
       "title": "W1 through normal typed selection",

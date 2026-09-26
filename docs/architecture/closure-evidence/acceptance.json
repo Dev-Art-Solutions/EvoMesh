@@ -2,7 +2,7 @@
   "plan": "EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2",
   "base_commit": "815cd6c",
   "implementation_parent": "6bac351",
-  "tested_commit": "0736eeb81ee5d69a77333a6d51f6a70b00bbc782",
+  "tested_commit": "cc74aefe65c0049011967dd661f5d4b87dcfacb0",
   "working_tree_clean": true,
   "status": "ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED",
   "core_gates": {
@@ -462,6 +462,11 @@
         "tests/test_delegation_contract.py::test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery",
         "tests/test_delegation_contract.py::test_r01g2_g3_repeated_admission_reuses_the_one_goal",
         "tests/test_delegation_contract.py::test_r01g5_admission_keeps_unrelated_agent_state",
+        "tests/test_delegation_contract.py::test_r01h1_a_cycle_during_admission_runs_nothing_uncommitted",
+        "tests/test_delegation_contract.py::test_r01h2_a_replay_during_a_cycle_leaves_no_trace",
+        "tests/test_delegation_contract.py::test_r01h3_a_failed_admission_during_a_cycle_leaks_nothing",
+        "tests/test_delegation_contract.py::test_r01h4_cancelling_admission_resolves_what_was_committed",
+        "tests/test_delegation_contract.py::test_r01h_an_acceptance_whose_goal_was_lost_is_recovered_once",
         "tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result"
       ],
       "status": "passed"
@@ -751,7 +756,7 @@
       "gate": "ruff",
       "command": "ruff.exe check .",
       "exit_code": 0,
-      "seconds": 0.0,
+      "seconds": 0.1,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
       "log_sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
       "tail": [
@@ -762,9 +767,9 @@
       "gate": "pyright",
       "command": "pyright.exe",
       "exit_code": 0,
-      "seconds": 9.3,
+      "seconds": 10.9,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
-      "log_sha256": "f29bac6db1c7a04afdc923b14c6962b244af5910389d524c009fdf91c512ec86",
+      "log_sha256": "b4c8a88915ebbe0d8168fcdbfa6fcfdf910c01621bb77439b25e4711f3e8f628",
       "tail": [
         "Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`"
       ],
@@ -774,11 +779,11 @@
       "gate": "pytest",
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "exit_code": 0,
-      "seconds": 201.3,
+      "seconds": 272.3,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "log_sha256": "4035c5f22cef0737d061527f4d261e51ed7069d9d8da13753c4420f1a56bc5a9",
+      "log_sha256": "3a544b50277433bbf7954f26d17b47077c212279ef27f0ab59fcdc23c1ef92aa",
       "tail": [
-        "1082 passed in 200.40s (0:03:20)"
+        "1108 passed in 271.27s (0:04:31)"
       ]
     }
   ],
@@ -834,7 +839,7 @@
       "command": "pyright.exe",
       "result": "passed",
       "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
-      "sha256": "f29bac6db1c7a04afdc923b14c6962b244af5910389d524c009fdf91c512ec86"
+      "sha256": "b4c8a88915ebbe0d8168fcdbfa6fcfdf910c01621bb77439b25e4711f3e8f628"
     },
     {
       "id": "pytest",
@@ -842,7 +847,7 @@
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "result": "passed",
       "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "sha256": "4035c5f22cef0737d061527f4d261e51ed7069d9d8da13753c4420f1a56bc5a9"
+      "sha256": "3a544b50277433bbf7954f26d17b47077c212279ef27f0ab59fcdc23c1ef92aa"
     },
     {
       "id": "T01",
@@ -1148,7 +1153,7 @@
     {
       "id": "T44",
       "mode": "test",
-      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused tests/test_delegation_contract.py::test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery tests/test_delegation_contract.py::test_r01g2_g3_repeated_admission_reuses_the_one_goal tests/test_delegation_contract.py::test_r01g5_admission_keeps_unrelated_agent_state tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
+      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused tests/test_delegation_contract.py::test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery tests/test_delegation_contract.py::test_r01g2_g3_repeated_admission_reuses_the_one_goal tests/test_delegation_contract.py::test_r01g5_admission_keeps_unrelated_agent_state tests/test_delegation_contract.py::test_r01h1_a_cycle_during_admission_runs_nothing_uncommitted tests/test_delegation_contract.py::test_r01h2_a_replay_during_a_cycle_leaves_no_trace tests/test_delegation_contract.py::test_r01h3_a_failed_admission_during_a_cycle_leaks_nothing tests/test_delegation_contract.py::test_r01h4_cancelling_admission_resolves_what_was_committed tests/test_delegation_contract.py::test_r01h_an_acceptance_whose_goal_was_lost_is_recovered_once tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
