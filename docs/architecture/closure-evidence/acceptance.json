@@ -2,7 +2,7 @@
   "plan": "EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2",
   "base_commit": "815cd6c",
   "implementation_parent": "6bac351",
-  "tested_commit": "2da3a5c6b4c6c3c5ce1a1887e27c34f8f30d132f",
+  "tested_commit": "680ab913526b024387d29b4ff425f8d442f14064",
   "working_tree_clean": true,
   "status": "ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED",
   "core_gates": {
@@ -278,7 +278,11 @@
     "T19": {
       "tests": [
         "tests/test_procedure_control.py::test_cancel_while_waiting_on_a_child_leaves_the_child_accounted",
-        "tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write"
+        "tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write",
+        "tests/test_procedure_cancel.py::test_r03a_cancel_during_an_applied_effect_keeps_the_receipt",
+        "tests/test_procedure_cancel.py::test_r03a_a_lost_settlement_reconciled_later_stays_cancelled",
+        "tests/test_procedure_cancel.py::test_r03b_an_operation_proven_not_applied_is_not_retried",
+        "tests/test_procedure_cancel.py::test_r03d_a_restart_during_pending_cancellation_keeps_it"
       ],
       "status": "passed"
     },
@@ -321,7 +325,11 @@
     },
     "T26": {
       "tests": [
-        "tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope"
+        "tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope",
+        "tests/test_delegation_contract.py::test_r01a_a_child_allocated_no_model_call_makes_none",
+        "tests/test_delegation_contract.py::test_r01b_an_expired_deadline_starts_no_operation",
+        "tests/test_delegation_contract.py::test_r01b_a_running_child_ends_no_later_than_its_parent",
+        "tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation"
       ],
       "status": "passed"
     },
@@ -353,7 +361,14 @@
     },
     "T31": {
       "tests": [
-        "tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks"
+        "tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks",
+        "tests/test_delegation_contract.py::test_r02a_same_name_in_another_root_is_not_the_same_resource",
+        "tests/test_delegation_contract.py::test_r02a_the_child_reads_the_requesters_file_not_its_own",
+        "tests/test_delegation_contract.py::test_r02b_a_nested_path_is_checked_like_a_top_level_one",
+        "tests/test_delegation_contract.py::test_r02b_a_declared_resource_under_an_innocent_name_is_checked",
+        "tests/test_delegation_contract.py::test_r02c_a_revocation_after_assignment_stops_the_child",
+        "tests/test_delegation_contract.py::test_r02d_a_write_needs_a_destination_the_requester_may_write",
+        "tests/test_delegation_contract.py::test_r02d_the_child_cannot_write_where_the_task_did_not_say"
       ],
       "status": "passed"
     },
@@ -411,7 +426,8 @@
       "tests": [
         "tests/test_procedure_crash.py::test_t40_an_unprovable_effect_waits_for_an_operator",
         "tests/test_procedure_crash.py::test_t40_only_an_operator_resolves_it",
-        "tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it"
+        "tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it",
+        "tests/test_procedure_cancel.py::test_r03c_an_unknown_effect_stays_gated_with_the_intent_intact"
       ],
       "status": "passed"
     },
@@ -436,6 +452,8 @@
     "T44": {
       "tests": [
         "tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated",
+        "tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice",
+        "tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused",
         "tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result"
       ],
       "status": "passed"
@@ -468,7 +486,9 @@
     },
     "T49": {
       "tests": [
-        "tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success"
+        "tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success",
+        "tests/test_delegation_contract.py::test_r01e_schema_valid_output_without_the_required_evidence_fails",
+        "tests/test_delegation_contract.py::test_r01e_the_required_evidence_from_the_child_satisfies_it"
       ],
       "status": "passed"
     },
@@ -515,7 +535,8 @@
     },
     "T56": {
       "tests": [
-        "tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified"
+        "tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified",
+        "tests/test_w3_live.py::test_w3_live_the_routed_agent_runs_the_real_jobs"
       ],
       "status": "passed"
     },
@@ -539,7 +560,11 @@
         "tests/test_w3_improvement.py::test_w3_a_disabled_observer_never_verifies",
         "tests/test_w3_improvement.py::test_zero_eligible_probes_never_verify",
         "tests/test_w3_improvement.py::test_the_same_reading_counts_once",
-        "tests/test_w3_improvement.py::test_empty_syncs_are_not_observations"
+        "tests/test_w3_improvement.py::test_empty_syncs_are_not_observations",
+        "tests/test_w3_improvement.py::test_r04a_unrelated_runs_never_verify_a_runtime_fault",
+        "tests/test_w3_improvement.py::test_r04b_absent_unhealthy_idle_or_repeated_observers_add_no_coverage",
+        "tests/test_w3_improvement.py::test_r04c_target_specific_probes_verify",
+        "tests/test_w3_improvement.py::test_r04c_a_fault_seen_again_counts_even_from_a_coarse_observer"
       ],
       "status": "passed"
     },
@@ -684,7 +709,7 @@
     },
     "B10": {
       "title": "W3 actual isolated candidate workflow",
-      "mode": "real_adapter",
+      "mode": "runtime_integration",
       "matrix_rows": [
         "T56",
         "T57"
@@ -718,7 +743,7 @@
       "gate": "ruff",
       "command": "ruff.exe check .",
       "exit_code": 0,
-      "seconds": 0.0,
+      "seconds": 0.1,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
       "log_sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
       "tail": [
@@ -729,9 +754,9 @@
       "gate": "pyright",
       "command": "pyright.exe",
       "exit_code": 0,
-      "seconds": 9.0,
+      "seconds": 13.0,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
-      "log_sha256": "fd1dec676094fa93e01924bf27302439e9ae2150a2a0dadc4f630c68def01ebc",
+      "log_sha256": "f29bac6db1c7a04afdc923b14c6962b244af5910389d524c009fdf91c512ec86",
       "tail": [
         "Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`"
       ],
@@ -741,11 +766,11 @@
       "gate": "pytest",
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "exit_code": 0,
-      "seconds": 172.2,
+      "seconds": 217.0,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "log_sha256": "45094e922103f0ef49e5a95f9bd6a69567b266dd94cd184b8066b61a63abc3be",
+      "log_sha256": "51aa7bdeb19dc8f36a88a15b96f8f7b7ff6423563309587d3afe9b4fa2c2c35f",
       "tail": [
-        "1046 passed in 171.20s (0:02:51)"
+        "1073 passed in 215.77s (0:03:35)"
       ]
     }
   ],
@@ -791,7 +816,7 @@
       "command": "pyright.exe",
       "result": "passed",
       "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
-      "sha256": "fd1dec676094fa93e01924bf27302439e9ae2150a2a0dadc4f630c68def01ebc"
+      "sha256": "f29bac6db1c7a04afdc923b14c6962b244af5910389d524c009fdf91c512ec86"
     },
     {
       "id": "pytest",
@@ -799,7 +824,7 @@
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "result": "passed",
       "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "sha256": "45094e922103f0ef49e5a95f9bd6a69567b266dd94cd184b8066b61a63abc3be"
+      "sha256": "51aa7bdeb19dc8f36a88a15b96f8f7b7ff6423563309587d3afe9b4fa2c2c35f"
     },
     {
       "id": "T01",
@@ -930,7 +955,7 @@
     {
       "id": "T19",
       "mode": "test",
-      "command": "pytest tests/test_procedure_control.py::test_cancel_while_waiting_on_a_child_leaves_the_child_accounted tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write",
+      "command": "pytest tests/test_procedure_control.py::test_cancel_while_waiting_on_a_child_leaves_the_child_accounted tests/test_procedure_runtime_wiring.py::test_a_cancelled_goal_cancels_its_execution_before_the_write tests/test_procedure_cancel.py::test_r03a_cancel_during_an_applied_effect_keeps_the_receipt tests/test_procedure_cancel.py::test_r03a_a_lost_settlement_reconciled_later_stays_cancelled tests/test_procedure_cancel.py::test_r03b_an_operation_proven_not_applied_is_not_retried tests/test_procedure_cancel.py::test_r03d_a_restart_during_pending_cancellation_keeps_it",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -979,7 +1004,7 @@
     {
       "id": "T26",
       "mode": "test",
-      "command": "pytest tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope",
+      "command": "pytest tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope tests/test_delegation_contract.py::test_r01a_a_child_allocated_no_model_call_makes_none tests/test_delegation_contract.py::test_r01b_an_expired_deadline_starts_no_operation tests/test_delegation_contract.py::test_r01b_a_running_child_ends_no_later_than_its_parent tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1014,7 +1039,7 @@
     {
       "id": "T31",
       "mode": "test",
-      "command": "pytest tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks",
+      "command": "pytest tests/test_procedure_runtime_wiring.py::test_delegation_cannot_launder_a_read_the_requester_lacks tests/test_delegation_contract.py::test_r02a_same_name_in_another_root_is_not_the_same_resource tests/test_delegation_contract.py::test_r02a_the_child_reads_the_requesters_file_not_its_own tests/test_delegation_contract.py::test_r02b_a_nested_path_is_checked_like_a_top_level_one tests/test_delegation_contract.py::test_r02b_a_declared_resource_under_an_innocent_name_is_checked tests/test_delegation_contract.py::test_r02c_a_revocation_after_assignment_stops_the_child tests/test_delegation_contract.py::test_r02d_a_write_needs_a_destination_the_requester_may_write tests/test_delegation_contract.py::test_r02d_the_child_cannot_write_where_the_task_did_not_say",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1077,7 +1102,7 @@
     {
       "id": "T40",
       "mode": "test",
-      "command": "pytest tests/test_procedure_crash.py::test_t40_an_unprovable_effect_waits_for_an_operator tests/test_procedure_crash.py::test_t40_only_an_operator_resolves_it tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it",
+      "command": "pytest tests/test_procedure_crash.py::test_t40_an_unprovable_effect_waits_for_an_operator tests/test_procedure_crash.py::test_t40_only_an_operator_resolves_it tests/test_procedure_crash.py::test_t40_an_operator_can_fail_it tests/test_procedure_cancel.py::test_r03c_an_unknown_effect_stays_gated_with_the_intent_intact",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1105,7 +1130,7 @@
     {
       "id": "T44",
       "mode": "test",
-      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
+      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1140,7 +1165,7 @@
     {
       "id": "T49",
       "mode": "test",
-      "command": "pytest tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success",
+      "command": "pytest tests/test_procedure_control.py::test_a_failed_or_cancelled_child_is_not_success tests/test_delegation_contract.py::test_r01e_schema_valid_output_without_the_required_evidence_fails tests/test_delegation_contract.py::test_r01e_the_required_evidence_from_the_child_satisfies_it",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1189,7 +1214,7 @@
     {
       "id": "T56",
       "mode": "test",
-      "command": "pytest tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified",
+      "command": "pytest tests/test_w3_improvement.py::test_w3_a_real_defect_goes_from_failing_check_to_verified tests/test_w3_live.py::test_w3_live_the_routed_agent_runs_the_real_jobs",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1210,7 +1235,7 @@
     {
       "id": "T59",
       "mode": "test",
-      "command": "pytest tests/test_w3_improvement.py::test_w3_a_disabled_observer_never_verifies tests/test_w3_improvement.py::test_zero_eligible_probes_never_verify tests/test_w3_improvement.py::test_the_same_reading_counts_once tests/test_w3_improvement.py::test_empty_syncs_are_not_observations",
+      "command": "pytest tests/test_w3_improvement.py::test_w3_a_disabled_observer_never_verifies tests/test_w3_improvement.py::test_zero_eligible_probes_never_verify tests/test_w3_improvement.py::test_the_same_reading_counts_once tests/test_w3_improvement.py::test_empty_syncs_are_not_observations tests/test_w3_improvement.py::test_r04a_unrelated_runs_never_verify_a_runtime_fault tests/test_w3_improvement.py::test_r04b_absent_unhealthy_idle_or_repeated_observers_add_no_coverage tests/test_w3_improvement.py::test_r04c_target_specific_probes_verify tests/test_w3_improvement.py::test_r04c_a_fault_seen_again_counts_even_from_a_coarse_observer",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },

@@ -1,5 +1,5 @@
 {
-  "tested_commit": "2da3a5c6b4c6c3c5ce1a1887e27c34f8f30d132f",
+  "tested_commit": "680ab913526b024387d29b4ff425f8d442f14064",
   "benchmarks": {
     "B1": {
       "title": "W1 through normal typed selection",
@@ -133,7 +133,7 @@
     },
     "B10": {
       "title": "W3 actual isolated candidate workflow",
-      "mode": "real_adapter",
+      "mode": "runtime_integration",
       "matrix_rows": [
         "T56",
         "T57"
