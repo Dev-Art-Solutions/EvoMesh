@@ -1194,6 +1194,190 @@ async def test_r01h_an_acceptance_whose_goal_was_lost_is_recovered_once(tmp_path
     await asyncio.sleep(0.3)
 
     assert len(_children(inspector)) == 1, "recovered once, not twice"
+    assert _children(inspector)[0].id == child.id, "I5: the accepted identity, not a new one"
     await _run_child(environment, inspector, _children(inspector)[0])
     assert _children(inspector)[0].status is GoalStatus.DONE
+    await environment.stop()
+
+
+# -- R01-I (review 9e28d6a): recovery keeps the accepted work's identity ----------
+
+
+async def _lose_and_replay(
+    environment: Environment, coordinator: AgentDefinition, inspector: AgentDefinition, child: Goal
+) -> Goal:
+    """A stale save drops the child's goal; the delivery is then replayed."""
+    work_id = str(child.parameters["work_item_id"])
+    row = await environment.repository.load_procedure_operation(f"delegate:{work_id}")
+    assert row is not None
+    payload = json.loads(row[1])["arguments"]["work"]
+    inspector.mind.goals = [item for item in inspector.mind.goals if item.id != child.id]
+    await environment.repository.save_agent(inspector)
+    await environment.bus.send(
+        semantic_message(
+            Performative.DELEGATE,
+            sender_id=coordinator.id,
+            recipient_id=inspector.id,
+            task_id=work_id,
+            payload=payload,
+        )
+    )
+    assert await _until(lambda: bool(_children(inspector)))
+    await asyncio.sleep(0.2)
+    assert len(_children(inspector)) == 1
+    return _children(inspector)[0]
+
+
+async def _inspector_operations(
+    environment: Environment, inspector: AgentDefinition, step: str
+) -> list[dict[str, Any]]:
+    repository = environment.repository
+    found: list[dict[str, Any]] = []
+    for _, payload in await repository.list_procedure_executions():
+        execution = json.loads(payload)
+        if execution["agent_id"] != inspector.id:
+            continue
+        for _, record in await repository.list_procedure_operations(execution["execution_id"]):
+            operation = json.loads(record)
+            if operation["step_id"] == step:
+                found.append(operation)
+    return found
+
+
+async def _copy_pair(tmp_path: Path) -> tuple[Environment, AgentDefinition, AgentDefinition, Path]:
+    shared = tmp_path / "shared"
+    environment, coordinator, inspector, _, _ = await _pair(
+        tmp_path, coordinator_grants=((shared, True),), inspector_grants=((shared, True),)
+    )
+    inputs = {
+        "path": ref("goal", "parameters", "path"),
+        "destination": ref("goal", "parameters", "destination"),
+    }
+    await _promote(
+        environment, _parent("hand_off_copy", "verified_copy", inputs=inputs), _verified_copy()
+    )
+    return environment, coordinator, inspector, shared
+
+
+def _copy_goal(coordinator: AgentDefinition) -> Goal:
+    return coordinator.mind.add_goal(
+        "Copy doc.json",
+        kind="hand_off_copy",
+        parameters={"path": "doc.json", "destination": "out/copy.json"},
+    )
+
+
+async def test_r01i1_a_lost_goal_after_a_write_resumes_without_a_second_write(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, inspector, _ = await _copy_pair(tmp_path)
+    child = await _delegate_one(environment, coordinator, inspector, _copy_goal(coordinator))
+    await environment.cycle_agent(inspector.name)  # read
+    await environment.cycle_agent(inspector.name)  # write: applied, receipt durable
+    assert len(await _inspector_operations(environment, inspector, "write")) == 1
+
+    recovered = await _lose_and_replay(environment, coordinator, inspector, child)
+    await _run_child(environment, inspector, recovered)
+
+    assert recovered.id == child.id, "the accepted goal, not a new one"
+    assert recovered.status is GoalStatus.DONE, recovered.last_error
+    assert await _inspector_executions(environment, inspector) == 1, "the same execution"
+    assert len(await _inspector_operations(environment, inspector, "write")) == 1
+    await environment.stop()
+
+
+async def test_r01i2_recovery_keeps_the_charged_model_call(tmp_path: Path) -> None:
+    reply = json.dumps({"artifact_id": "doc.json", "keys": ["a", "b"], "digest": "d"})
+    environment, coordinator, inspector, provider, _ = await _pair(
+        tmp_path, provider=MockProvider([reply])
+    )
+    await _promote(
+        environment,
+        _cognitive_child(),
+        _parent("hand_off_think", "cognitive_inspection", model_calls=1),
+    )
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off_think", parameters={"path": "doc.json"}
+    )
+    calls_before = len(provider.calls)
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    await environment.cycle_agent(inspector.name)  # read
+    await environment.cycle_agent(inspector.name)  # think: one charged call
+    assert len(provider.calls) - calls_before == 1
+
+    recovered = await _lose_and_replay(environment, coordinator, inspector, child)
+    await _run_child(environment, inspector, recovered)
+
+    assert recovered.id == child.id and recovered.status is GoalStatus.DONE
+    execution = await environment.procedures.executor.for_occurrence(occurrence_id(recovered))
+    assert execution is not None and execution.budget.model_calls == 1, "not reset"
+    assert len(provider.calls) - calls_before == 1
+    await environment.stop()
+
+
+async def test_r01i3_a_finished_child_with_a_lost_settlement_replays_its_result(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+
+    async def lost(*arguments: Any, **keywords: Any) -> None:
+        return None
+
+    settle = environment._settle_typed_child  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(environment, "_settle_typed_child", lost)
+    await _run_child(environment, inspector, child)
+    assert child.status is GoalStatus.DONE
+    work_id = str(child.parameters["work_item_id"])
+    row = await environment.repository.load_procedure_operation(f"delegate:{work_id}")
+    assert row is not None and json.loads(row[1])["state"] == "waiting", "settlement lost"
+    monkeypatch.setattr(environment, "_settle_typed_child", settle)
+    reads = len(await _inspector_operations(environment, inspector, "read"))
+
+    recovered = await _lose_and_replay(environment, coordinator, inspector, child)
+    assert await _settled(environment, work_id), "the existing result was replayed"
+    await _run_parent(environment, coordinator, goal)
+
+    assert recovered.id == child.id and recovered.status is GoalStatus.DONE
+    assert goal.status is GoalStatus.DONE, goal.last_error
+    assert await _inspector_executions(environment, inspector) == 1, "no second run"
+    assert len(await _inspector_operations(environment, inspector, "read")) == reads
+    await environment.stop()
+
+
+async def test_r01i4_an_unresolved_effect_gets_no_fresh_execution(tmp_path: Path) -> None:
+    environment, coordinator, inspector, shared = await _copy_pair(tmp_path)
+    child = await _delegate_one(environment, coordinator, inspector, _copy_goal(coordinator))
+    await environment.cycle_agent(inspector.name)  # read
+    executor = environment.procedures.executor
+
+    class Crash(Exception):
+        pass
+
+    def crash(point: str, key: str) -> None:
+        if point == "after_claim":
+            raise Crash(key)
+
+    executor.fault = crash
+    try:
+        await environment.cycle_agent(inspector.name)  # the write is claimed, then the crash
+    except Crash:
+        pass
+    executor.fault = lambda point, key: None
+    # Something else now sits at the destination: nobody can prove the write.
+    (shared / "out").mkdir(exist_ok=True)
+    (shared / "out" / "copy.json").write_text('{"foreign": true}\n', encoding="utf-8")
+
+    recovered = await _lose_and_replay(environment, coordinator, inspector, child)
+    outcomes = [await environment.cycle_agent(inspector.name) for _ in range(3)]
+
+    assert recovered.id == child.id
+    assert await _inspector_executions(environment, inspector) == 1, "no fresh execution"
+    execution = await executor.for_occurrence(occurrence_id(recovered))
+    assert execution is not None and execution.status.value == "needs_reconciliation"
+    assert any("UNRESOLVED_EFFECT" in outcome.summary for outcome in outcomes)
     await environment.stop()

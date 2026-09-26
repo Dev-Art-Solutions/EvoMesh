@@ -4,13 +4,16 @@ import argparse
 import asyncio
 import logging
 import logging.handlers
+import os
 import re
+import threading
 from pathlib import Path
 
 from evomesh.config import load_settings
 from evomesh.console import ConsoleChannel
 from evomesh.control import CONTROL_HOST, CONTROL_PORT, ControlServer, wait_for_console_or_shutdown
-from evomesh.environment import Environment
+from evomesh.environment import Environment, shutdown_step
+from evomesh.processes import kill_running
 from evomesh.singleton import AlreadyRunningError, SingletonLock
 from evomesh.telegram import TelegramChannel
 
@@ -27,6 +30,10 @@ RESTART_EXIT_CODE = 86
 # it is not success either, so a launcher (or a human) can tell the two
 # apart from the exit code alone.
 ALREADY_RUNNING_EXIT_CODE = 2
+# Once shutdown starts, the process is gone within this long whatever hangs:
+# a restart that never exits is a mesh that never comes back. Durable state
+# is SQLite, committed per transition; nothing in flight is resumed anyway.
+SHUTDOWN_DEADLINE_SECONDS = 120.0
 
 # --log-file grew unbounded before this: 24.8MB and 166542 lines on the
 # day this was added, months into one continuous run, with nothing ever
@@ -70,7 +77,8 @@ async def _restart_when_asked(environment: Environment, shutdown: asyncio.Event)
     await environment.restart_requested.wait()
     reason = environment.restart_reason or "a new generation landed"
     logger.info("Restarting: %s", reason)
-    await environment.announce(f"EvoMesh is restarting: {reason}.")
+    notice = environment.announce(f"EvoMesh is restarting: {reason}.")
+    await shutdown_step("announcing the restart", notice)
     await asyncio.sleep(max(0.0, environment.settings.evolution.restart_delay_seconds))
     shutdown.set()
 
@@ -136,22 +144,48 @@ async def application(
             else:
                 await wait_for_console_or_shutdown(ConsoleChannel(environment), shutdown)
         finally:
+            _start_shutdown_watchdog(environment)
             restart_watch.cancel()
             if telegram_task is not None:
                 telegram.stop()
                 telegram_task.cancel()
             for task in (restart_watch, telegram_task):
                 if task is not None:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-            await control.stop()
+                    await shutdown_step(f"stopping {task.get_name()}", _settled(task))
+            await shutdown_step("closing the control port", control.stop())
             await environment.stop()
         return RESTART_EXIT_CODE if environment.restart_requested.is_set() else 0
     finally:
         if lock is not None:
             lock.release()
+
+
+async def _settled(task: asyncio.Task[None]) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def _start_shutdown_watchdog(environment: Environment) -> None:
+    """A thread, not a task: it has to fire even if the event loop itself is
+    what hangs. Past the deadline it kills the children still running and
+    exits with the code the launcher expects -- 86 for a restart."""
+    code = RESTART_EXIT_CODE if environment.restart_requested.is_set() else 0
+
+    def expire() -> None:
+        logger.error(
+            "shutdown did not finish in %.0fs; exiting with %s anyway",
+            SHUTDOWN_DEADLINE_SECONDS,
+            code,
+        )
+        kill_running()
+        logging.shutdown()
+        os._exit(code)
+
+    timer = threading.Timer(SHUTDOWN_DEADLINE_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
 
 
 def main() -> None:

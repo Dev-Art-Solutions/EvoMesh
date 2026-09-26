@@ -82,6 +82,7 @@ async def run_command(
             # walks the tree instead (see _kill_tree).
             start_new_session=True,
         ) as process:
+            _RUNNING.add(process)
             try:
                 output, _ = process.communicate(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -93,6 +94,8 @@ async def run_command(
                 except subprocess.TimeoutExpired:
                     output = b""
                 return 124, output or b"", True
+            finally:
+                _RUNNING.discard(process)
             return process.returncode, output or b"", False
 
     exit_code, output, timed_out = await asyncio.to_thread(call)
@@ -101,6 +104,23 @@ async def run_command(
         output=output.decode(errors="replace"),
         timed_out=timed_out,
     )
+
+
+# Every child run_command is waiting on right now. Cancelling the awaiting
+# task never reaches the worker thread that blocks on it, and asyncio.run
+# waits up to five minutes for that thread when the process exits -- so a
+# restart during a validation run sat until the whole suite finished.
+_RUNNING: set[subprocess.Popen[bytes]] = set()
+
+
+def kill_running() -> int:
+    """Kill every child run_command is still waiting on, with its tree; how
+    many. For shutdown: nothing here is resumed, and a thread blocked on a
+    child that no longer exists returns at once."""
+    running = list(_RUNNING)
+    for process in running:
+        _kill_tree(process)
+    return len(running)
 
 
 def _kill_tree(process: subprocess.Popen[bytes]) -> None:

@@ -79,6 +79,7 @@ from evomesh.models import (
 from evomesh.permissions import FilesystemPolicy
 from evomesh.procedure_host import ProcedureLearning, build_procedure_service
 from evomesh.procedure_runtime import occurrence_id
+from evomesh.processes import kill_running
 from evomesh.skills import MissingSkillError, PendingSkillWrite, SkillDefinition, SkillRegistry
 from evomesh.storage import SQLiteRepository
 from evomesh.tools import ToolRegistry as CustomToolRegistry
@@ -94,6 +95,20 @@ PRIVATE_BELIEF_PREFIXES = ("inbox.",)
 WORLD_BLACKBOARD_LINES = 6
 # An open goal untouched this long is reported as stale in status.
 STALE_GOAL_SECONDS = 3600.0
+# How long one shutdown step may take before it is left behind.
+SHUTDOWN_STEP_SECONDS = 20.0
+
+
+async def shutdown_step(step: str, work: Awaitable[Any], seconds: float | None = None) -> None:
+    """One shutdown step: logged, and abandoned rather than waited on forever."""
+    seconds = SHUTDOWN_STEP_SECONDS if seconds is None else seconds
+    logger.info("shutdown: %s", step)
+    try:
+        await asyncio.wait_for(work, seconds)
+    except TimeoutError:
+        logger.warning("shutdown: %s took longer than %.0fs; moving on", step, seconds)
+    except Exception:  # noqa: BLE001 - one broken step must not stop the rest
+        logger.exception("shutdown: %s failed", step)
 
 
 class HealthState(StrEnum):
@@ -938,24 +953,34 @@ class Environment:
         )
 
     async def stop(self) -> None:
+        """Every step logged and bounded: found live 2026-09-26, a /restart sat
+        for fourteen minutes with nothing in the log after "Restarting" and
+        every agent still working. A step that hangs now names itself and
+        is left behind, and the process still gets to exit and come back."""
         # Shutting the mesh down leaves every agent's desired status untouched,
         # so the next boot starts exactly what was running before.
-        await self._stop_harness_workers()
+        killed = kill_running()
+        if killed:
+            logger.info("shutdown: killed %s running child process(es)", killed)
+        await shutdown_step("stopping the harness workers", self._stop_harness_workers())
         # After the workers, not before: no in-flight harness job should
         # still be mid call_tool() on an MCP connection this is about to
         # close (see mcp_client.py's own docstring on why this matters --
         # the same "actually terminate it" lesson as processes.py's timeout
         # fix, this time for MCP servers' own child processes/connections).
-        await self.mcp.shutdown()
-        await self.evolver.cancel_validation()
+        await shutdown_step("closing MCP connections", self.mcp.shutdown())
+        await shutdown_step("cancelling validation", self.evolver.cancel_validation())
         for runtime in list(self.runtimes.values()):
-            await runtime.stop(persist_status=False)
+            await shutdown_step(
+                f"stopping {runtime.definition.name}", runtime.stop(persist_status=False)
+            )
         self.runtimes.clear()
         for agent_id in list(self._agent_telegram_tasks):
-            await self.stop_agent_telegram(agent_id)
+            await shutdown_step(f"stopping {agent_id}'s bot", self.stop_agent_telegram(agent_id))
         for agent_id in list(self._agent_watchers):
-            await self.stop_agent_watcher(agent_id)
+            await shutdown_step(f"stopping {agent_id}'s watcher", self.stop_agent_watcher(agent_id))
         self.health_state = HealthState.STOPPED
+        logger.info("shutdown: the environment stopped")
 
     # -- agents ---------------------------------------------------------
 

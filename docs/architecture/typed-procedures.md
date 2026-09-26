@@ -152,7 +152,16 @@ goal joins the live mind only once committed. Cancelling admission does not
 cancel the transaction; the goal is installed if and only if the transaction
 committed it. If the ledger says accepted but no goal holds the work while the
 parent's operation still waits on this agent, the acceptance was lost and is
-recovered, once.
+recovered, once, under the identity it was accepted with. The ledger names the
+goal and the executor finds that goal's execution:
+
+- never started: the same goal starts;
+- open: it resumes from its cursor, with its receipts and spent budget, and an
+  unresolved effect stays waiting for an operator;
+- completed or failed: its ending is replayed to the parent, not the work.
+
+A waiting parent alone never authorizes a new run. A ledger entry that names no
+goal is refused for a human to reconcile.
 
 Files are resolved once, in the requester's scope. The router finds every
 resource the work names: the parameters an admitted procedure binds into an

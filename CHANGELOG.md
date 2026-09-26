@@ -6,6 +6,19 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **Recovering a lost acceptance ran the work again.** When a stale save had
+  dropped a child's goal and the delivery was replayed, the recipient built a
+  new goal with a new identity. That goal's lookup found no execution, so the
+  work started over: a new budget, and a second write where the first had
+  already landed. Recovery now rebuilds the accepted goal by its recorded id
+  and occurrence, and the existing execution resumes. One that already ended
+  replays its result to the parent instead.
+- **A restart could hang for as long as anything in shutdown did.** Found
+  live: a `/restart` sat for fourteen minutes, with every agent still working
+  and nothing logged after "Restarting". Each shutdown step is now logged and
+  bounded. Children still running are killed, so an interrupted validation
+  run no longer holds the exit for up to five minutes. A watchdog exits with
+  the launcher's code if shutdown still has not finished after two minutes.
 - **A cycle could run delegated work that was never accepted.** The recipient
   added the goal to its live mind before the acceptance transaction decided.
   A cycle scheduled in between could start on it: a replayed duplicate, or

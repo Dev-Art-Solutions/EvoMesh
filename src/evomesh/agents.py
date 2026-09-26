@@ -472,23 +472,102 @@ class AgentRuntime:
             except Exception as exc:  # noqa: BLE001 - reported to the requester instead
                 logger.warning("could not record accepting work %s: %s", item.id, exc)
                 return Performative.REJECT, f"could not record the acceptance: {exc}"[:300]
-            if not first and not await self._admission_lost(item):
-                return Performative.ACCEPT, "already accepted"
+            if not first:
+                recovered = await self._recover_admission(item, goal)
+                if recovered is None:
+                    return Performative.ACCEPT, "already accepted"
+                if isinstance(recovered, str):
+                    logger.warning("accepted work %s cannot be recovered: %s", item.id, recovered)
+                    return Performative.REJECT, recovered
+                goal = recovered
             mind.adopt_goal(goal)
             # Any save of this agent that landed while the transaction waited
             # was written without the goal; this one puts it back.
             await self.repository.save_agent(self.definition)
-        await self.events.publish(
-            Event(
+        await self._announce_admitted(goal, item)
+        return Performative.ACCEPT, "accepted"
+
+    async def _announce_admitted(self, goal: Goal, item: WorkItem) -> None:
+        """A goal that just joined the mind: new work to run -- or, for a
+        recovered one whose execution had already ended, that ending, so the
+        parent is settled from the existing result instead of a second run."""
+        if goal.status is GoalStatus.DONE:
+            event = Event(
+                EventType.GOAL_COMPLETED,
+                source="delegation",
+                agent_id=self.definition.id,
+                goal_id=goal.id,
+                payload={"summary": "recovered: the child had already completed"},
+            )
+        elif goal.status is GoalStatus.FAILED:
+            event = Event(
+                EventType.TASK_FAILED,
+                source="delegation",
+                agent_id=self.definition.id,
+                goal_id=goal.id,
+                payload={"reason": goal.last_error or "the child had already failed"},
+            )
+        else:
+            event = Event(
                 EventType.GOAL_CREATED,
                 source="delegation",
                 agent_id=self.definition.id,
                 goal_id=goal.id,
                 payload={"work_item_id": item.id, "kind": goal.kind},
             )
-        )
+        await self.events.publish(event)
         self.wake()
-        return Performative.ACCEPT, "accepted"
+
+    async def _recover_admission(self, item: WorkItem, staged: Goal) -> Goal | str | None:
+        """The ledger says accepted, but no goal in this mind holds the work.
+
+        ``None``: nothing to recover -- the parent already has its result, or
+        the work is not typed delegation to this agent (a duplicate, refused).
+        A goal: the one the acceptance recorded, rebuilt with its original id
+        and occurrence, so the typed execution it already has is resumed --
+        cursor, receipts and spent budget included -- or, if that execution
+        ended, its ending is replayed rather than the work. A string: the
+        records cannot say what is safe, so a human reconciles it; a waiting
+        parent alone never authorizes a new run."""
+        row = await self.repository.load_procedure_operation(f"delegate:{item.id}")
+        if row is None:
+            return None
+        record = json.loads(row[1])
+        child = record.get("child") or {}
+        if record.get("state") != "waiting" or child.get("assignee") != self.definition.id:
+            return None
+        marker = await self.repository.load_state(
+            f"delegation.accepted:{self.definition.id}:{item.id}"
+        )
+        original = str(marker.get("goal_id") or "") if isinstance(marker, dict) else ""
+        if not original:
+            return (
+                f"work {item.id} was accepted but its goal is gone and the acceptance "
+                "does not say which goal it was; it needs a human to reconcile"
+            )
+        executions = [
+            json.loads(payload)
+            for _, payload in await self.repository.list_procedure_executions()
+        ]
+        mine = [
+            execution
+            for execution in executions
+            if execution.get("agent_id") == self.definition.id
+            and execution.get("goal_id") == original
+        ]
+        goal = staged.model_copy(update={"id": original})
+        if not mine:
+            return goal  # accepted, never started: the same goal, from the start
+        latest = mine[-1]
+        occurrence = str(latest.get("occurrence_id") or "")
+        goal.occurrence = int(occurrence.rsplit("#", 1)[1]) if "#" in occurrence else 0
+        status = str(latest.get("status") or "")
+        if status == "completed":
+            goal.status = GoalStatus.DONE
+        elif status in {"failed", "cancelled"}:
+            goal.status = GoalStatus.FAILED
+            goal.last_error = f"{status}: {latest.get('status_reason') or ''}".strip(": ")
+        return goal
 
     def _install_committed(self, commit: asyncio.Future[bool], goal: Goal) -> None:
         """Admission was cancelled while its transaction ran on: install the
@@ -496,18 +575,6 @@ class AgentRuntime:
         if commit.cancelled() or commit.exception() is not None or not commit.result():
             return
         self.definition.mind.adopt_goal(goal)
-
-    async def _admission_lost(self, item: WorkItem) -> bool:
-        """The ledger says accepted, but no goal holds the work: was the
-        acceptance committed and then lost (an overwrite, a cancelled install)
-        before the child ever finished? Only typed delegation can say so --
-        its parent's operation still waits on this agent."""
-        row = await self.repository.load_procedure_operation(f"delegate:{item.id}")
-        if row is None:
-            return False
-        record = json.loads(row[1])
-        child = record.get("child") or {}
-        return record.get("state") == "waiting" and child.get("assignee") == self.definition.id
 
     def _staged_goal(self, item: WorkItem, requester_id: str) -> Goal:
         """The goal a WorkItem becomes, built on a scratch copy of the mind so
