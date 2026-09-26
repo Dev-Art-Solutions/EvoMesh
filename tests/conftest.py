@@ -21,6 +21,17 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return run_dir
 
 
+@pytest.fixture(autouse=True)
+def no_real_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never launch the real Scrapling browser from a test. Found live
+    2026-09-27: a test that spawns the real news-watcher template started its
+    watcher, whose config fetches wsj.com through Scrapling's Chrome; the
+    template's temp copy sits inside the checkout, so the walk up found the
+    real install -- and the mesh's baseline suite, every few minutes, kept
+    opening Chrome on the owner's desktop. Watchers inherit the environment."""
+    monkeypatch.setenv("EVOMESH_NO_BROWSER", "1")
+
+
 @pytest.fixture(scope="session")
 def project_root() -> Path:
     from evomesh.codebase import project_root as _project_root

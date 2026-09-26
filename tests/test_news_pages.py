@@ -110,9 +110,12 @@ def test_the_whole_page_is_parsed_once_each_in_order() -> None:
     assert items[0]["link"] == "https://www.wsj.com/finance/stocks/stocks-rise-de1cba89"
 
 
-def test_scrapling_s_own_python_fetches_the_page_off_screen(tmp_path: Path) -> None:
+def test_scrapling_s_own_python_fetches_the_page_off_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Scrapling installed as a venv: its Python runs page_fetch.py, a
     headed Chrome placed off screen -- no window ever pops up."""
+    monkeypatch.delenv("EVOMESH_NO_BROWSER")
     (tmp_path / "scrapling.exe").write_bytes(b"")
     (tmp_path / "python.exe").write_bytes(b"")
     output = tmp_path / "page.html"
@@ -122,6 +125,14 @@ def test_scrapling_s_own_python_fetches_the_page_off_screen(tmp_path: Path) -> N
     assert command[0] == str(tmp_path / "python.exe")
     assert Path(command[1]).name == "page_fetch.py" and Path(command[1]).is_file()
     assert command[2:] == [PAGE, str(output)]
+
+
+def test_the_test_suite_never_launches_the_real_browser(tmp_path: Path) -> None:
+    """conftest sets EVOMESH_NO_BROWSER: the real install is refused."""
+    (tmp_path / "scrapling.exe").write_bytes(b"")
+
+    with pytest.raises(OSError, match="EVOMESH_NO_BROWSER"):
+        news_fetch._page_command([str(tmp_path / "scrapling.exe")], PAGE, tmp_path / "o", {})
 
 
 def test_page_fetch_keeps_the_browser_headed_but_off_screen() -> None:

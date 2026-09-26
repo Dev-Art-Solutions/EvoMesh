@@ -222,6 +222,10 @@ def _page_command(scraper: list[str], url: str, output: Path, config: dict) -> l
     (headed but off screen), when Scrapling is an installed executable with
     its venv's Python beside it; its CLI otherwise, or when config.json sets
     "page_fetch_args" explicitly."""
+    if len(scraper) == 1 and os.environ.get("EVOMESH_NO_BROWSER"):
+        # The real install, under the test suite (tests/conftest.py): no
+        # Chrome on the desktop of whoever runs it.
+        raise OSError("real browser fetches are off (EVOMESH_NO_BROWSER)")
     if len(scraper) == 1 and not config.get("page_fetch_args"):
         executable = Path(scraper[0])
         for name in ("python.exe", "python"):
