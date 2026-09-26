@@ -141,6 +141,10 @@ LEGAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
 }
 
 
+# A human held this goal (/goal pause): nothing but /goal resume reopens it.
+PAUSED = "paused"
+
+
 class GoalManager:
     """Own lifecycle policy for the goals in one ``MindState``.
 
@@ -284,10 +288,31 @@ class GoalManager:
             if goal.id in before and before[goal.id] is not goal.status
         ]
 
+    def pause(self, goal: Goal, *, at: datetime | None = None) -> bool:
+        """Hold a goal until a human resumes it: kept, with its schedule,
+        notify and pattern, but never runnable -- no schedule, dependency or
+        retry reopens it. Unlike drop, nothing is lost."""
+        if goal.status in TERMINAL_GOAL_STATUSES:
+            return False
+        return self.transition(
+            goal, GoalStatus.BLOCKED, reason=PAUSED, at=at, human_override=True
+        )
+
+    def resume(self, goal: Goal, *, at: datetime | None = None) -> bool:
+        """Put a paused goal back on its schedule."""
+        if goal.status is not GoalStatus.BLOCKED or goal.blocked_reason != PAUSED:
+            return False
+        goal.blocked_reason = None
+        self.transition(goal, GoalStatus.RUNNABLE, at=at, human_override=True)
+        self.refresh(at=at)
+        return True
+
     def _refresh(self, at: datetime) -> None:
         for goal in self.mind.goals:
             if goal.status in TERMINAL_GOAL_STATUSES:
                 continue
+            if goal.status is GoalStatus.BLOCKED and goal.blocked_reason == PAUSED:
+                continue  # only a human's resume reopens it
             if goal.deadline is not None and at >= goal.deadline and not goal.recurring:
                 self.transition(goal, GoalStatus.FAILED, at=at)
                 goal.blocked_reason = "deadline"

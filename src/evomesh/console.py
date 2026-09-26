@@ -27,7 +27,7 @@ from evomesh.contracts import (
 from evomesh.coordination import WorkStatus
 from evomesh.environment import Environment
 from evomesh.git import GitError, GitRepository
-from evomesh.goal_manager import GoalManager
+from evomesh.goal_manager import PAUSED, GoalManager
 from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
@@ -75,6 +75,7 @@ HELP = """Commands:
   /intentions <agent>           What it committed to, and the plan it is running
   /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]
   /goal done|drop <agent> <goal-id>
+  /goal pause|resume <agent> <goal-id>  Hold a goal (kept, not run) or put it back on schedule
   /goal notify <agent> <goal-id> [on|off]  Announce this goal's progress and finish
   /goal pattern <agent> <goal-id> [<regex>|clear]  Only announce report lines
                                 matching this regex (a deterministic backstop for a
@@ -775,7 +776,8 @@ class ConsoleChannel:
         for goal in definition.mind.goals:
             flag = " (recurring)" if goal.recurring else ""
             rows.append(
-                f"{goal.id} [{goal.status}] p{goal.priority}{flag} {goal.description}"
+                f"{goal.id} [{'paused' if goal.blocked_reason == PAUSED else goal.status}]"
+                f" p{goal.priority}{flag} {goal.description}"
                 + (f"\n    last: {goal.notes[-1]}" if goal.notes else "")
             )
         return "\n".join(rows)
@@ -784,7 +786,8 @@ class ConsoleChannel:
         if len(parts) < 4:
             return (
                 'Usage: /goal add <agent> "<text>" [priority] [interval_seconds|"cron expr"]'
-                "  |  /goal done|drop <agent> <id>  |  /goal notify <agent> <id> [on|off]"
+                "  |  /goal done|drop|pause|resume <agent> <id>"
+                "  |  /goal notify <agent> <id> [on|off]"
                 "  |  /goal pattern <agent> <id> [<regex>|clear]"
             )
         action, agent_name = parts[1].lower(), parts[2]
@@ -827,6 +830,24 @@ class ConsoleChannel:
                     f" Triggers on schedule '{cron_expression}', next at {when} -- "
                     f"independent of the agent's own cycle_seconds."
                 )
+        elif action in {"pause", "resume"}:
+            goal = definition.mind.goal(parts[3])
+            manager = GoalManager(definition.mind)
+            if action == "pause":
+                changed = manager.pause(goal)
+                message = (
+                    f"Goal {goal.id} is paused: kept with its schedule, but it will not "
+                    f"run until /goal resume {definition.name} {goal.id}."
+                    if changed
+                    else f"Goal {goal.id} is {goal.status} and cannot be paused."
+                )
+            else:
+                changed = manager.resume(goal)
+                message = (
+                    f"Goal {goal.id} is back on its schedule ({goal.status})."
+                    if changed
+                    else f"Goal {goal.id} is not paused."
+                )
         elif action in {"done", "drop"}:
             goal = definition.mind.goal(parts[3])
             manager = GoalManager(definition.mind)
@@ -860,7 +881,7 @@ class ConsoleChannel:
                 goal.report_pattern = pattern
                 message = f"Goal {goal.id} will only announce report lines matching {pattern!r}."
         else:
-            return "Goal action must be add, done, drop, notify, or pattern."
+            return "Goal action must be add, done, drop, pause, resume, notify, or pattern."
         definition.touch()
         await self.environment.repository.save_agent(definition)
         return message
