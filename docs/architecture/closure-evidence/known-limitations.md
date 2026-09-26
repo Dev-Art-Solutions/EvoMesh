@@ -84,3 +84,5 @@ architecture work automatically.
     separate-executor requirement. The acceptance manifest records it as a
     scope decision (`SCOPE_DECISIONS` in `benchmarks/closure/acceptance.py`),
     and until an operator accepts it by name it is a blocking finding.
+    Accepted by `operator:iliya` on 2026-09-26 as a deliberate scope
+    reduction; the requirement stays partial, not met.

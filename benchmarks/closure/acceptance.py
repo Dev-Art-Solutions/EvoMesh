@@ -299,8 +299,11 @@ SCOPE_DECISIONS: dict[str, dict[str, str]] = {
         "under its own model and tool identity, coordinated by another (plan 18.2, AC-19)",
         "implemented": "partial: code work is routed only to the agent that owns the "
         "candidate pipeline (known limitation 18); tests/test_w3_live.py proves that path",
-        "decision": "pending",
-        "decided_by": "",
+        "decision": "accepted",
+        "decided_by": "operator:iliya",
+        "decided_at": "2026-09-26",
+        "note": "accepted as a deliberate release-scope reduction; the requirement "
+        "stays recorded as partial, not as met",
     },
 }
 
