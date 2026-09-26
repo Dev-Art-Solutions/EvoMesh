@@ -2,7 +2,7 @@
   "plan": "EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2",
   "base_commit": "815cd6c",
   "implementation_parent": "6bac351",
-  "tested_commit": "680ab913526b024387d29b4ff425f8d442f14064",
+  "tested_commit": "0736eeb81ee5d69a77333a6d51f6a70b00bbc782",
   "working_tree_clean": true,
   "status": "ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED",
   "core_gates": {
@@ -329,7 +329,12 @@
         "tests/test_delegation_contract.py::test_r01a_a_child_allocated_no_model_call_makes_none",
         "tests/test_delegation_contract.py::test_r01b_an_expired_deadline_starts_no_operation",
         "tests/test_delegation_contract.py::test_r01b_a_running_child_ends_no_later_than_its_parent",
-        "tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation"
+        "tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation",
+        "tests/test_delegation_contract.py::test_r01f1_a_positive_allocation_without_a_typed_child_is_refused",
+        "tests/test_delegation_contract.py::test_r01f2_an_incompatible_procedure_does_not_erase_the_contract",
+        "tests/test_delegation_contract.py::test_r01f2_disabling_typed_execution_does_not_erase_the_contract",
+        "tests/test_delegation_contract.py::test_r01f3_an_expired_deadline_starts_no_fallback_either",
+        "tests/test_delegation_contract.py::test_r01f5_ordinary_and_unbounded_legacy_work_still_falls_through"
       ],
       "status": "passed"
     },
@@ -454,6 +459,9 @@
         "tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated",
         "tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice",
         "tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused",
+        "tests/test_delegation_contract.py::test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery",
+        "tests/test_delegation_contract.py::test_r01g2_g3_repeated_admission_reuses_the_one_goal",
+        "tests/test_delegation_contract.py::test_r01g5_admission_keeps_unrelated_agent_state",
         "tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result"
       ],
       "status": "passed"
@@ -743,7 +751,7 @@
       "gate": "ruff",
       "command": "ruff.exe check .",
       "exit_code": 0,
-      "seconds": 0.1,
+      "seconds": 0.0,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-ruff.txt",
       "log_sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
       "tail": [
@@ -754,7 +762,7 @@
       "gate": "pyright",
       "command": "pyright.exe",
       "exit_code": 0,
-      "seconds": 13.0,
+      "seconds": 9.3,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pyright.txt",
       "log_sha256": "f29bac6db1c7a04afdc923b14c6962b244af5910389d524c009fdf91c512ec86",
       "tail": [
@@ -766,11 +774,11 @@
       "gate": "pytest",
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "exit_code": 0,
-      "seconds": 217.0,
+      "seconds": 201.3,
       "log": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "log_sha256": "51aa7bdeb19dc8f36a88a15b96f8f7b7ff6423563309587d3afe9b4fa2c2c35f",
+      "log_sha256": "4035c5f22cef0737d061527f4d261e51ed7069d9d8da13753c4420f1a56bc5a9",
       "tail": [
-        "1073 passed in 215.77s (0:03:35)"
+        "1082 passed in 200.40s (0:03:20)"
       ]
     }
   ],
@@ -800,6 +808,16 @@
     "ci": "ubuntu-latest (GitHub Actions: ruff, pyright, pytest) and windows-latest (desktop build and self-tests)"
   },
   "blocking_findings": [],
+  "scope_decisions": {
+    "separate-code-executor": {
+      "requirement": "improvement work executed by a separately selected coding agent under its own model and tool identity, coordinated by another (plan 18.2, AC-19)",
+      "implemented": "partial: code work is routed only to the agent that owns the candidate pipeline (known limitation 18); tests/test_w3_live.py proves that path",
+      "decision": "accepted",
+      "decided_by": "operator:iliya",
+      "decided_at": "2026-09-26",
+      "note": "accepted as a deliberate release-scope reduction; the requirement stays recorded as partial, not as met"
+    }
+  },
   "deferred_nonblocking_items": "see known-limitations.md",
   "evidence_index": [
     {
@@ -824,7 +842,7 @@
       "command": "python.exe -m pytest -q -p no:cacheprovider --junitxml=D:\\Projects\\Dev-art solutions\\EvoMesh\\docs\\architecture\\closure-evidence\\quality-gate-logs\\final-pytest.xml",
       "result": "passed",
       "path": "docs/architecture/closure-evidence/quality-gate-logs/final-pytest.txt",
-      "sha256": "51aa7bdeb19dc8f36a88a15b96f8f7b7ff6423563309587d3afe9b4fa2c2c35f"
+      "sha256": "4035c5f22cef0737d061527f4d261e51ed7069d9d8da13753c4420f1a56bc5a9"
     },
     {
       "id": "T01",
@@ -1004,7 +1022,7 @@
     {
       "id": "T26",
       "mode": "test",
-      "command": "pytest tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope tests/test_delegation_contract.py::test_r01a_a_child_allocated_no_model_call_makes_none tests/test_delegation_contract.py::test_r01b_an_expired_deadline_starts_no_operation tests/test_delegation_contract.py::test_r01b_a_running_child_ends_no_later_than_its_parent tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation",
+      "command": "pytest tests/test_procedure_matrix.py::test_t26_children_cannot_spend_past_the_root_envelope tests/test_delegation_contract.py::test_r01a_a_child_allocated_no_model_call_makes_none tests/test_delegation_contract.py::test_r01b_an_expired_deadline_starts_no_operation tests/test_delegation_contract.py::test_r01b_a_running_child_ends_no_later_than_its_parent tests/test_delegation_contract.py::test_r01c_a_replacement_does_not_reset_the_allocation tests/test_delegation_contract.py::test_r01f1_a_positive_allocation_without_a_typed_child_is_refused tests/test_delegation_contract.py::test_r01f2_an_incompatible_procedure_does_not_erase_the_contract tests/test_delegation_contract.py::test_r01f2_disabling_typed_execution_does_not_erase_the_contract tests/test_delegation_contract.py::test_r01f3_an_expired_deadline_starts_no_fallback_either tests/test_delegation_contract.py::test_r01f5_ordinary_and_unbounded_legacy_work_still_falls_through",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },
@@ -1130,7 +1148,7 @@
     {
       "id": "T44",
       "mode": "test",
-      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
+      "command": "pytest tests/test_procedure_control.py::test_a_lost_delivery_is_redelivered_not_duplicated tests/test_delegation_contract.py::test_r01d_a_replayed_delegate_runs_nothing_twice tests/test_delegation_contract.py::test_r01d_a_replay_after_the_goal_was_pruned_is_still_refused tests/test_delegation_contract.py::test_r01g1_a_failed_admission_leaves_nothing_that_blocks_recovery tests/test_delegation_contract.py::test_r01g2_g3_repeated_admission_reuses_the_one_goal tests/test_delegation_contract.py::test_r01g5_admission_keeps_unrelated_agent_state tests/test_procedure_control.py::test_one_child_is_created_and_the_parent_resumes_on_its_result",
       "result": "passed",
       "path": "quality-gate-logs/final-pytest.xml"
     },

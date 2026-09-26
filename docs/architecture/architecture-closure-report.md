@@ -1,7 +1,7 @@
 # Architecture closure report
 
 **Status: `ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED`**, re-established at
-`680ab91` after a correction pass (below). The core architecture is frozen;
+`0736eeb` after two correction passes (below). The core architecture is frozen;
 see "Freeze".
 
 | | |
@@ -9,9 +9,9 @@ see "Freeze".
 | Plan | `plans/EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2.md` |
 | Baseline measured at | `815cd6c` (generation 1652): 907 passed, 8 skipped, ruff clean, pyright 0 |
 | Implementation parent | `6bac351` (generation 1653, landed while the mesh still ran) |
-| Tested commit | `680ab91` (first acceptance: `2da3a5c`, withdrawn by the review of `9739188`) |
+| Tested commit | `0736eeb` (earlier: `2da3a5c`, withdrawn by the `9739188` review; `680ab91`, withdrawn by the `899778e` review) |
 | Manifest | `closure-evidence/acceptance.json` (generated at the tested commit by `python -m benchmarks.closure.acceptance`) |
-| CI | green at `147f571` (the corrections): ruff, pyright 0 errors including tests, pytest 1064 passed and 8 skipped on ubuntu-latest; desktop build and self-tests on windows-latest. Check the later commits' runs before relying on them |
+| CI | green at `0736eeb`, and at `147f571` before it: ruff, pyright 0 errors including tests, pytest 1064 passed and 8 skipped on ubuntu-latest; desktop build and self-tests on windows-latest. Check the later commits' runs before relying on them |
 
 ## Correction pass after the `9739188` review
 
@@ -44,6 +44,18 @@ The local-model W2 evidence (`local-model-w2.json`) is carried over from
 `2da3a5c` and was not re-run. The corrections do not touch W2's clean path.
 They touch delegated budgets and deadlines, cancellation, and verification.
 
+## Second correction pass after the `899778e` review
+
+`plans/EVOMESH_CLOSURE_REVIEW_899778e.md` found two gaps in delegated work and
+one overstated claim. As before, each fix was confirmed with regressions that
+fail on the old code.
+
+| Finding | What was wrong | Now | Tests |
+|---|---|---|---|
+| R01-F | Only a zero-call allocation was stopped from falling through. With a positive allocation, a child with no matching typed procedure (or with typed execution disabled) ran on legacy planning and model-backed steps. None of the WorkItem's limits applied there. | Bounded work (an allocation, a deadline or resources) runs only typed. Otherwise the goal fails `unsupported_execution`. Unbounded legacy delegation is unchanged. | `test_delegation_contract.py` R01-F1 to F5 |
+| R01-G | The duplicate ledger entry was committed before the goal. After a crash in between, the replay was refused and the work was lost. | `accept_work` writes the entry and the agent holding the goal in one transaction. A failure leaves neither and answers `REJECT`. | R01-G1 (a real SQLite fault and a restart from the database), G2/G3, G5 |
+| E01 | The live W3 trace proves the owner-only executor, not a separately selected coding agent. | The manifest records this as a scope decision (`SCOPE_DECISIONS`). Unaccepted, it is blocking. `operator:iliya` accepted it on 2026-09-26 as a deliberate reduction, and the requirement stays **partial**. | `test_acceptance_manifest.py` |
+
 The work went directly onto `main`, on the owner's instruction, with the live
 mesh stopped so the Evolver could not commit meanwhile. No pre-existing user
 changes were in the tree. Eleven commits, `49562af` to `2da3a5c`, changed 53
@@ -73,7 +85,7 @@ evidence.
 |---|---|
 | `ruff check .` | All checks passed |
 | `pyright` | 0 errors other than this workspace venv's unresolved `pytest` import; CI runs pyright without that gap and is green |
-| `python -m pytest -q` | 1073 passed (Windows 11, this workspace; the Linux CI count differs by the platform-skipped tests) |
+| `python -m pytest -q` | 1082 passed (Windows 11, this workspace; the Linux CI count differs by the platform-skipped tests) |
 
 Logs: `closure-evidence/quality-gate-logs/final-*.txt`, with JUnit XML beside
 them.
