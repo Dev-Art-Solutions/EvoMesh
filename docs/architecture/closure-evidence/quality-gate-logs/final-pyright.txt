@@ -64,6 +64,8 @@ d:\Projects\Dev-art solutions\EvoMesh\tests\test_reachability.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_reachability.py:18:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_rules_wiring.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_rules_wiring.py:7:8 - error: Import "pytest" could not be resolved (reportMissingImports)
+d:\Projects\Dev-art solutions\EvoMesh\tests\test_shutdown.py
+  d:\Projects\Dev-art solutions\EvoMesh\tests\test_shutdown.py:13:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_singleton.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_singleton.py:6:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_skills.py
@@ -78,7 +80,7 @@ d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_live.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_w3_live.py:20:8 - error: Import "pytest" could not be resolved (reportMissingImports)
 d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py
   d:\Projects\Dev-art solutions\EvoMesh\tests\test_watchers.py:11:8 - error: Import "pytest" could not be resolved (reportMissingImports)
-40 errors, 0 warnings, 0 informations
+41 errors, 0 warnings, 0 informations
 WARNING: there is a new pyright version available (v1.1.411 -> v1.1.414).
 Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
 

@@ -1,7 +1,7 @@
 # Architecture closure report
 
 **Status: `ARCHITECTURE_ACCEPTED_AND_LOCALLY_VALIDATED`**, re-established at
-`cc74aef` after three correction passes (below). The core architecture is frozen;
+`add6da7` after four correction passes (below). The core architecture is frozen;
 see "Freeze".
 
 | | |
@@ -9,7 +9,7 @@ see "Freeze".
 | Plan | `plans/EVOMESH_ARCHITECTURE_CLOSURE_PLAN_V2.md` |
 | Baseline measured at | `815cd6c` (generation 1652): 907 passed, 8 skipped, ruff clean, pyright 0 |
 | Implementation parent | `6bac351` (generation 1653, landed while the mesh still ran) |
-| Tested commit | `cc74aef` (earlier: `2da3a5c`, withdrawn by the `9739188` review; `680ab91`, withdrawn by the `899778e` review; `0736eeb`, withdrawn by the `5b88f57` review) |
+| Tested commit | `cc74aef` (earlier: `2da3a5c`, withdrawn by the `9739188` review; `680ab91`, withdrawn by the `899778e` review; `0736eeb`, withdrawn by the `5b88f57` review; `cc74aef`, withdrawn by the `9e28d6a` review) |
 | Manifest | `closure-evidence/acceptance.json` (generated at the tested commit by `python -m benchmarks.closure.acceptance`) |
 | CI | green at `0736eeb`, and at `147f571` before it: ruff, pyright 0 errors including tests, pytest 1064 passed and 8 skipped on ubuntu-latest; desktop build and self-tests on windows-latest. Check the later commits' runs before relying on them |
 
@@ -76,6 +76,28 @@ Five regressions in `tests/test_delegation_contract.py` hold the transaction at
 a controlled point and schedule a real cycle inside it: H1 to H4, plus the lost
 acceptance. All five fail on `0736eeb`.
 
+## Fourth correction pass after the `9e28d6a` review
+
+`plans/EVOMESH_RECOVERY_REVIEW_9e28d6a.md` found **R01-I**. When a lost
+acceptance was recovered, the recipient built a goal with a new id. Its
+occurrence matched no execution, so the work would run again with a fresh
+budget, and a write that had already landed would happen twice.
+
+Recovery now reads the goal id the acceptance recorded, and that goal's
+durable execution (`add6da7`):
+
+- never started: the same goal is rebuilt;
+- open: it resumes from its cursor, with its receipts and spent budget, and an
+  unresolved effect keeps waiting for an operator;
+- completed or failed: its ending is replayed to the parent.
+
+A waiting parent alone never authorizes a new run. The five regressions (I1 to
+I5) fail on `cc74aef`.
+
+The same commit bounds shutdown. A live `/restart` hung for fourteen minutes.
+Each step is now logged and bounded, running children are killed, and a
+watchdog exits with the launcher's code.
+
 The work went directly onto `main`, on the owner's instruction, with the live
 mesh stopped so the Evolver could not commit meanwhile. No pre-existing user
 changes were in the tree. Eleven commits, `49562af` to `2da3a5c`, changed 53
@@ -105,7 +127,7 @@ evidence.
 |---|---|
 | `ruff check .` | All checks passed |
 | `pyright` | 0 errors other than this workspace venv's unresolved `pytest` import; CI runs pyright without that gap and is green |
-| `python -m pytest -q` | 1108 passed (Windows 11, this workspace; the Linux CI count differs by the platform-skipped tests) |
+| `python -m pytest -q` | 1116 passed (Windows 11, this workspace; the Linux CI count differs by the platform-skipped tests) |
 
 Logs: `closure-evidence/quality-gate-logs/final-*.txt`, with JUnit XML beside
 them.
