@@ -1493,6 +1493,10 @@ class EnvironmentEvolver:
         # Set by the Environment to wake the agent driving this pipeline when
         # a validation run finishes, so its verdict is consumed right away.
         self.on_lane_finished: Callable[[], None] | None = None
+        # Where a scout's item goes when the mesh has an Idea Scout: to it, as
+        # a proposal a human approves, never straight into the backlog. True
+        # when it was taken.
+        self.idea_sink: Callable[[Improvement], bool] | None = None
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""
@@ -1945,6 +1949,8 @@ class EnvironmentEvolver:
         if pick == PICK_PLAN:
             written = write_planned_steps(root, title, steps_from_answer(answer))
         elif pick == PICK_SCOUT and (item := item_from_answer(answer)) is not None:
+            if self.idea_sink is not None and self.idea_sink(item):
+                return []
             written = append_item(root, item)
         if not written:
             return []

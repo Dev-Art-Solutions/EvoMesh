@@ -153,7 +153,7 @@ async def test_environment_boot_and_restart(tmp_path: Path) -> None:
     first = Environment(settings, {"ollama": MockProvider()})
     await first.start()
     assert first.health_state == HealthState.READY
-    assert len(first.registry.all()) == 4
+    assert len(first.registry.all()) == 5  # architect, guardian, evaluator, evolver, ideas
     created = AgentDefinition(
         name="Persistent", purpose="Survive restart", status=AgentStatus.ACTIVE
     )
@@ -163,7 +163,7 @@ async def test_environment_boot_and_restart(tmp_path: Path) -> None:
     second = Environment(settings, {"ollama": MockProvider()})
     await second.start()
     assert second.registry.get("Persistent").id == created.id
-    assert len(second.registry.all()) == 5
+    assert len(second.registry.all()) == 6
     await second.stop()
 
 

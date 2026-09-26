@@ -59,6 +59,7 @@ from evomesh.harness_queue import (
 )
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import Tool, build_custom_tool, custom_tool_program
+from evomesh.ideas import IDEAS_AGENT_ID, IDEAS_FILE_NAME, Idea, IdeaBook, IdeaScoutBehavior
 from evomesh.improvements import (
     ImprovementBacklog,
     ImprovementControl,
@@ -185,6 +186,9 @@ class Environment:
             settings.evolution.test_backlog,
             settings.evolution.scout_when_idle,
         )
+        self.behaviors[IDEAS_AGENT_ID] = IdeaScoutBehavior(
+            max_pending=settings.ideas.max_pending, enabled=settings.ideas.enabled
+        )
         self.evolver = EnvironmentEvolver(
             CandidateWorkspace(
                 self.project_root,
@@ -198,6 +202,13 @@ class Environment:
         )
         self.evolver.on_generation_landed = self._on_generation_landed
         self.evolver.on_lane_finished = self._wake_evolver
+        # Only the Idea Scout adds to the improvement backlog (and a human, by
+        # hand): what anything else thinks of goes to it as a proposal.
+        self.ideas = IdeaBook(
+            settings.workspace_path / IDEAS_FILE_NAME, self.project_root, settings.git.identity()
+        )
+        self.evolver.idea_sink = self._idea_from_scout
+        self._idea_tasks: set[asyncio.Task[bool]] = set()
         # Set when a generation has landed in the tree this process is not
         # running. Whoever owns the process -- __main__, a test, a script --
         # decides what to do about it; the environment only raises the flag.
@@ -211,6 +222,12 @@ class Environment:
         # finishing for agent X must not spill into agent Y's private chat,
         # so this is keyed by agent id rather than shared like notifiers above.
         self.agent_notifiers: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
+        # Channels that can map a reply or a reaction back to one idea (a
+        # Telegram message id per idea): (send, dedicated). A dedicated one --
+        # the Idea Scout's own bot -- takes the ideas over from the shared one.
+        self.idea_notifiers: list[
+            tuple[Callable[[int, str], Awaitable[None]], bool]
+        ] = []
         # One TelegramChannel task per agent that declares its own bot, keyed
         # by agent id. Held here, not just in self.channels, because starting
         # or stopping an agent has to cancel exactly this task.
@@ -599,6 +616,77 @@ class Environment:
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
                 logger.exception("A notification channel failed")
 
+    async def announce_idea(self, idea: Idea) -> None:
+        """An idea, to every channel that can take a yes or no for it back.
+
+        The Control Center polls the announcement log like any announcement;
+        Telegram gets it through idea_notifiers so the message id can be tied
+        to the idea (a thumbs-up or a reply on it approves that idea alone).
+        """
+        text = idea.chat_text()
+        self.announcement_log.append((self._next_announcement_id, now_utc(), text))
+        self._next_announcement_id += 1
+        dedicated = [send for send, own in self.idea_notifiers if own]
+        for send in dedicated or [send for send, _ in self.idea_notifiers]:
+            try:
+                await send(idea.number, text)
+            except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
+                logger.exception("An idea channel failed")
+
+    async def submit_idea(
+        self,
+        text: str = "",
+        *,
+        source: str,
+        item: Any = None,
+        direct: bool = False,
+        sender_id: str | None = None,
+    ) -> bool:
+        """Hand an idea to the Idea Scout as a message (rule 2): raw ``text``
+        to rewrite, or a finished ``item`` to vet. False when there is no
+        Scout to hand it to."""
+        if not self._has(IDEAS_AGENT_ID):
+            return False
+        payload: dict[str, Any] = {"source": source, "text": text, "direct": direct}
+        if item is not None:
+            payload["item"] = {
+                "title": item.title,
+                "detail": item.detail,
+                "steps": [
+                    {"path": step.path, "symbol": step.symbol, "change": step.change}
+                    for step in item.steps
+                ],
+            }
+        await self.bus.send(
+            semantic_message(
+                Performative.PROPOSE,
+                sender_id=sender_id or source,
+                recipient_id=IDEAS_AGENT_ID,
+                payload=payload,
+                content=text or (item.title if item is not None else ""),
+            )
+        )
+        return True
+
+    def _idea_from_scout(self, item: Any) -> bool:
+        """The Evolver's scout found an item: the Scout files it, not the
+        pipeline. Scheduled, because the pipeline stage that found it is
+        synchronous."""
+        if not self._has(IDEAS_AGENT_ID):
+            return False
+        task = asyncio.get_running_loop().create_task(
+            self.submit_idea(item=item, source="Environment Evolver", sender_id="evolver")
+        )
+        self._idea_tasks.add(task)
+        task.add_done_callback(self._idea_tasks.discard)
+        return True
+
+    def wake_ideas(self) -> None:
+        """A human decided an idea: a review slot may have opened."""
+        runtime = self.runtimes.get(IDEAS_AGENT_ID)
+        if runtime is not None:
+            runtime.wake()
+
     async def announce_agent(self, agent_id: str, text: str) -> None:
         """Like announce(), plus that one agent's own private bot, if any.
 
@@ -802,6 +890,11 @@ class Environment:
             return
         if not self.settings.evolution.autonomous:
             evolver.status = AgentStatus.STOPPED
+        behavior = self.behaviors.get("evolver")
+        if isinstance(behavior, EvolverBehavior) and self._has(IDEAS_AGENT_ID):
+            # The Idea Scout does the scouting now, and its ideas wait for a
+            # human; a scout generation would only race it.
+            behavior.scout_when_idle = False
         objective = self.settings.evolution.objective
         if objective and not any(
             goal.description == objective for goal in evolver.mind.goals
@@ -1501,6 +1594,7 @@ class Environment:
             "contract_net": self.contract_net,
             "improvements": self.improvements,
             "procedures": self.procedures,
+            "ideas": self.ideas,
         }
 
     async def configure_agent_model(

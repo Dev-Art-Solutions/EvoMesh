@@ -388,6 +388,27 @@ class AgentRuntime:
                 )
             )
             return True
+        accept_proposal = getattr(self.behavior, "accept_proposal", None)
+        if performative is Performative.PROPOSE and accept_proposal is not None:
+            # An idea for the backlog, to the one agent that files them. The
+            # answer is an ACCEPT, which the sender's own ACL handling absorbs
+            # -- never a chat reply its respond() would try to answer.
+            detail = accept_proposal(dict(incoming.payload), incoming.sender_id)
+            if incoming.sender_id != "human":
+                # A human's mailbox is the console's reply channel: an ACCEPT
+                # left there would be read as the answer to its next question.
+                await self.bus.send(
+                    semantic_message(
+                        Performative.ACCEPT,
+                        sender_id=self.definition.id,
+                        recipient_id=incoming.sender_id,
+                        task_id=incoming.task_id or "",
+                        payload={"detail": detail},
+                        content=detail,
+                    )
+                )
+            self.wake()
+            return True
         if performative in {
             Performative.ACCEPT,
             Performative.REJECT,
@@ -927,6 +948,15 @@ SYSTEM_AGENTS: tuple[tuple[str, str, str, str, Autonomy], ...] = (
         "Improve EvoMesh by one validated candidate generation at a time.",
         Autonomy.CYCLIC,
     ),
+    (
+        "ideas",
+        "Idea Scout",
+        "Propose improvements for a human to approve; the only agent that adds to "
+        "the improvement backlog.",
+        "Keep a steady supply of vetted ideas in ideas.md and move each one a human "
+        "approves to improvements.md.",
+        Autonomy.CYCLIC,
+    ),
 )
 
 SYSTEM_CAPABILITIES: dict[str, list[str]] = {
@@ -934,6 +964,7 @@ SYSTEM_CAPABILITIES: dict[str, list[str]] = {
     "guardian": ["runtime.observe", "improvement.propose", "health.verify"],
     "evaluator": ["diff.review", "acceptance.verify", "tests.run", "validation.report"],
     "evolver": ["improvement.coordinate", "code.read", "code.edit", "tests.write"],
+    "ideas": ["idea.propose", "code.read"],
 }
 
 

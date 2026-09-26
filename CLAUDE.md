@@ -365,6 +365,29 @@ regresses.
     anywhere else. See `tools/check-site/` for a real one, standard-library Python, no dependency
     beyond `python` itself in the allow-list.
 
+24. **Only the Idea Scout adds to the improvement backlog, and only what a human approved.**
+    `docs/evolution/improvements.md` is what the Evolver turns into generations, so an item
+    there is work. Before this, anything that could write the file did: the Evolver's scout
+    generations appended items, and `PROPOSAL:` lines went into the discovery backlog. Now
+    exactly two things add to it. One is a human editing the file. The other is the Idea
+    Scout (`ideas.py`, system agent `ideas`), moving an idea a human approved from
+    `workspace/ideas.md`, by command, by a reply, or by a thumbs-up on its Telegram message.
+    It commits that one file alone, because the Evolver never promotes over a dirty tree
+    (rule 11).
+
+    Anything else with an idea sends it to the Scout as an ACL `PROPOSE`
+    (`Environment.submit_idea`): a raw text it rewrites through a read-only harness job, or
+    a finished item it only vets with `codebase.vet_item`. A human's idea is never dropped;
+    one that fails vetting is filed without steps for a plan generation to split. The
+    Evolver stops scouting while a Scout exists, and its scout answer goes to the Scout
+    through `EnvironmentEvolver.idea_sink`.
+
+    Approval is a word list and an emoji (`ideas.verdict_of`), never a model: rule 6 applies
+    to deciding work too. The Scout's own jobs are read-only, and it yields the harness to
+    queued work. Considered and rejected: letting the Scout approve its own best ideas when
+    no human answers. A backlog that fills itself is what the steps and the vetting exist
+    to prevent, and a proposal nobody reviewed is not a decision.
+
 ## How a generation is authored
 
 **A generation is a harness job in the candidate workspace.** The propose stage builds an objective

@@ -7,6 +7,7 @@ _AGENT_LABELS: dict[str, str] = {
     "guardian": "Guardian",
     "evaluator": "Evaluator",
     "evolver": "Environment Evolver",
+    "ideas": "Idea Scout",
     "trader": "Trader",
     "news-watcher": "NewsWatcher",
     "news-analyzer": "NewsAnalyzer",

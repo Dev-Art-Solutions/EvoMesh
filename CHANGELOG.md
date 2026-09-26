@@ -4,6 +4,18 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The Idea Scout: ideas wait for a human before they become work.** A new
+  system agent is the only one that adds to `docs/evolution/improvements.md`.
+  It looks for ideas in the code, one read-only job per idea, until
+  `ideas.max_pending` wait for review. It also rewrites the rough ideas you send
+  it (`/idea <text>`, or a message) and the ones other agents send it
+  (`PROPOSAL:` lines, the Evolver's scout) into the backlog's shape. It keeps
+  them in `workspace/ideas.md` and announces each one. `/idea approve <n>`, a
+  reply "да", or a 👍 on the Telegram message moves that idea alone into the
+  backlog and commits it. `/idea now <text>` skips the review for your own idea.
+
 ### Fixed
 
 Corrections from the review of the architecture closure at `9739188`.

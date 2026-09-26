@@ -86,6 +86,11 @@ HELP = """Commands:
   /improvements [release <id>|depend <id> <on-id>|epic <id> <name>|verify <id> <reason>]
                                 The evidence-backed backlog steering evolution;
                                 verify records your own check of work no observer measures
+  /ideas                        Ideas waiting for your review (the Idea Scout's ideas.md)
+  /idea approve|reject <n> [why]  Move one idea to improvements.md, or set it aside
+  /idea show <n>                One idea in full
+  /idea <text>                  Your own idea: the Scout rewrites it and asks you to approve it
+  /idea now <text>              The same, straight into improvements.md once rewritten
   /typed [list|show|validate|approve|degrade|retire|explain|executions|execution|
           cancel|pause|resume|reconcile|disable|enable]
                                 Typed procedures: admission, executions, reconciliation
@@ -956,6 +961,47 @@ class ConsoleChannel:
             + "\nrepeated plans not yet learned:\n"
             + ("\n".join(pending) or "  none")
         )
+
+    async def _command_ideas(self, parts: list[str]) -> str:
+        book = self.environment.ideas
+        pending = book.pending()
+        if not pending:
+            return f"No ideas wait for review. ({book.path})"
+        lines = [f"{len(pending)} idea(s) wait for review -- /idea approve|reject <n>:"]
+        for idea in pending:
+            steps = f", {len(idea.item.steps)} step(s)" if idea.item.steps else ""
+            lines.append(f"  #{idea.number} {idea.title} (from {idea.source}{steps})")
+        return "\n".join(lines)
+
+    async def _command_idea(self, parts: list[str]) -> str:
+        """Decide an idea, read one, or hand the Scout one of your own."""
+        book = self.environment.ideas
+        usage = "Usage: /idea approve|reject <n> [why] | /idea show <n> | /idea [now] <text>"
+        action = parts[1].lower() if len(parts) > 1 else ""
+        if action in {"approve", "reject", "show"}:
+            if len(parts) < 3 or not parts[2].lstrip("#").isdigit():
+                return usage
+            number = int(parts[2].lstrip("#"))
+            if action == "show":
+                idea = book.get(number)
+                return idea.chat_text() if idea is not None else f"There is no idea #{number}."
+            actor = "human:console"
+            if action == "approve":
+                reply = await book.approve(number, actor)
+            else:
+                reply = await book.reject(number, actor, " ".join(parts[3:]))
+            self.environment.wake_ideas()
+            return reply
+        direct = action == "now"
+        text = " ".join(parts[2:] if direct else parts[1:]).strip()
+        if len(text) < 12:
+            return usage
+        if not await self.environment.submit_idea(
+            text, source="human", direct=direct, sender_id="human"
+        ):
+            return "There is no Idea Scout running to write it up."
+        where = "straight into improvements.md" if direct else "back to you for approval"
+        return f"Sent to the Idea Scout: it will rewrite it and put it {where}."
 
     async def _command_improvements(self, parts: list[str]) -> str:
         """The evidence-backed improvement backlog that steers evolution."""

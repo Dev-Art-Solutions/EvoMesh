@@ -160,6 +160,18 @@ class RuntimeSettings(BaseModel):
         )
 
 
+class IdeaSettings(BaseModel):
+    """The Idea Scout (ideas.py): the one agent that proposes backlog items.
+
+    ``enabled`` lets it look for ideas in the code on its own; what humans and
+    other agents send it is written up either way. ``max_pending`` is how many
+    unreviewed ideas it lets pile up before it waits for a human.
+    """
+
+    enabled: bool = True
+    max_pending: int = Field(default=10, ge=1)
+
+
 class ProcedureSettings(BaseModel):
     """Typed procedures (architecture closure plan v2). Two switches only.
 
@@ -429,6 +441,7 @@ class Settings(BaseModel):
     evolution: EvolutionSettings = Field(default_factory=EvolutionSettings)
     harness: HarnessSettings = Field(default_factory=HarnessSettings)
     procedures: ProcedureSettings = Field(default_factory=ProcedureSettings)
+    ideas: IdeaSettings = Field(default_factory=IdeaSettings)
     scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)

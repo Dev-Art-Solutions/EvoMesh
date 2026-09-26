@@ -22,6 +22,7 @@ from evomesh.cognition import extract_file_references
 from evomesh.console import MAX_ATTACHMENT_BYTES, ConsoleChannel
 from evomesh.contracts import TelegramSettings
 from evomesh.environment import Environment
+from evomesh.ideas import APPROVE_REACTIONS, IDEAS_AGENT_ID, REJECT_REACTIONS, verdict_of
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ FILE_ROOT = "https://api.telegram.org/file"
 # agent id so two bots polling the same repository never share state.
 OFFSET_STATE_KEY = "telegram.offset"
 ALLOWED_STATE_KEY = "telegram.allowed_chats"
+# Which message carried which idea, so a thumbs-up or a reply on it decides
+# that idea alone. Bounded: an idea nobody answered in 500 later ones is old.
+IDEA_MESSAGES_STATE_KEY = "telegram.idea_messages"
+MAX_IDEA_MESSAGES = 500
 
 # Telegram rejects anything longer than 4096 characters outright, and an agent's
 # answer routinely runs past that. Chunk below the limit rather than truncating:
@@ -95,12 +100,24 @@ class TelegramChannel:
         # Set: a private bot for exactly one agent -- no /chat, no switching.
         self.locked_agent_id = locked_agent_id
         self.locked_agent_name = locked_agent_name or locked_agent_id or ""
+        self._idea_messages: dict[str, int] = {}
 
     @property
     def _offset_key(self) -> str:
         if not self.locked_agent_id:
             return OFFSET_STATE_KEY
         return f"{OFFSET_STATE_KEY}.{self.locked_agent_id}"
+
+    @property
+    def _ideas_key(self) -> str:
+        if not self.locked_agent_id:
+            return IDEA_MESSAGES_STATE_KEY
+        return f"{IDEA_MESSAGES_STATE_KEY}.{self.locked_agent_id}"
+
+    @property
+    def _takes_ideas(self) -> bool:
+        """The shared bot, or the Idea Scout's own -- not another agent's."""
+        return not self.locked_agent_id or self.locked_agent_id == IDEAS_AGENT_ID
 
     @property
     def _allowed_key(self) -> str:
@@ -208,6 +225,9 @@ class TelegramChannel:
                 await client.aclose()
 
     def _register_listener(self) -> None:
+        if self._takes_ideas:
+            dedicated = self.locked_agent_id == IDEAS_AGENT_ID
+            self.environment.idea_notifiers.append((self.announce_idea, dedicated))
         if self.locked_agent_id:
             self.environment.agent_notifiers.setdefault(self.locked_agent_id, []).append(
                 self.announce
@@ -216,6 +236,9 @@ class TelegramChannel:
             self.environment.notifiers.append(self.announce)
 
     def _unregister_listener(self) -> None:
+        self.environment.idea_notifiers[:] = [
+            entry for entry in self.environment.idea_notifiers if entry[0] != self.announce_idea
+        ]
         if self.locked_agent_id:
             listeners = self.environment.agent_notifiers.get(self.locked_agent_id, [])
             if self.announce in listeners:
@@ -229,6 +252,13 @@ class TelegramChannel:
             # Picking up where the last process stopped is what keeps an
             # automatic restart from replaying the commands that caused it.
             self._offset = stored_offset
+        stored_ideas = await self.environment.repository.load_state(self._ideas_key)
+        if isinstance(stored_ideas, dict):
+            self._idea_messages = {
+                str(key): int(value)
+                for key, value in stored_ideas.items()
+                if isinstance(value, int)
+            }
         stored_chats = await self.environment.repository.load_state(self._allowed_key)
         if isinstance(stored_chats, list):
             self._allowed |= {int(item) for item in stored_chats if isinstance(item, int | str)}
@@ -241,7 +271,8 @@ class TelegramChannel:
                     {
                         "offset": self._offset,
                         "timeout": self.settings.poll_timeout_seconds,
-                        "allowed_updates": ["message"],
+                        # Reactions only arrive when asked for by name.
+                        "allowed_updates": ["message", "message_reaction"],
                     },
                 )
             except asyncio.CancelledError:
@@ -266,6 +297,10 @@ class TelegramChannel:
     async def _consume(self, update: dict[str, Any]) -> None:
         self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
         await self.environment.repository.save_state(self._offset_key, self._offset)
+        reaction = update.get("message_reaction")
+        if isinstance(reaction, dict):
+            await self._react(reaction)
+            return
         message = update.get("message") or {}
         chat_id = int((message.get("chat") or {}).get("id", 0))
         if not chat_id:
@@ -278,7 +313,9 @@ class TelegramChannel:
                 text = str(message.get("text", "")).strip()
                 if not text:
                     return
-                reply = await self._answer(chat_id, text)
+                reply = await self._answer_idea_reply(chat_id, message, text)
+                if reply is None:
+                    reply = await self._answer(chat_id, text)
         except (KeyError, ValueError, RuntimeError) as exc:
             reply = f"Error: {exc}"
         if reply:
@@ -286,6 +323,72 @@ class TelegramChannel:
             console = self._consoles.get(chat_id)
             if console is not None:
                 await self._send_file_references(chat_id, console.selected_agent, reply)
+
+    # -- ideas ----------------------------------------------------------
+
+    def _idea_for(self, chat_id: int, message_id: object) -> int | None:
+        return self._idea_messages.get(f"{chat_id}:{message_id}")
+
+    async def _decide_idea(self, chat_id: int, number: int, verdict: str, why: str) -> str:
+        actor = f"human:telegram:{chat_id}"
+        ideas = self.environment.ideas
+        if verdict == "approve":
+            reply = await ideas.approve(number, actor)
+        else:
+            reply = await ideas.reject(number, actor, why)
+        self.environment.wake_ideas()
+        return reply
+
+    async def _answer_idea_reply(
+        self, chat_id: int, message: dict[str, Any], text: str
+    ) -> str | None:
+        """A reply to an idea's own message that says yes or no decides that
+        idea; any other reply is an ordinary message."""
+        replied = message.get("reply_to_message")
+        if not isinstance(replied, dict) or chat_id not in self._allowed:
+            return None
+        number = self._idea_for(chat_id, replied.get("message_id"))
+        verdict = verdict_of(text)
+        if number is None or verdict is None:
+            return None
+        return await self._decide_idea(chat_id, number, verdict, text)
+
+    async def _react(self, reaction: dict[str, Any]) -> None:
+        """A thumbs-up on an idea's message approves it; a thumbs-down
+        rejects it. Only from an allowed chat, and only on an idea."""
+        chat_id = int((reaction.get("chat") or {}).get("id", 0))
+        if chat_id not in self._allowed:
+            return
+        number = self._idea_for(chat_id, reaction.get("message_id"))
+        if number is None:
+            return
+        emojis = {
+            str(item.get("emoji"))
+            for item in reaction.get("new_reaction") or []
+            if isinstance(item, dict) and item.get("type") == "emoji"
+        }
+        if emojis & APPROVE_REACTIONS:
+            verdict = "approve"
+        elif emojis & REJECT_REACTIONS:
+            verdict = "reject"
+        else:
+            return
+        await self.send(chat_id, await self._decide_idea(chat_id, number, verdict, "reaction"))
+
+    async def announce_idea(self, number: int, text: str) -> None:
+        """Send an idea and remember which message carries it."""
+        for chat_id in sorted(self._allowed):
+            for chunk in _chunks(text):
+                try:
+                    sent = await self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
+                except (httpx.HTTPError, TelegramError) as exc:
+                    logger.warning("Could not send an idea to Telegram chat %s: %s", chat_id, exc)
+                    break
+                if isinstance(sent, dict) and sent.get("message_id") is not None:
+                    self._idea_messages[f"{chat_id}:{sent['message_id']}"] = number
+        while len(self._idea_messages) > MAX_IDEA_MESSAGES:
+            self._idea_messages.pop(next(iter(self._idea_messages)))
+        await self.environment.repository.save_state(self._ideas_key, self._idea_messages)
 
     # -- routing --------------------------------------------------------
 

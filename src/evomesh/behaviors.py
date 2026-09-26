@@ -1467,14 +1467,21 @@ class EvolverBehavior(BDIBehavior):
             )
         answer = job.result.answer.strip() if job.result else job.detail
         rationale = _extract_rationale(answer)
-        if self._improvements is not None:
-            for line in answer.splitlines():
-                if line.strip().upper().startswith("PROPOSAL:"):
-                    await self._improvements.propose_discovery(
-                        line.strip()[len("PROPOSAL:") :],
-                        generation=generation.number,
-                        job=job.number,
-                    )
+        submit_idea = getattr(context.service("environment"), "submit_idea", None)
+        for line in answer.splitlines():
+            if not line.strip().upper().startswith("PROPOSAL:"):
+                continue
+            proposal = line.strip()[len("PROPOSAL:") :].strip()
+            # Only the Idea Scout adds to the backlog: a job's side
+            # observation is an idea for it to write up and a human to approve.
+            if submit_idea is not None and await submit_idea(
+                proposal, source=context.definition.name, sender_id=context.definition.id
+            ):
+                continue
+            if self._improvements is not None:
+                await self._improvements.propose_discovery(
+                    proposal, generation=generation.number, job=job.number
+                )
         recorder = record or evolver.record_harness_changes
         standing_objective = str(state.get("objective", ""))
         record_objective = record_key if record_key is not None else standing_objective

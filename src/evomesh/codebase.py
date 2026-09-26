@@ -324,6 +324,7 @@ PROTECTED_PATHS: tuple[str, ...] = (
     "src/evomesh/procedure_host.py",
     "src/evomesh/procedure_traces.py",
     "src/evomesh/improvements.py",
+    "src/evomesh/ideas.py",
     "procedures/*",
     "plans/*",
     "docs/architecture/closure-evidence/*",
@@ -331,6 +332,7 @@ PROTECTED_PATHS: tuple[str, ...] = (
     "tests/test_w3_improvement.py",
     "tests/test_w3_live.py",
     "tests/test_delegation_contract.py",
+    "tests/test_ideas.py",
     "tests/test_idle_evolution.py",
     "tests/test_work_executor.py",
     "tests/test_protected_surface.py",
@@ -1288,73 +1290,82 @@ def _unanchored(root: Path, item: Improvement) -> list[str]:
     ]
 
 
-def vet_new_improvements(
-    before: list[Improvement], root: Path
-) -> tuple[list[Improvement], list[tuple[Improvement, str]]]:
-    """Split the open items ``root`` gained over ``before`` into kept and
-    dropped-with-a-reason.
+def vet_item(root: Path, item: Improvement) -> str | None:
+    """Why ``item`` cannot be handed to a small model as written, or ``None``.
 
-    The scout's output becomes the next generations' objectives verbatim, so
-    anything a model recalled rather than read has to stop here: an item has
-    to carry steps, every step's anchor has to exist in the file it names
+    What a model recalled rather than read has to stop here: an item has to
+    carry steps, every step's anchor has to exist in the file it names
     (:func:`find_symbol`), every backticked ``name()`` has to be defined
-    somewhere in the package, and ``module.symbol`` mentions go through the
-    same :func:`fabricated_references` check plans already do.
+    somewhere in the package, ``module.symbol`` mentions go through the same
+    :func:`fabricated_references` check plans already do, and it has to quote
+    the code it is about.
     """
-    known = {item.title.casefold() for item in before}
-    known.update(title.casefold() for title in done_improvements(root))
     modules_now = survey(root)
     defined: set[str] = set()
     for module in modules_now:
         defined.update(module.all_names)
     existing = {module.name for module in modules_now}
+    text = "\n".join((item.title, item.detail, *(step.describe() for step in item.steps)))
+    modules = {match.group("module") for match in _SOURCE_PATH.finditer(text)}
+    missing = sorted(
+        {
+            match.group("name")
+            for match in _CALLED_NAME.finditer(text)
+            if match.group("name") not in defined
+        }
+    )
+    size = len(item.detail) + sum(len(step.change) for step in item.steps)
+    if size < SCOUT_MIN_DETAIL_CHARS:
+        return "its detail is too short to act on"
+    if not item.steps:
+        return f"it has no steps in the shape `{_STEP_SHAPE}`"
+    if len(item.steps) > MAX_ITEM_STEPS:
+        return f"it has {len(item.steps)} steps, more than the {MAX_ITEM_STEPS} one item may"
+    if not modules <= existing:
+        return f"it names a file that does not exist ({', '.join(sorted(modules - existing))})"
+    if unanchored := _unanchored(root, item):
+        return f"its steps name code that does not exist ({', '.join(unanchored)})"
+    if missing:
+        return f"it names functions that do not exist ({', '.join(missing)})"
+    if fabricated := fabricated_references(text, root):
+        return f"it names symbols that do not exist ({', '.join(fabricated)})"
+    if invented := _unknown_attributes(root, item):
+        return (
+            "it describes attributes its files never mention "
+            f"({', '.join(invented)}): read the code, do not recall it"
+        )
+    if not (quotes := _quotes(item)):
+        return (
+            "it quotes no code: the line that shows the problem, copied from the "
+            "file, goes on a detail line of its own starting with `> `"
+        )
+    if misquoted := _misquoted(root, item, quotes):
+        return f"it quotes code that is in none of its files: {misquoted[0]!r}"
+    return None
+
+
+def vet_new_improvements(
+    before: list[Improvement], root: Path
+) -> tuple[list[Improvement], list[tuple[Improvement, str]]]:
+    """Split the open items ``root`` gained over ``before`` into kept and
+    dropped-with-a-reason, each judged by :func:`vet_item`.
+
+    The scout's output becomes the next generations' objectives verbatim, so
+    anything a model recalled rather than read has to stop here.
+    """
+    known = {item.title.casefold() for item in before}
+    known.update(title.casefold() for title in done_improvements(root))
     kept: list[Improvement] = []
     dropped: list[tuple[Improvement, str]] = []
     for item in open_improvements(root):
         if item.title.casefold() in known:
             continue
         known.add(item.title.casefold())
-        text = "\n".join((item.title, item.detail, *(step.describe() for step in item.steps)))
-        modules = {match.group("module") for match in _SOURCE_PATH.finditer(text)}
-        missing = sorted(
-            {
-                match.group("name")
-                for match in _CALLED_NAME.finditer(text)
-                if match.group("name") not in defined
-            }
-        )
-        size = len(item.detail) + sum(len(step.change) for step in item.steps)
-        if size < SCOUT_MIN_DETAIL_CHARS:
-            reason = "its detail is too short to act on"
-        elif not item.steps:
-            reason = f"it has no steps in the shape `{_STEP_SHAPE}`"
-        elif len(item.steps) > MAX_ITEM_STEPS:
-            reason = f"it has {len(item.steps)} steps, more than the {MAX_ITEM_STEPS} one item may"
-        elif not modules <= existing:
-            unknown = ", ".join(sorted(modules - existing))
-            reason = f"it names a file that does not exist ({unknown})"
-        elif unanchored := _unanchored(root, item):
-            reason = f"its steps name code that does not exist ({', '.join(unanchored)})"
-        elif missing:
-            reason = f"it names functions that do not exist ({', '.join(missing)})"
-        elif fabricated := fabricated_references(text, root):
-            reason = f"it names symbols that do not exist ({', '.join(fabricated)})"
-        elif invented := _unknown_attributes(root, item):
-            reason = (
-                "it describes attributes its files never mention "
-                f"({', '.join(invented)}): read the code, do not recall it"
-            )
-        elif not (quotes := _quotes(item)):
-            reason = (
-                "it quotes no code: the line that shows the problem, copied from the "
-                "file, goes on a detail line of its own starting with `> `"
-            )
-        elif misquoted := _misquoted(root, item, quotes):
-            reason = f"it quotes code that is in none of its files: {misquoted[0]!r}"
-        else:
+        reason = vet_item(root, item)
+        if reason is None:
             kept.append(item)
-            continue
-        dropped.append((item, reason))
+        else:
+            dropped.append((item, reason))
     return kept[:SCOUT_MAX_ITEMS], dropped + [
         (item, "over the per-refill limit") for item in kept[SCOUT_MAX_ITEMS:]
     ]

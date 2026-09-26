@@ -316,6 +316,18 @@ git:
   # Empty means whatever branch the checkout is already on.
   branch: ""
 
+ideas:
+  # The Idea Scout (a system agent) is the only agent that adds to
+  # docs/evolution/improvements.md, and only what a human approved. It keeps
+  # proposals in workspace/ideas.md and announces each one: approve it with
+  # /idea approve <n>, a reply saying it is good, or a thumbs-up on its Telegram
+  # message. Ideas from you (/idea <text>, or a message to the Scout) and from
+  # other agents are rewritten into the backlog's shape first.
+  # Look for ideas in the code on its own; what you send is written up either way.
+  enabled: true
+  # How many unreviewed ideas may wait before it stops looking for more.
+  max_pending: 10
+
 telegram:
   # Talk to the mesh from your phone. Everything you send goes through the same
   # command router the Control Center uses, so /status, /agents and /evolution

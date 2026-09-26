@@ -495,6 +495,30 @@ The reasoning travels with the change. A month later the question about any of
 these commits is "why did it do that", and the answer is in the repository
 rather than in a SQLite file on one machine.
 
+### Ideas: the only way into the backlog besides your own hand
+
+`docs/evolution/improvements.md` is what the Evolver works on, so nothing is
+added to it on a model's say-so. The **Idea Scout** (system agent `ideas`) is
+the one agent that adds items there, and only ones a human approved. Everything
+else goes through it:
+
+- **It looks on its own.** One read-only harness job per idea, one module at a
+  time, vetted by the same checks a scout item gets: the anchors must exist and
+  the problem must be quoted from the code. It stops once `ideas.max_pending`
+  ideas wait for review, and it gives up the harness to any queued work.
+- **You send it yours.** Use `/idea <text>` or a plain message to the Scout. It
+  reads the code the idea touches and rewrites it into the backlog's shape.
+  `/idea now <text>` (or a message starting with "директно") puts the rewritten
+  item straight into the backlog.
+- **Other agents send it theirs.** A harness job's `PROPOSAL:` line, or the
+  Evolver's own scout, becomes a proposal to the Scout, never an edit.
+
+Pending ideas live in `workspace/ideas.md`, plain Markdown you can edit. Each
+one is announced with its number. To approve one, use `/idea approve <n>`, or
+on Telegram reply "да" to its message or put a 👍 on it. Only that idea is
+appended to `improvements.md` and committed. `/idea reject <n>` or a 👎 sets it
+aside for good. `/ideas` lists what waits.
+
 ### Publishing a generation
 
 A landed generation is committed by the mesh, under its own identity, and pushed to the remote. Both halves matter: a history where the agent's commits are signed with whatever `git config` happens to hold is a history where nobody can tell the agent's work from their own, and a generation that never leaves the machine has not really shipped.
