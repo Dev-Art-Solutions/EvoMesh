@@ -13,6 +13,13 @@ All notable changes to EvoMesh are documented in this file.
   already landed. Recovery now rebuilds the accepted goal by its recorded id
   and occurrence, and the existing execution resumes. One that already ended
   replays its result to the parent instead.
+- **Every candidate failed validation, labelled as the host's fault.** The
+  smoke check still expected four system agents after the Idea Scout made five.
+  Its failure left the database open, the cleanup then raised
+  `PermissionError`, and validation reported "this machine blocked the run"
+  instead of a failed check. The count comes from `SYSTEM_AGENTS` now, the
+  environment always stops, a cleanup error can no longer hide the cause, and
+  the suite runs the smoke check.
 - **A restart could hang for as long as anything in shutdown did.** Found
   live: a `/restart` sat for fourteen minutes, with every agent still working
   and nothing logged after "Restarting". Each shutdown step is now logged and
