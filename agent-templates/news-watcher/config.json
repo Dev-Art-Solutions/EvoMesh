@@ -27,5 +27,9 @@
     "GBP/USD"
   ],
   "limit": 10,
-  "cache_days": 3
+  "cache_days": 3,
+  "pages": [
+    "https://www.wsj.com/finance/stocks?page=1"
+  ],
+  "page_minutes": 30
 }

@@ -8,9 +8,17 @@ and is far more reliable than scraping a page's HTML. finance.yahoo.com and
 forexfactory.com have no public RSS for their news streams, so those two
 hosts fall back to a small, site-specific regex extraction over the raw
 (server-rendered) HTML instead -- not a general-purpose scraper, and not
-expected to survive an unrelated site redesign. Any other host with no RSS
-is a job for the harness's own scraping tool (Scrapling, see evomesh.yaml's
-`scraping` settings) run by hand, not this script.
+expected to survive an unrelated site redesign.
+
+config.json's "pages" are whole pages to report in full, not feeds:
+wsj.com's stock news, say, which has no RSS and sits behind an anti-bot wall
+(DataDome) that turns away urllib and even a headless browser. Those go
+through the mesh's one crawling tool, Scrapling, as a real, headed Chrome --
+the only mode wsj.com let through, found live 2026-09-27 -- placed off
+screen by page_fetch.py so no window ever shows or takes focus. Their
+headlines come from the page's own schema.org ItemList. A browser per fetch
+is why a page is fetched at most every "page_minutes" (default 30); between
+fetches its last result stands in.
 
 Every live fetch also feeds a small durable cache (.news_cache.jsonl beside
 whichever config.json this run resolved, see _cache_path()) so a caller can
@@ -25,8 +33,12 @@ the network at all. Entries older than config.json's "cache_days" (default
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -86,6 +98,17 @@ _YAHOO_FINANCE_HEADLINE = re.compile(
     r'.{0,200}?<h3[^>]*>([^<]{5,300})</h3>',
     re.S,
 )
+# Scrapling's CLI `extract` mode and flags for a "pages" entry, used only when
+# Scrapling's own Python is not beside its executable (see _page_command):
+# a real Chrome, headed -- and so a visible window. Headless and plain
+# fetches got wsj.com's DataDome block page or a 401.
+PAGE_FETCH_ARGS = ["stealthy-fetch", "--real-chrome", "--no-headless", "--wait", "6000",
+                   "--timeout", "90000"]
+PAGE_FETCH_TIMEOUT_SECONDS = 150
+DEFAULT_PAGE_MINUTES = 30
+_LD_JSON = re.compile(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', re.S | re.I)
+# wsj.com ends every story's URL with its own id; a re-slugged headline keeps it.
+_STORY_ID = re.compile(r"-([0-9a-f]{8})$")
 _FOREXFACTORY_HEADLINE = re.compile(r'href="(/news/(\d+)[a-z0-9\-]*)"[^>]*>([^<]{5,200})<')
 
 
@@ -173,6 +196,157 @@ def _parse_source(url: str, raw: bytes) -> list[dict[str, str]]:
     return scraper(raw.decode("utf-8", errors="replace"))
 
 
+def _scraper(config: dict) -> list[str] | None:
+    """Scrapling's command: EVOMESH_SCRAPER when the harness runs this as a
+    tool, else config.json's "scraper", else the repo's own install -- the
+    watcher runs with neither, from the agent's playground inside the repo."""
+    value = os.environ.get("EVOMESH_SCRAPER", "").strip()
+    value = value or str(config.get("scraper") or "").strip()
+    if value:
+        if value.startswith("["):
+            return [str(part) for part in json.loads(value)]
+        return [value] if Path(value).is_file() else shlex.split(value)
+    for base in (Path.cwd(), Path(__file__).resolve().parent):
+        for folder in (base, *base.parents):
+            for candidate in (
+                ".runtime/scrapling/Scripts/scrapling.exe",
+                ".runtime/scrapling/bin/scrapling",
+            ):
+                if (folder / candidate).is_file():
+                    return [str(folder / candidate)]
+    return None
+
+
+def _page_command(scraper: list[str], url: str, output: Path, config: dict) -> list[str]:
+    """How to fetch a page: Scrapling's own Python running page_fetch.py
+    (headed but off screen), when Scrapling is an installed executable with
+    its venv's Python beside it; its CLI otherwise, or when config.json sets
+    "page_fetch_args" explicitly."""
+    if len(scraper) == 1 and not config.get("page_fetch_args"):
+        executable = Path(scraper[0])
+        for name in ("python.exe", "python"):
+            python = executable.with_name(name)
+            if executable.stem.lower() == "scrapling" and python.is_file():
+                helper = Path(__file__).resolve().with_name("page_fetch.py")
+                return [str(python), str(helper), url, str(output)]
+    mode, *flags = config.get("page_fetch_args") or PAGE_FETCH_ARGS
+    return [*scraper, "extract", mode, url, str(output), *flags]
+
+
+def _fetch_page(url: str, config: dict) -> str:
+    """One page's HTML through Scrapling. Raises OSError when it fails."""
+    scraper = _scraper(config)
+    if scraper is None:
+        raise OSError("Scrapling is not installed (scripts/install-scrapling.ps1)")
+    with tempfile.TemporaryDirectory(prefix="evomesh-news-") as scratch:
+        output = Path(scratch) / "page.html"
+        try:
+            run = subprocess.run(  # noqa: S603 - the mesh's own configured fetcher
+                _page_command(scraper, url, output, config),
+                capture_output=True,
+                timeout=PAGE_FETCH_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise OSError(f"{url}: the fetch did not finish in time") from exc
+        if run.returncode != 0 or not output.is_file():
+            detail = (run.stdout or run.stderr or b"").decode("utf-8", errors="replace")
+            raise OSError(f"{url}: {detail.strip()[-300:] or f'exit {run.returncode}'}")
+        return output.read_text(encoding="utf-8", errors="replace")
+
+
+def story_key(link: str) -> str:
+    """What makes two links the same story: the link without query or
+    fragment, or a site's own story id when it has one."""
+    parsed = urllib.parse.urlparse(link)
+    path = parsed.path.rstrip("/")
+    match = _STORY_ID.search(path)
+    host = parsed.netloc.lower()
+    return f"{host}#{match.group(1)}" if match else f"{host}{path}"
+
+
+def _item_list_elements(node: object):
+    if isinstance(node, dict):
+        if str(node.get("@type", "")).lower() == "itemlist":
+            for element in node.get("itemListElement") or []:
+                if isinstance(element, dict):
+                    yield element
+            return
+        for value in node.values():
+            yield from _item_list_elements(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _item_list_elements(value)
+
+
+def parse_page(html: str) -> list[dict[str, str]]:
+    """Every headline in the page's schema.org ItemList, in page order and
+    once each: a story listed twice (by link or by headline) is one item."""
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for block in _LD_JSON.findall(html):
+        try:
+            data = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        for element in _item_list_elements(data):
+            inner = element.get("item") if isinstance(element.get("item"), dict) else {}
+            title = " ".join(str(element.get("name") or inner.get("name") or "").split())
+            link = str(element.get("url") or inner.get("url") or "").strip()
+            if not title or not link.startswith("http"):
+                continue
+            parsed = urllib.parse.urlparse(link)._replace(query="", fragment="")
+            link = urllib.parse.urlunparse(parsed)
+            keys = {story_key(link), title.casefold()}
+            if keys & seen:
+                continue
+            seen |= keys
+            published = str(element.get("datePublished") or inner.get("datePublished") or "")
+            items.append({"title": title, "link": link, "published": published})
+    return items
+
+
+def _page_state_path() -> Path:
+    return _cache_path().with_name(".news_pages.json")
+
+
+def _load_page_state() -> dict:
+    try:
+        data = json.loads(_page_state_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def fetch_pages(pages: list[str], config: dict, *, force: bool = False) -> list[dict[str, str]]:
+    """Each page's headlines: fetched live at most every page_minutes, the
+    last result otherwise -- or when a live fetch fails."""
+    try:
+        minutes = float(config.get("page_minutes") or DEFAULT_PAGE_MINUTES)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_PAGE_MINUTES
+    state = _load_page_state()
+    now = time.time()
+    collected: list[dict[str, str]] = []
+    for url in pages:
+        entry = state.get(url) if isinstance(state.get(url), dict) else {}
+        items = entry.get("items") or []
+        if force or now - float(entry.get("at") or 0) >= minutes * 60:
+            try:
+                items = parse_page(_fetch_page(url, config))
+                state[url] = {"at": now, "items": items}
+            except OSError as exc:
+                print(f"page fetch failed: {exc}", file=sys.stderr)
+        for item in items:
+            collected.append({**item, "source": url})
+    try:
+        _page_state_path().parent.mkdir(parents=True, exist_ok=True)
+        _page_state_path().write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
+    return collected
+
+
 def _load_cache() -> list[dict]:
     cache_path = _cache_path()
     if not cache_path.is_file():
@@ -252,11 +426,13 @@ def _cached_items(keywords: list[str], since_hours: float | None) -> list[dict[s
             for e in entries]
 
 
-def fetch_and_cache(feeds: list[str], config: dict) -> list[dict[str, str]]:
-    """Live-fetch every feed, tagging each item with its source, then merge
-    the result into the durable cache before returning it. Shared with
-    watch_news.py so the deterministic watcher's own polls also build up the
-    same history a model can later query."""
+def fetch_and_cache(
+    feeds: list[str], config: dict, pages: list[str] | None = None
+) -> list[dict[str, str]]:
+    """Live-fetch every feed (and every page, see fetch_pages), tagging each
+    item with its source, then merge the result into the durable cache before
+    returning it. Shared with watch_news.py so the deterministic watcher's own
+    polls also build up the same history a model can later query."""
     # In parallel, not one after another: sequentially, three feeds at
     # FETCH_TIMEOUT_SECONDS each could take 30s, and the watcher running this
     # kills its command at 20s -- found live 2026-09-25, a slow feed turned
@@ -268,13 +444,16 @@ def fetch_and_cache(feeds: list[str], config: dict) -> list[dict[str, str]]:
             return None
 
     collected: list[dict[str, str]] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(feeds)))) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(feeds) + 1))) as pool:
+        # The page's browser runs beside the feeds, not after them.
+        paged = pool.submit(fetch_pages, pages or [], config)
         for url, raw in zip(feeds, pool.map(fetch, feeds), strict=True):
             if raw is None:
                 continue
             for item in _parse_source(url, raw):
                 item["source"] = url
                 collected.append(item)
+        collected.extend(paged.result())
     _append_cache(collected, config)
     return collected
 
@@ -300,13 +479,16 @@ def main() -> int:
         return 0
 
     feeds = request.get("feeds") or config.get("feeds") or DEFAULT_FEEDS
-    collected = fetch_and_cache(feeds, config)
+    pages = request.get("pages") or config.get("pages") or []
+    collected = fetch_and_cache(feeds, config, pages)
 
     if keywords:
+        # A page is reported whole; keywords only narrow the feeds.
         collected = [
             item
             for item in collected
-            if any(keyword in item["title"].lower() for keyword in keywords)
+            if item.get("source") in pages
+            or any(keyword in item["title"].lower() for keyword in keywords)
         ]
 
     result = [{"title": i["title"], "link": i["link"], "published": i["published"]}

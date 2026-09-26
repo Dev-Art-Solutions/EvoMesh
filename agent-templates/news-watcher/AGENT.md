@@ -14,8 +14,9 @@ learn_skills: true
 watch:
   command: python "{template_dir}/scripts/watch_news.py"
   interval_seconds: 300
-  # Three feeds fetched in parallel at 10s each; room to spare.
-  timeout_seconds: 60
+  # Feeds in parallel at 10s each, beside a page's real-browser fetch
+  # (news_fetch's PAGE_FETCH_TIMEOUT_SECONDS, 150s).
+  timeout_seconds: 180
 ---
 
 A human reading this: edit `config.json` beside this AGENT.md to set
@@ -34,6 +35,16 @@ headlines to keep on disk, default 3):
   "cache_days": 3
 }
 ```
+
+`pages` are whole pages reported in full rather than feeds filtered by
+keyword -- `["https://www.wsj.com/finance/stocks?page=1"]` reports every
+headline on WSJ's stocks page the first time it appears there, once. They
+are fetched through Scrapling (the mesh's crawling tool) as a real, headed
+Chrome -- the only way wsj.com let a fetch through -- placed off screen, so
+no window pops up or takes focus; each page is fetched at most every
+`page_minutes` (default 30). A story is reported once
+however it recurs: the same link, the same WSJ story id under a new slug,
+or the same headline.
 
 Ask directly for "the 10 latest news" any time -- that answers immediately
 through the agent's own conversation, not the watcher. Ask for history

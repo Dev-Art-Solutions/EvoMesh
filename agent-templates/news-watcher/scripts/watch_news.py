@@ -27,7 +27,7 @@ from types import ModuleType
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent
 NEWS_FETCH_PATH = TEMPLATE_DIR / "tools" / "news_fetch" / "scripts" / "news_fetch.py"
 STATE_PATH = TEMPLATE_DIR / "scripts" / ".watch_state.json"
-MAX_REMEMBERED_LINKS = 500
+MAX_REMEMBERED_LINKS = 2000
 
 
 def _load_news_fetch() -> ModuleType:
@@ -60,28 +60,41 @@ def main() -> int:
     news_fetch = _load_news_fetch()
     config = news_fetch._load_config()
     keywords = [str(item).lower() for item in (config.get("keywords") or [])]
-    if not keywords:
+    pages = [str(url) for url in (config.get("pages") or [])]
+    if not keywords and not pages:
         # Nothing configured to watch for -- stay silent rather than
         # announcing every single headline.
         return 0
 
     feeds = config.get("feeds") or news_fetch.DEFAULT_FEEDS
     state = _load_state()
-    seen: set[str] = set(state["seen"])
+    # Ordered, oldest first, so trimming forgets the oldest -- a set trimmed
+    # arbitrarily and let a page's still-listed stories be reported again.
+    seen: dict[str, None] = dict.fromkeys(str(key) for key in state["seen"])
 
-    collected = news_fetch.fetch_and_cache(feeds, config)
+    collected = news_fetch.fetch_and_cache(feeds, config, pages)
 
+    # A page (wsj.com's stocks, say) is reported whole: every headline on it
+    # not already reported. Feeds only when a keyword matches.
     patterns = [keyword_pattern(keyword) for keyword in keywords]
     matches = [
-        item for item in collected if any(pattern.search(item["title"]) for pattern in patterns)
+        item
+        for item in collected
+        if item.get("source") in pages or any(pattern.search(item["title"]) for pattern in patterns)
     ]
-    new_matches = [item for item in matches if item["link"] not in seen]
-
-    if new_matches:
-        print("\n".join(f"{item['title']} ({item['link']})" for item in new_matches))
-
+    # Once each: a story is its link (or its site's story id) and its
+    # headline, so one story from two sources, or twice on one page, is one.
+    lines: list[str] = []
     for item in matches:
-        seen.add(item["link"])
+        keys = [item["link"], news_fetch.story_key(item["link"]), item["title"].casefold()]
+        if not any(key in seen for key in keys):
+            lines.append(f"{item['title']} ({item['link']})")
+        for key in keys:  # still listed: newest again, so it is the last forgotten
+            seen.pop(key, None)
+            seen[key] = None
+
+    if lines:
+        print("\n".join(lines))
     state["seen"] = list(seen)[-MAX_REMEMBERED_LINKS:]
     try:
         STATE_PATH.write_text(json.dumps(state), encoding="utf-8")

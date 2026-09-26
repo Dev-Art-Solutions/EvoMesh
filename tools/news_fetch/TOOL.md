@@ -5,9 +5,11 @@ command: python "{tool_dir}/scripts/news_fetch.py"
 parameters:
   - name: request
     description: >
-      Optional JSON object: {"feeds": ["https://..."], "keywords": ["gold"],
-      "limit": 10, "from_cache": false, "since_hours": 24}. Every field is
-      optional; feeds/keywords/limit default to config.json beside this
+      Optional JSON object: {"feeds": ["https://..."], "pages": ["https://..."],
+      "keywords": ["gold"], "limit": 10, "from_cache": false, "since_hours": 24}.
+      "pages" are whole pages (config.json's, e.g. wsj.com stocks) fetched
+      through Scrapling and never keyword-filtered. Every field is
+      optional; feeds/pages/keywords/limit default to config.json beside this
       template if omitted. Set "from_cache": true to skip the network
       entirely and read back headlines already seen over the retention
       window (config.json's "cache_days", default 3) instead of a live
