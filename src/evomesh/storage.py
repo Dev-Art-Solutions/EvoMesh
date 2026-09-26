@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -162,12 +162,18 @@ class SQLiteRepository:
     async def save_state(self, key: str, value: object) -> None:
         await self._upsert("state", "key", key, "value", json.dumps(value))
 
-    async def accept_work(self, key: str, value: object, agent: AgentDefinition) -> bool:
-        """Record that ``agent`` accepted a piece of work and store the agent
+    async def accept_work(
+        self, key: str, value: object, agent_id: str, render: Callable[[], str]
+    ) -> bool:
+        """Record that an agent accepted a piece of work and store the agent
         holding its goal, in one transaction. False, with nothing written,
         when the work was accepted before. A crash can leave neither or both
         -- never an acceptance whose goal was lost, which a replay would then
-        refuse as a duplicate."""
+        refuse as a duplicate.
+
+        ``render`` produces the agent's row once the write lock is held, so
+        it is the agent as it is at commit time -- not a snapshot taken before
+        waiting for the lock, which would undo a save that landed meanwhile."""
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
@@ -181,7 +187,7 @@ class SQLiteRepository:
                 await db.execute(
                     "INSERT INTO agents(id, definition) VALUES (?, ?) "
                     "ON CONFLICT(id) DO UPDATE SET definition = excluded.definition",
-                    (agent.id, agent.model_dump_json()),
+                    (agent_id, render()),
                 )
             except BaseException:
                 await db.rollback()

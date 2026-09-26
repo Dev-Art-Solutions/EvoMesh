@@ -571,6 +571,15 @@ class MindState(BaseModel):
         self._prune_closed_goals()
         return goal
 
+    def adopt_goal(self, goal: Goal) -> Goal:
+        """Install a goal built elsewhere (``add_goal`` on a scratch copy of
+        this mind) -- for a goal that may only become visible once something
+        outside, such as a storage transaction, has decided it exists."""
+        if all(existing.id != goal.id for existing in self.goals):
+            self.goals.append(goal)
+            self._prune_closed_goals()
+        return goal
+
     def _prune_closed_goals(self, keep: int = KEEP_CLOSED_GOALS) -> None:
         """Forget the oldest finished goals beyond ``keep``.
 

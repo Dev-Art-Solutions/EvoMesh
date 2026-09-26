@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
@@ -434,11 +435,85 @@ class AgentRuntime:
         finished and its goal was pruned finds the entry and runs nothing, and
         a crash or a failed write leaves neither, so the replay recovers the
         work instead of being refused as a duplicate of something lost. A real
-        new attempt arrives as a new WorkItem id."""
-        mind = self.definition.mind
-        if any(goal.parameters.get("work_item_id") == item.id for goal in mind.goals):
-            return Performative.ACCEPT, "already accepted"
-        goal = mind.add_goal(
+        new attempt arrives as a new WorkItem id.
+
+        Until storage decides, the goal exists only on a scratch copy of the
+        mind, and admission holds the agent's lock: no cycle can run it and no
+        other save of this agent can persist it, so a duplicate or a failed
+        write never becomes work, not even for a moment. The goal joins the
+        live mind only once committed."""
+        marker = f"delegation.accepted:{self.definition.id}:{item.id}"
+        async with self._lock:
+            mind = self.definition.mind
+            if any(goal.parameters.get("work_item_id") == item.id for goal in mind.goals):
+                return Performative.ACCEPT, "already accepted"
+            goal = self._staged_goal(item, requester_id)
+
+            def render() -> str:
+                staged = self.definition.model_copy(deep=True)
+                staged.mind.adopt_goal(goal.model_copy(deep=True))
+                return staged.model_dump_json()
+
+            commit = asyncio.ensure_future(
+                self.repository.accept_work(
+                    marker,
+                    {"requester": requester_id, "goal_id": goal.id},
+                    self.definition.id,
+                    render,
+                )
+            )
+            try:
+                # Shielded: cancelling admission must not cancel a transaction
+                # whose outcome would then be a guess.
+                first = await asyncio.shield(commit)
+            except asyncio.CancelledError:
+                commit.add_done_callback(lambda done: self._install_committed(done, goal))
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported to the requester instead
+                logger.warning("could not record accepting work %s: %s", item.id, exc)
+                return Performative.REJECT, f"could not record the acceptance: {exc}"[:300]
+            if not first and not await self._admission_lost(item):
+                return Performative.ACCEPT, "already accepted"
+            mind.adopt_goal(goal)
+            # Any save of this agent that landed while the transaction waited
+            # was written without the goal; this one puts it back.
+            await self.repository.save_agent(self.definition)
+        await self.events.publish(
+            Event(
+                EventType.GOAL_CREATED,
+                source="delegation",
+                agent_id=self.definition.id,
+                goal_id=goal.id,
+                payload={"work_item_id": item.id, "kind": goal.kind},
+            )
+        )
+        self.wake()
+        return Performative.ACCEPT, "accepted"
+
+    def _install_committed(self, commit: asyncio.Future[bool], goal: Goal) -> None:
+        """Admission was cancelled while its transaction ran on: install the
+        goal if -- and only if -- the transaction committed it."""
+        if commit.cancelled() or commit.exception() is not None or not commit.result():
+            return
+        self.definition.mind.adopt_goal(goal)
+
+    async def _admission_lost(self, item: WorkItem) -> bool:
+        """The ledger says accepted, but no goal holds the work: was the
+        acceptance committed and then lost (an overwrite, a cancelled install)
+        before the child ever finished? Only typed delegation can say so --
+        its parent's operation still waits on this agent."""
+        row = await self.repository.load_procedure_operation(f"delegate:{item.id}")
+        if row is None:
+            return False
+        record = json.loads(row[1])
+        child = record.get("child") or {}
+        return record.get("state") == "waiting" and child.get("assignee") == self.definition.id
+
+    def _staged_goal(self, item: WorkItem, requester_id: str) -> Goal:
+        """The goal a WorkItem becomes, built on a scratch copy of the mind so
+        creating it changes nothing anyone else can see."""
+        scratch = self.definition.mind.model_copy(deep=True)
+        return scratch.add_goal(
             item.objective,
             kind=DELEGATED_GOAL_KIND,
             parameters={
@@ -456,30 +531,6 @@ class AgentRuntime:
             # recurring goal that is always runnable would otherwise starve it.
             priority=DELEGATED_GOAL_PRIORITY,
         )
-        try:
-            first = await self.repository.accept_work(
-                f"delegation.accepted:{self.definition.id}:{item.id}",
-                {"requester": requester_id, "goal_id": goal.id},
-                self.definition,
-            )
-        except Exception as exc:  # noqa: BLE001 - reported to the requester instead
-            mind.goals = [other for other in mind.goals if other.id != goal.id]
-            logger.warning("could not record accepting work %s: %s", item.id, exc)
-            return Performative.REJECT, f"could not record the acceptance: {exc}"[:300]
-        if not first:
-            mind.goals = [other for other in mind.goals if other.id != goal.id]
-            return Performative.ACCEPT, "already accepted"
-        await self.events.publish(
-            Event(
-                EventType.GOAL_CREATED,
-                source="delegation",
-                agent_id=self.definition.id,
-                goal_id=goal.id,
-                payload={"work_item_id": item.id, "kind": goal.kind},
-            )
-        )
-        self.wake()
-        return Performative.ACCEPT, "accepted"
 
     # -- proactive path -------------------------------------------------
 

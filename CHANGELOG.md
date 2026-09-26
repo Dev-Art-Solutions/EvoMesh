@@ -2,6 +2,19 @@
 
 All notable changes to EvoMesh are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **A cycle could run delegated work that was never accepted.** The recipient
+  added the goal to its live mind before the acceptance transaction decided.
+  A cycle scheduled in between could start on it: a replayed duplicate, or
+  work whose acceptance then failed. Taking the goal away afterwards did not
+  undo what it had started. The goal is now built on a scratch copy and joins
+  the live mind only once committed, with admission holding the agent's lock.
+  A cancelled admission installs exactly what the transaction committed. An
+  acceptance whose goal was lost before the child ran is recovered, once.
+
 ## [0.4.0-alpha.1] - 2026-09-26
 
 The closed architecture. Work the mesh already knows how to do runs as a typed

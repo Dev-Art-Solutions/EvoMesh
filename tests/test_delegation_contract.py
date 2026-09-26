@@ -966,3 +966,234 @@ async def test_r01g5_admission_keeps_unrelated_agent_state(tmp_path: Path) -> No
     assert stored.mind.belief("weather") is not None
     assert any(item.kind == DELEGATED_GOAL_KIND for item in stored.mind.goals)
     await environment.stop()
+
+
+# -- R01-H (review 5b88f57): no goal is visible before its admission commits ------
+
+
+class AdmissionGate:
+    """Holds the recipient's admission transaction at a controlled point, so a
+    cycle can be scheduled while it is undecided."""
+
+    def __init__(self, repository: Any) -> None:
+        self.real = repository.accept_work
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        repository.accept_work = self.held
+
+    async def held(self, *arguments: Any, **keywords: Any) -> bool:
+        self.entered.set()
+        await self.release.wait()
+        return await self.real(*arguments, **keywords)
+
+
+async def _inspector_executions(environment: Environment, inspector: AgentDefinition) -> int:
+    rows = await environment.repository.list_procedure_executions()
+    return sum(1 for _, payload in rows if json.loads(payload)["agent_id"] == inspector.id)
+
+
+async def _stored_children(environment: Environment, inspector: AgentDefinition) -> int:
+    stored = next(
+        agent for agent in await environment.repository.load_agents() if agent.id == inspector.id
+    )
+    return sum(1 for goal in stored.mind.goals if goal.kind == DELEGATED_GOAL_KIND)
+
+
+async def test_r01h1_a_cycle_during_admission_runs_nothing_uncommitted(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    gate = AdmissionGate(environment.repository)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+
+    await environment.cycle_agent(coordinator.name)  # delegate
+    await asyncio.wait_for(gate.entered.wait(), 5)
+    # The receiver's own cycle, scheduled while its admission is undecided.
+    cycle = asyncio.create_task(environment.cycle_agent(inspector.name))
+    await asyncio.sleep(0.3)
+
+    assert _children(inspector) == [], "nothing uncommitted is visible"
+    assert await _inspector_executions(environment, inspector) == 0, "nor run"
+    gate.release.set()
+    await asyncio.wait_for(cycle, 10)
+    child = _children(inspector)[0]
+    await _run_child(environment, inspector, child)
+
+    assert child.status is GoalStatus.DONE, child.last_error
+    assert await _inspector_executions(environment, inspector) == 1
+    assert goal.is_open or goal.status is GoalStatus.DONE
+    await environment.stop()
+
+
+async def test_r01h2_a_replay_during_a_cycle_leaves_no_trace(tmp_path: Path) -> None:
+    environment, coordinator, inspector, provider, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    await _run_child(environment, inspector, child)
+    work_id = str(child.parameters["work_item_id"])
+    assert await _settled(environment, work_id)
+    row = await environment.repository.load_procedure_operation(f"delegate:{work_id}")
+    assert row is not None
+    payload = json.loads(row[1])["arguments"]["work"]
+    inspector.mind.goals = [item for item in inspector.mind.goals if item.id != child.id]
+    executions = await _inspector_executions(environment, inspector)
+    calls = len(provider.calls)
+    gate = AdmissionGate(environment.repository)
+
+    await environment.bus.send(
+        semantic_message(
+            Performative.DELEGATE,
+            sender_id=coordinator.id,
+            recipient_id=inspector.id,
+            task_id=work_id,
+            payload=payload,
+        )
+    )
+    await asyncio.wait_for(gate.entered.wait(), 5)
+    cycle = asyncio.create_task(environment.cycle_agent(inspector.name))
+    await asyncio.sleep(0.3)
+    gate.release.set()
+    await asyncio.wait_for(cycle, 10)
+    for _ in range(2):
+        await environment.cycle_agent(inspector.name)
+
+    assert _children(inspector) == [], "no goal, not even for a moment's work"
+    assert await _inspector_executions(environment, inspector) == executions
+    assert len(provider.calls) == calls
+    await environment.stop()
+
+
+async def test_r01h3_a_failed_admission_during_a_cycle_leaks_nothing(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    repository = environment.repository
+    # Only a row carrying the delegated goal fails: the cycle's own saves pass.
+    trigger = (
+        "CREATE TRIGGER fail_inspector BEFORE UPDATE ON agents "
+        f"WHEN NEW.id = '{inspector.id}' AND NEW.definition LIKE '%{DELEGATED_GOAL_KIND}%' "
+        "BEGIN SELECT RAISE(ABORT, 'disk gone'); END"
+    )
+    gate = AdmissionGate(repository)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+
+    work_id, payload = await _delegate_payload(environment, coordinator)
+    await asyncio.wait_for(gate.entered.wait(), 5)
+    await repository._write([(trigger, ())])  # pyright: ignore[reportPrivateUsage]
+    cycle = asyncio.create_task(environment.cycle_agent(inspector.name))
+    await asyncio.sleep(0.3)
+    gate.release.set()
+    await asyncio.wait_for(cycle, 10)
+    await asyncio.sleep(0.2)
+
+    assert _children(inspector) == []
+    assert await _inspector_executions(environment, inspector) == 0
+    marker = f"delegation.accepted:{inspector.id}:{work_id}"
+    assert await repository.load_state(marker) is None
+    await repository._write([("DROP TRIGGER fail_inspector", ())])  # pyright: ignore[reportPrivateUsage]
+    assert await _stored_children(environment, inspector) == 0, "no save leaked it"
+    await environment.stop()
+
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=True)
+    again = Environment(settings, {"ollama": MockProvider()})
+    await again.start()
+    restored = again.registry.get(inspector.id)
+    await again.start_agent(restored.id, start_delay=3600)
+    await again.bus.send(
+        semantic_message(
+            Performative.DELEGATE,
+            sender_id=coordinator.id,
+            recipient_id=restored.id,
+            task_id=work_id,
+            goal_id=goal.id,
+            payload=payload,
+        )
+    )
+    assert await _until(lambda: bool(_children(restored)))
+    assert len(_children(restored)) == 1
+    await again.stop()
+
+
+async def test_r01h4_cancelling_admission_resolves_what_was_committed(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    repository = environment.repository
+    gate = AdmissionGate(repository)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+
+    work_id, payload = await _delegate_payload(environment, coordinator)
+    await asyncio.wait_for(gate.entered.wait(), 5)
+    # Shutdown cancels the admission mid-transaction, after saving the agent.
+    await environment.stop_agent(inspector.id, persist_status=False)
+    assert _children(inspector) == [], "no memory-only goal"
+    assert await _stored_children(environment, inspector) == 0, "the stop saved no guess"
+    gate.release.set()
+    marker = f"delegation.accepted:{inspector.id}:{work_id}"
+    assert await _until(lambda: bool(_children(inspector))), "the committed goal is installed"
+    assert await repository.load_state(marker) is not None
+    assert await _stored_children(environment, inspector) == 1, "committed with its goal"
+    await environment.stop()
+
+    settings = settings_for(tmp_path)
+    settings.harness = HarnessSettings(enabled=True, allow_write=True)
+    again = Environment(settings, {"ollama": MockProvider()})
+    await again.start()
+    restored = again.registry.get(inspector.id)
+    await again.start_agent(restored.id, start_delay=3600)
+    await again.bus.send(
+        semantic_message(
+            Performative.DELEGATE,
+            sender_id=coordinator.id,
+            recipient_id=restored.id,
+            task_id=work_id,
+            goal_id=goal.id,
+            payload=payload,
+        )
+    )
+    await asyncio.sleep(0.3)
+    assert len(_children(restored)) == 1, "the committed goal, not a second task"
+    await _run_child(again, restored, _children(restored)[0])
+    assert _children(restored)[0].status is GoalStatus.DONE
+    await again.stop()
+
+
+async def test_r01h_an_acceptance_whose_goal_was_lost_is_recovered_once(tmp_path: Path) -> None:
+    environment, coordinator, inspector, _, _ = await _pair(tmp_path)
+    await _promote(environment, _parent("hand_off", "json_inspection"), JSON_INSPECTION)
+    goal = coordinator.mind.add_goal(
+        "Inspect doc.json", kind="hand_off", parameters={"path": "doc.json"}
+    )
+    child = await _delegate_one(environment, coordinator, inspector, goal)
+    work_id = str(child.parameters["work_item_id"])
+    # Committed, then lost before the child ran: an overwrite by a stale save.
+    inspector.mind.goals = [item for item in inspector.mind.goals if item.id != child.id]
+    await environment.repository.save_agent(inspector)
+    row = await environment.repository.load_procedure_operation(f"delegate:{work_id}")
+    assert row is not None
+    payload = json.loads(row[1])["arguments"]["work"]
+
+    for _ in range(2):
+        await environment.bus.send(
+            semantic_message(
+                Performative.DELEGATE,
+                sender_id=coordinator.id,
+                recipient_id=inspector.id,
+                task_id=work_id,
+                payload=payload,
+            )
+        )
+    assert await _until(lambda: bool(_children(inspector)))
+    await asyncio.sleep(0.3)
+
+    assert len(_children(inspector)) == 1, "recovered once, not twice"
+    await _run_child(environment, inspector, _children(inspector)[0])
+    assert _children(inspector)[0].status is GoalStatus.DONE
+    await environment.stop()

@@ -144,6 +144,16 @@ and its goal was pruned. A crash or a failed write leaves neither, and the
 requester gets a `REJECT`, so the replay recovers the work instead of being
 refused as a duplicate of something lost.
 
+Until that transaction decides, the goal does not exist anywhere a cycle or
+another save could find it. It is built on a scratch copy of the mind, and
+admission holds the agent's own lock, so no cycle runs meanwhile. The row is
+rendered inside the transaction, so it is the agent as it is at commit time. The
+goal joins the live mind only once committed. Cancelling admission does not
+cancel the transaction; the goal is installed if and only if the transaction
+committed it. If the ledger says accepted but no goal holds the work while the
+parent's operation still waits on this agent, the acceptance was lost and is
+recovered, once.
+
 Files are resolved once, in the requester's scope. The router finds every
 resource the work names: the parameters an admitted procedure binds into an
 adapter's file argument, and any path-named field at any depth. It resolves
