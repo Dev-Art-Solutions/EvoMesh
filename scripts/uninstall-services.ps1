@@ -21,3 +21,12 @@ foreach ($name in @('EvoMesh', 'EvoMesh-Ollama')) {
         Write-Output "[uninstall-services] $name is not installed"
     }
 }
+
+# install-services.ps1 parked the Ollama tray app's Startup shortcut so it would
+# not fight the service for port 11434; with the service gone, it gets it back.
+$parkedLink = Join-Path $Root '.runtime\Ollama.lnk.disabled'
+if (Test-Path $parkedLink) {
+    Move-Item $parkedLink (Join-Path ([Environment]::GetFolderPath('Startup')) 'Ollama.lnk') -Force
+    Write-Output '[uninstall-services] restored the Ollama tray app at login'
+}
+Remove-Item -Path (Join-Path $Root '.runtime\service.hold') -Force -ErrorAction SilentlyContinue

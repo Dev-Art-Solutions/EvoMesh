@@ -7,7 +7,17 @@
 [CmdletBinding()]
 param(
     [string] $Root,
-    [int]    $ControlPort = 8765
+    [int]    $ControlPort = 8765,
+    # Set by the EvoMesh Windows service (install-services.ps1). Honours the
+    # hold file that `scripts\evomesh-service.ps1 stop` leaves behind, and
+    # loads the account's user-level environment a service never inherits.
+    [switch] $Service,
+    # Hang watchdog: a mesh whose process is alive but whose control port stops
+    # answering /ping is killed and restarted like a crash. /ping is answered
+    # straight from the event loop, so no answer means the loop is wedged.
+    [int]    $PingIntervalSeconds = 60,
+    [int]    $MaxMissedPings = 5,
+    [int]    $StartupGraceSeconds = 600
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +45,26 @@ $RestartExitCode = 86
 $consecutiveFailures = 0
 $maxBackoffSeconds = 300
 
+if ($Service) {
+    # A service gets the machine environment only. OLLAMA_*, API keys and the
+    # user's PATH (uv among it) live in the account's user scope, which a
+    # console launch inherits from Explorer and a service never sees.
+    $userEnv = [Environment]::GetEnvironmentVariables('User')
+    foreach ($name in $userEnv.Keys) {
+        if ($name -eq 'Path') {
+            $env:Path = "$env:Path;$($userEnv[$name])"
+        } elseif (-not [Environment]::GetEnvironmentVariable($name, 'Process')) {
+            [Environment]::SetEnvironmentVariable($name, $userEnv[$name], 'Process')
+        }
+    }
+}
+
+# `scripts\evomesh-service.ps1 stop` writes this so a stopped mesh stays
+# stopped -- through a reboot too -- until `start` removes it. Development
+# needs the port and the tree to itself; a watchdog fighting that is worse
+# than none.
+$holdFile = Join-Path $Root '.runtime\service.hold'
+
 $env:UV_CACHE_DIR = Join-Path $Root '.runtime\uv-cache'
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $Root '.runtime\python'
 
@@ -59,18 +89,74 @@ function Write-Log([string] $Message) {
     # specifically to never give up. Logging a restart must never be able to
     # prevent one.
     try { Add-Content -Path $supervisorLog -Value $line -Encoding utf8 -ErrorAction Stop } catch {}
-    Write-Output $line
+    # Host, not the output stream: called from inside Invoke-Mesh, Write-Output
+    # would become part of that function's return value -- the exit code.
+    Write-Host $line
+}
+
+function Test-MeshAlive {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $connect = $client.BeginConnect('127.0.0.1', $ControlPort, $null, $null)
+        if (-not $connect.AsyncWaitHandle.WaitOne(5000)) { return $false }
+        $client.EndConnect($connect)
+        $stream = $client.GetStream()
+        $stream.ReadTimeout = 20000
+        $request = [Text.Encoding]::UTF8.GetBytes("{`"command`": `"/ping`"}`n")
+        $stream.Write($request, 0, $request.Length)
+        $line = (New-Object System.IO.StreamReader($stream)).ReadLine()
+        return [bool]($line -and $line.Contains('"running"'))
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
+
+function Invoke-Mesh {
+    # A Process object rather than `& uv run`, so this loop keeps control while
+    # the mesh runs and can ping it. No redirection: output still goes to the
+    # console, or to the service's log files under NSSM.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $uv
+    $info.Arguments = "run --locked --no-dev evomesh --config `"$config`" --headless " +
+        "--control-host 127.0.0.1 --control-port $ControlPort --log-file `"$meshLog`""
+    $info.WorkingDirectory = $Root
+    $info.UseShellExecute = $false
+    $process = [System.Diagnostics.Process]::Start($info)
+
+    $started = Get-Date
+    $everAnswered = $false
+    $missed = 0
+    while (-not $process.WaitForExit($PingIntervalSeconds * 1000)) {
+        if (Test-MeshAlive) {
+            $everAnswered = $true
+            $missed = 0
+            continue
+        }
+        if (-not $everAnswered -and ((Get-Date) - $started).TotalSeconds -lt $StartupGraceSeconds) {
+            continue
+        }
+        $missed++
+        Write-Log "[supervisor] watchdog: no answer to /ping ($missed/$MaxMissedPings)"
+        if ($missed -ge $MaxMissedPings) {
+            Write-Log "[supervisor] watchdog: EvoMesh is hung; killing process tree $($process.Id)"
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            $process.WaitForExit()
+            return -1
+        }
+    }
+    $process.WaitForExit()
+    return $process.ExitCode
 }
 
 while ($true) {
+    if ($Service -and (Test-Path $holdFile)) {
+        Write-Log '[supervisor] held for development (.runtime\service.hold); not starting'
+        break
+    }
     Write-Log '[supervisor] starting EvoMesh'
-    & $uv run --locked --no-dev evomesh `
-        --config $config `
-        --headless `
-        --control-host 127.0.0.1 `
-        --control-port $ControlPort `
-        --log-file $meshLog
-    $code = $LASTEXITCODE
+    $code = Invoke-Mesh
 
     if ($code -eq $RestartExitCode) {
         Write-Log '[supervisor] a new generation landed; restarting into it'

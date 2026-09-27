@@ -25,8 +25,9 @@ tests/           unit, cycle, reachability, publishing and restart-scenario cove
 docs/evolution/  one entry per generation, written by the mesh into its own commit
 skills/          one directory per skill, each a SKILL.md (see rule 19) -- tracked, not ignored
 scripts/         run-dev.ps1 / run-dev.sh / run-supervised.ps1 / package-windows.ps1 /
-                 install-scrapling.ps1 / .sh
+                 install-scrapling.ps1 / .sh / install-services.ps1 / evomesh-service.ps1
 *.bat            start-evomesh.bat (Control Center), start-evomesh-console.bat (terminal)
+evomesh-service.cmd  status | stop | start | restart | logs for the Windows service (below)
 data/            SQLite state (ignored)
 workspace/       per-agent memory.md / context.md + shared world context (ignored)
 generations/     supervisor metadata and candidate workspaces (ignored)
@@ -177,6 +178,13 @@ regresses.
     mistaken for a restart request. Whoever launched the process (Control Center,
     `start-evomesh-console.bat`, `run-supervised.ps1`) brings it back up and the durable
     `restart_required` flag clears on boot.
+    **As a Windows service** (`scripts\install-services.ps1`, elevated, once): NSSM runs
+    `run-supervised.ps1 -Service` and Ollama at boot as the user's account, no login needed.
+    Three layers bring it back: exit 86 (supervisor loop), a crash (backoff loop, then NSSM), a
+    hang (no `/ping` answer for ~5 min → process tree killed). **To develop, stop it with
+    `evomesh-service stop`** (no admin): it sends `/exit` and writes `.runtime\service.hold`, which
+    keeps it stopped through reboots until `evomesh-service start`. Never run a dev mesh while
+    the service holds port 8765.
 14. **Unreachable code fails validation, as a ratchet.** `tests/test_reachability.py` walks the same
     import graph `codebase.py` builds. Modules that were already dead are listed in
     [docs/evolution/known-dead-modules.txt](docs/evolution/known-dead-modules.txt) and tolerated;
