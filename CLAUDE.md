@@ -181,7 +181,9 @@ regresses.
     **As a Windows service** (`scripts\install-services.ps1`, elevated, once): NSSM runs
     `run-supervised.ps1 -Service` and Ollama at boot as the user's account, no login needed.
     Three layers bring it back: exit 86 (supervisor loop), a crash (backoff loop, then NSSM), a
-    hang (no `/ping` answer for ~5 min → process tree killed). **To develop, stop it with
+    hang (no `/ping` answer for ~5 min → process tree killed). Ollama is checked before every
+    start and every minute; if it does not answer, the supervisor starts the `EvoMesh-Ollama`
+    service (or `ollama serve` when no service is installed). **To develop, stop it with
     `evomesh-service stop`** (no admin): it sends `/exit` and writes `.runtime\service.hold`, which
     keeps it stopped through reboots until `evomesh-service start`. Never run a dev mesh while
     the service holds port 8765.

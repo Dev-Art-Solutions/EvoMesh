@@ -179,7 +179,10 @@ Install-OneService -Name 'EvoMesh' -Exe $psExe `
     -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$superviseScript`" -Service" -WorkDir $Root `
     -StdoutLog (Join-Path $logDir 'evomesh-service.out.log') -StderrLog (Join-Path $logDir 'evomesh-service.err.log')
 
-& $Nssm set EvoMesh DependOnService EvoMesh-Ollama | Out-Null
+# Deliberately no DependOnService on EvoMesh-Ollama: a hard dependency means an
+# Ollama that fails at boot keeps EvoMesh from starting at all. run-supervised.ps1
+# starts (or restarts) the Ollama service itself before the mesh and on every
+# watchdog tick.
 
 # Installing means "run it": a hold left over from an earlier `stop` would
 # otherwise make the fresh service end the moment it starts.

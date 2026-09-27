@@ -294,6 +294,7 @@ KNOWN_ROOT_FILES = frozenset(
         "evomesh.yaml.example",
         "evomesh.secrets.yaml",
         "evomesh.secrets.yaml.example",
+        "evomesh-service.cmd",
         "pyproject.toml",
         "start-evomesh-console.bat",
         "start-evomesh.bat",

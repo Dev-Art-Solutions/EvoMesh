@@ -17,7 +17,10 @@ param(
     # straight from the event loop, so no answer means the loop is wedged.
     [int]    $PingIntervalSeconds = 60,
     [int]    $MaxMissedPings = 5,
-    [int]    $StartupGraceSeconds = 600
+    [int]    $StartupGraceSeconds = 600,
+    # Checked before every start and on every watchdog tick; brought up when
+    # it does not answer (models.providers.ollama.base_url in evomesh.yaml).
+    [string] $OllamaUrl = 'http://127.0.0.1:11434'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,6 +116,69 @@ function Test-MeshAlive {
     }
 }
 
+function Test-Ollama {
+    try {
+        $null = Invoke-WebRequest -Uri "$OllamaUrl/api/version" -UseBasicParsing -TimeoutSec 5
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Wait-Ollama([int] $Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Ollama) { return $true }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
+function Start-OllamaIfDown {
+    # Every agent on the ollama provider fails its cycles while Ollama is gone,
+    # and the mesh itself stays up and answers /ping, so the hang watchdog
+    # alone would never notice. Nothing here may write to the output stream:
+    # it is called from inside Invoke-Mesh, whose output is the exit code.
+    if (Test-Ollama) { return }
+    $svc = Get-Service -Name 'EvoMesh-Ollama' -ErrorAction SilentlyContinue
+    try {
+        if ($svc) {
+            if ($svc.Status -ne 'Stopped') {
+                # Starting up at boot, or NSSM mid-restart: give it a moment
+                # before calling it hung.
+                if (Wait-Ollama 30) { return }
+                Write-Log "[supervisor] Ollama ($OllamaUrl) is not answering; restarting the EvoMesh-Ollama service"
+                Restart-Service -Name 'EvoMesh-Ollama' -Force -ErrorAction Stop
+            } else {
+                Write-Log "[supervisor] Ollama ($OllamaUrl) is not running; starting the EvoMesh-Ollama service"
+                Start-Service -Name 'EvoMesh-Ollama' -ErrorAction Stop
+            }
+        } else {
+            $exe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
+            if (-not $exe) {
+                $exe = @(
+                    (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
+                    (Join-Path $env:ProgramFiles 'Ollama\ollama.exe')
+                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (-not $exe) {
+                Write-Log '[supervisor] Ollama is not running and ollama.exe was not found; starting EvoMesh without it'
+                return
+            }
+            Write-Log "[supervisor] Ollama ($OllamaUrl) is not running; starting $exe serve"
+            Start-Process -FilePath $exe -ArgumentList 'serve' -WindowStyle Hidden
+        }
+    } catch {
+        Write-Log "[supervisor] could not start Ollama: $($_.Exception.Message)"
+        return
+    }
+    if (Wait-Ollama 60) {
+        Write-Log '[supervisor] Ollama is up'
+    } else {
+        Write-Log '[supervisor] Ollama still not answering after 60s; will check again on the next tick'
+    }
+}
+
 function Invoke-Mesh {
     # A Process object rather than `& uv run`, so this loop keeps control while
     # the mesh runs and can ping it. No redirection: output still goes to the
@@ -129,6 +195,7 @@ function Invoke-Mesh {
     $everAnswered = $false
     $missed = 0
     while (-not $process.WaitForExit($PingIntervalSeconds * 1000)) {
+        Start-OllamaIfDown
         if (Test-MeshAlive) {
             $everAnswered = $true
             $missed = 0
@@ -155,6 +222,7 @@ while ($true) {
         Write-Log '[supervisor] held for development (.runtime\service.hold); not starting'
         break
     }
+    Start-OllamaIfDown
     Write-Log '[supervisor] starting EvoMesh'
     $code = Invoke-Mesh
 
