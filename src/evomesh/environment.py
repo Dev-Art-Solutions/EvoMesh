@@ -97,6 +97,20 @@ WORLD_BLACKBOARD_LINES = 6
 STALE_GOAL_SECONDS = 3600.0
 # How long one shutdown step may take before it is left behind.
 SHUTDOWN_STEP_SECONDS = 20.0
+# Announcements kept for a listener that has not registered yet (boot).
+UNDELIVERED_LIMIT = 50
+
+
+async def _deliver_backlog(
+    backlog: deque[str], notify: Callable[[str], Awaitable[None]]
+) -> None:
+    pending = list(backlog)
+    backlog.clear()
+    for text in pending:
+        try:
+            await notify(text)
+        except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
+            logger.exception("A notification channel failed")
 
 
 async def shutdown_step(step: str, work: Awaitable[Any], seconds: float | None = None) -> None:
@@ -237,6 +251,15 @@ class Environment:
         # finishing for agent X must not spill into agent Y's private chat,
         # so this is keyed by agent id rather than shared like notifiers above.
         self.agent_notifiers: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
+        # Announcements made while nobody was listening yet, handed to the
+        # first listener that registers (add_notifier / add_agent_notifier).
+        # Found live 2026-09-27: start() runs every watcher's first tick before
+        # __main__ even creates the Telegram channel, which then registers only
+        # after getMe -- so whatever the NewsWatcher found at boot went to an
+        # empty list, was marked reported, and never reached anyone. Every
+        # landed generation restarts the mesh, so that was most of the news.
+        self._undelivered: deque[str] = deque(maxlen=UNDELIVERED_LIMIT)
+        self._undelivered_by_agent: dict[str, deque[str]] = {}
         # Channels that can map a reply or a reaction back to one idea (a
         # Telegram message id per idea, per chat). Every one of them gets every
         # idea: the shared chat and the Idea Scout's own bot alike, and a thumbs
@@ -624,11 +647,28 @@ class Environment:
         """Tell every listening channel something the mesh did unprompted."""
         self.announcement_log.append((self._next_announcement_id, now_utc(), text))
         self._next_announcement_id += 1
+        if not self.notifiers:
+            self._undelivered.append(text)
+            return
         for notify in list(self.notifiers):
             try:
                 await notify(text)
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
                 logger.exception("A notification channel failed")
+
+    async def add_notifier(self, notify: Callable[[str], Awaitable[None]]) -> None:
+        """Register a mesh-wide listener and hand it what nobody heard yet."""
+        self.notifiers.append(notify)
+        await _deliver_backlog(self._undelivered, notify)
+
+    async def add_agent_notifier(
+        self, agent_id: str, notify: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Register one agent's private listener and hand it that agent's backlog."""
+        self.agent_notifiers.setdefault(agent_id, []).append(notify)
+        backlog = self._undelivered_by_agent.pop(agent_id, None)
+        if backlog:
+            await _deliver_backlog(backlog, notify)
 
     async def announce_idea(self, idea: Idea) -> None:
         """An idea, to every channel that can take a yes or no for it back.
@@ -717,7 +757,18 @@ class Environment:
             logger.info("muted agent %s: %s", agent_id, text)
             return
         await self.announce(text)
-        for notify in list(self.agent_notifiers.get(agent_id, [])):
+        listeners = list(self.agent_notifiers.get(agent_id, []))
+        if not listeners:
+            try:
+                settings = self.registry.get(agent_id).telegram
+            except KeyError:
+                settings = None
+            if settings is not None and settings.enabled:
+                # Its own bot is configured but not connected yet (boot).
+                self._undelivered_by_agent.setdefault(
+                    agent_id, deque(maxlen=UNDELIVERED_LIMIT)
+                ).append(text)
+        for notify in listeners:
             try:
                 await notify(text)
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh

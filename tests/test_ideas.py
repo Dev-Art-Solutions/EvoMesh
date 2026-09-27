@@ -328,7 +328,7 @@ async def _telegram(tmp_path: Path) -> tuple[Environment, TelegramChannel, FakeT
         TelegramSettings(enabled=True, token="t", allowed_chat_ids=[42]),
         client,
     )
-    channel._register_listener()  # pyright: ignore[reportPrivateUsage]
+    await channel._register_listener()  # pyright: ignore[reportPrivateUsage]
     return environment, channel, fake, project
 
 
@@ -367,7 +367,7 @@ async def test_the_shared_chat_gets_every_idea_even_when_the_scout_has_its_own_b
         locked_agent_id=IDEAS_AGENT_ID,
         locked_agent_name="Idea Scout",
     )
-    own._register_listener()  # pyright: ignore[reportPrivateUsage]
+    await own._register_listener()  # pyright: ignore[reportPrivateUsage]
     idea = await environment.ideas.add(TOTAL, "Idea Scout")
     assert idea is not None
 

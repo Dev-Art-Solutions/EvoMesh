@@ -210,7 +210,7 @@ class TelegramChannel:
             logger.info("Telegram connected as %s", self.identity)
             await self._restore()
             if self.settings.announcements:
-                self._register_listener()
+                await self._register_listener()
             await self._poll()
         except asyncio.CancelledError:
             raise
@@ -224,15 +224,15 @@ class TelegramChannel:
             if self._owns_client:
                 await client.aclose()
 
-    def _register_listener(self) -> None:
+    async def _register_listener(self) -> None:
         if self._takes_ideas:
             self.environment.idea_notifiers.append(self.announce_idea)
+        # Through add_*_notifier, not a bare append: those also deliver what
+        # the mesh announced before this bot finished connecting.
         if self.locked_agent_id:
-            self.environment.agent_notifiers.setdefault(self.locked_agent_id, []).append(
-                self.announce
-            )
+            await self.environment.add_agent_notifier(self.locked_agent_id, self.announce)
         else:
-            self.environment.notifiers.append(self.announce)
+            await self.environment.add_notifier(self.announce)
 
     def _unregister_listener(self) -> None:
         if self.announce_idea in self.environment.idea_notifiers:
