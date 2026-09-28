@@ -531,6 +531,20 @@ def _cached_items(keywords: list[str], since_hours: float | None) -> list[dict[s
             for e in entries]
 
 
+def whole_feeds_of(config: dict, request: dict | None = None) -> list[str]:
+    """RSS feeds reported in full, like a page, but fetched as plain RSS.
+    Found live 2026-09-28: wsj.com's DataDome answered every page fetch --
+    headed real Chrome included -- with a 401 captcha after a night of
+    polling; WSJ's own RSS (feeds.content.dowjones.io) is meant for exactly
+    this and carries the same stories."""
+    raw = (request or {}).get("whole_feeds") or config.get("whole_feeds") or []
+    return [str(url) for url in raw]
+
+
+def with_whole_feeds(feeds: list[str], whole_feeds: list[str]) -> list[str]:
+    return [*feeds, *(url for url in whole_feeds if url not in feeds)]
+
+
 def fetch_and_cache(
     feeds: list[str], config: dict, pages: list[str] | None = None
 ) -> list[dict[str, str]]:
@@ -585,14 +599,16 @@ def main() -> int:
 
     feeds = request.get("feeds") or config.get("feeds") or DEFAULT_FEEDS
     pages = request.get("pages") or config.get("pages") or []
-    collected = fetch_and_cache(feeds, config, pages)
+    whole_feeds = whole_feeds_of(config, request)
+    collected = fetch_and_cache(with_whole_feeds(feeds, whole_feeds), config, pages)
 
     if keywords:
-        # A page is reported whole; keywords only narrow the feeds.
+        # A page or a whole feed is reported whole; keywords only narrow the feeds.
+        whole = {*pages, *whole_feeds}
         collected = [
             item
             for item in collected
-            if item.get("source") in pages
+            if item.get("source") in whole
             or any(keyword in item["title"].lower() for keyword in keywords)
         ]
 

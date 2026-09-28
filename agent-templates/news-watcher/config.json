@@ -28,8 +28,7 @@
   ],
   "limit": 10,
   "cache_days": 3,
-  "pages": [
-    "https://www.wsj.com/finance/stocks?page=1"
-  ],
-  "page_minutes": 30
+  "whole_feeds": [
+    "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"
+  ]
 }

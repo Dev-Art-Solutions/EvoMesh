@@ -66,6 +66,14 @@ def _fake_news_fetch_module(config: dict):
         def story_key(link):
             return link
 
+        @staticmethod
+        def whole_feeds_of(cfg, request=None):
+            return list(cfg.get("whole_feeds") or [])
+
+        @staticmethod
+        def with_whole_feeds(feeds, whole_feeds):
+            return [*feeds, *(url for url in whole_feeds if url not in feeds)]
+
         @classmethod
         def fetch_and_cache(cls, feeds, cfg, pages=None):
             collected = []
@@ -85,6 +93,20 @@ def test_stays_silent_with_no_keywords_configured(tmp_path, capsys):
         assert watch_news.main() == 0
 
     assert capsys.readouterr().out == ""
+
+
+def test_a_whole_feed_is_reported_in_full_without_keywords(tmp_path, capsys):
+    """WSJ's markets RSS replaced its DataDome-guarded stocks page (401 on
+    2026-09-28): like the page, every headline is news, keyword or not."""
+    config = {"keywords": [], "feeds": [], "whole_feeds": ["https://example.com/wsj.rss"]}
+    with patch.object(watch_news, "STATE_PATH", tmp_path / "state.json"), patch.object(
+        watch_news, "_load_news_fetch", lambda: _fake_news_fetch_module(config)
+    ):
+        assert watch_news.main() == 0
+
+    output = capsys.readouterr().out
+    assert "Gold hits a new high" in output
+    assert "Unrelated market update" in output
 
 
 def test_prints_only_a_genuinely_new_keyword_match(tmp_path, capsys):

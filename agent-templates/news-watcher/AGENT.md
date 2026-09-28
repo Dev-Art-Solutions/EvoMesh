@@ -36,9 +36,14 @@ headlines to keep on disk, default 3):
 }
 ```
 
-`pages` are whole pages reported in full rather than feeds filtered by
-keyword -- `["https://www.wsj.com/finance/stocks?page=1"]` reports every
-headline on WSJ's stocks page the first time it appears there, once. They
+`whole_feeds` are RSS feeds reported in full rather than filtered by
+keyword -- `["https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"]`
+(WSJ Markets) reports every headline the first time it appears, once. This
+replaced scraping WSJ's stocks page: from 2026-09-28 wsj.com's DataDome
+answered every page fetch, headed real Chrome included, with a 401 captcha.
+
+`pages` are whole pages reported in full the same way, for a site with no
+RSS at all. They
 are fetched through Scrapling (the mesh's crawling tool) as a real, headed
 Chrome -- the only way wsj.com let a fetch through -- on a Windows desktop
 of its own that is never displayed, so no window and no taskbar button

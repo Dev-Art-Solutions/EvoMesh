@@ -61,7 +61,8 @@ def main() -> int:
     config = news_fetch._load_config()
     keywords = [str(item).lower() for item in (config.get("keywords") or [])]
     pages = [str(url) for url in (config.get("pages") or [])]
-    if not keywords and not pages:
+    whole_feeds = news_fetch.whole_feeds_of(config)
+    if not keywords and not pages and not whole_feeds:
         # Nothing configured to watch for -- stay silent rather than
         # announcing every single headline.
         return 0
@@ -72,15 +73,18 @@ def main() -> int:
     # arbitrarily and let a page's still-listed stories be reported again.
     seen: dict[str, None] = dict.fromkeys(str(key) for key in state["seen"])
 
-    collected = news_fetch.fetch_and_cache(feeds, config, pages)
+    collected = news_fetch.fetch_and_cache(
+        news_fetch.with_whole_feeds(feeds, whole_feeds), config, pages
+    )
 
-    # A page (wsj.com's stocks, say) is reported whole: every headline on it
-    # not already reported. Feeds only when a keyword matches.
+    # A page or a whole feed (WSJ's markets RSS, say) is reported whole: every
+    # headline on it not already reported. Other feeds only when a keyword matches.
+    whole = {*pages, *whole_feeds}
     patterns = [keyword_pattern(keyword) for keyword in keywords]
     matches = [
         item
         for item in collected
-        if item.get("source") in pages or any(pattern.search(item["title"]) for pattern in patterns)
+        if item.get("source") in whole or any(pattern.search(item["title"]) for pattern in patterns)
     ]
     # Once each: a story is its link (or its site's story id) and its
     # headline, so one story from two sources, or twice on one page, is one.
