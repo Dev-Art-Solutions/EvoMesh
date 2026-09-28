@@ -178,3 +178,7 @@ the line below the title.
     >                 f"{item.title}"
     1. [x] src/evomesh/improvements.py `ImprovementControl.summary` -- for an improvement that has work items, append ` work <completed>/<total>` to its line, counting its work items (from `item.work_item_ids`, looked up in `self.backlog.work_items`) and leaving cancelled ones out of the total.
     2. [x] src/evomesh/environment.py `Environment.status` -- in the `improvements` mapping, add a `work_items` entry: a count of `self.improvement_backlog.work_items` by status value.
+- [ ] Cancel the running baseline on /restart instead of waiting for it
+    On /restart the environment wakes and re-runs, but the Evolver's baseline run on lane 0 is still in flight and the env only lets it finish (it has a 150s timeout) before stopping — that is the ~2.5-minute wait.
+    > restart_requested = self.evolver.restart_requested
+    Not yet anchored in the code: it quotes code that is in none of its files: 'restart_requested = self.evolver.restart_requested'.
