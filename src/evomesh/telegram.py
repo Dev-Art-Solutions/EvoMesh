@@ -63,6 +63,44 @@ WELCOME = (
 # start it again, and the control port only listens on localhost.
 BLOCKED_COMMANDS = {"/exit"}
 
+# The "/" menu Telegram shows beside the input box (setMyCommands). Only
+# commands that do something useful with no arguments, or that say their own
+# usage when given none -- a tap sends the bare command. Names must be
+# lowercase a-z, 0-9 and _, which is why /num-ctx and friends stay in /help.
+MENU_COMMANDS: list[tuple[str, str]] = [
+    ("status", "Environment and provider health"),
+    ("agents", "Who is running -- tap one to talk to it"),
+    ("evolution", "Generation and pipeline state"),
+    ("ideas", "Ideas waiting for your review"),
+    ("improvements", "The backlog steering evolution"),
+    ("harness", "Harness queue and last jobs"),
+    ("notifications", "What the mesh announced on its own"),
+    ("reports", "An agent's last reports"),
+    ("wiki", "What an agent has learned"),
+    ("chat", "Choose who you are talking to"),
+    ("restart", "Restart the mesh into the current tree"),
+    ("help", "Every command"),
+]
+AGENT_MENU_COMMANDS: list[tuple[str, str]] = [
+    ("reports", "Its last reports as sent to you"),
+    ("wiki", "What it has learned"),
+    ("status", "Environment and provider health"),
+    ("help", "Every command"),
+]
+# Callback data is capped at 64 bytes by Telegram; a button that would need
+# more is left out rather than sent truncated into a different command.
+CALLBACK_LIMIT = 64
+# Buttons under /start, /help and /status: the checks a human makes most.
+MAIN_BUTTONS: list[list[tuple[str, str]]] = [
+    [("📊 Status", "/status"), ("🤖 Agents", "/agents")],
+    [("🧬 Evolution", "/evolution status"), ("💡 Ideas", "/ideas")],
+    [("🛠 Harness", "/harness status"), ("🔔 Notifications", "/notifications")],
+]
+AGENT_BUTTONS: list[list[tuple[str, str]]] = [
+    [("📝 Reports", "/reports"), ("📚 Wiki", "/wiki"), ("📊 Status", "/status")],
+]
+MAX_LISTED_BUTTONS = 10
+
 
 class TelegramError(RuntimeError):
     """A Bot API failure; ``retry_after`` is the wait Telegram asked for on a
@@ -210,6 +248,7 @@ class TelegramChannel:
             me = await self._call("getMe", {})
             self.identity = f"@{me.get('username', '?')}"
             logger.info("Telegram connected as %s", self.identity)
+            await self._publish_menu()
             await self._restore()
             if self.settings.announcements:
                 await self._register_listener()
@@ -271,8 +310,9 @@ class TelegramChannel:
                     {
                         "offset": self._offset,
                         "timeout": self.settings.poll_timeout_seconds,
-                        # Reactions only arrive when asked for by name.
-                        "allowed_updates": ["message", "message_reaction"],
+                        # Reactions and button presses only arrive when
+                        # asked for by name.
+                        "allowed_updates": ["message", "message_reaction", "callback_query"],
                     },
                 )
             except asyncio.CancelledError:
@@ -301,11 +341,16 @@ class TelegramChannel:
         if isinstance(reaction, dict):
             await self._react(reaction)
             return
+        query = update.get("callback_query")
+        if isinstance(query, dict):
+            await self._press(query)
+            return
         message = update.get("message") or {}
         chat_id = int((message.get("chat") or {}).get("id", 0))
         if not chat_id:
             return
         attachment = _incoming_attachment(message)
+        text = ""
         try:
             if attachment is not None:
                 reply = await self._answer_file(chat_id, *attachment)
@@ -318,11 +363,106 @@ class TelegramChannel:
                     reply = await self._answer(chat_id, text)
         except (KeyError, ValueError, RuntimeError) as exc:
             reply = f"Error: {exc}"
-        if reply:
-            await self.send(chat_id, reply)
-            console = self._consoles.get(chat_id)
-            if console is not None:
-                await self._send_file_references(chat_id, console.selected_agent, reply)
+        await self._deliver(chat_id, text, reply)
+
+    async def _deliver(self, chat_id: int, command: str, reply: str) -> None:
+        if not reply:
+            return
+        markup = None
+        if chat_id in self._allowed and not reply.startswith("Error:"):
+            markup = await self._markup_for(command)
+        await self.send(chat_id, reply, markup)
+        console = self._consoles.get(chat_id)
+        if console is not None:
+            await self._send_file_references(chat_id, console.selected_agent, reply)
+
+    # -- menu and buttons ------------------------------------------------
+
+    async def _publish_menu(self) -> None:
+        """Fill the "/" menu. A bot without it still works, so a refusal is
+        logged, never raised."""
+        if not self.locked_agent_id:
+            commands = MENU_COMMANDS
+        else:
+            commands = list(AGENT_MENU_COMMANDS)
+            if self.locked_agent_id == IDEAS_AGENT_ID:
+                commands.insert(0, ("ideas", "Ideas waiting for your review"))
+        payload = {
+            "commands": [
+                {"command": name, "description": description} for name, description in commands
+            ]
+        }
+        try:
+            await self._call("setMyCommands", payload)
+        except (httpx.HTTPError, TelegramError) as exc:
+            logger.warning("Could not set the Telegram command menu: %s", exc)
+
+    async def _markup_for(self, command: str) -> dict[str, Any] | None:
+        """The buttons that belong under the answer to ``command``, if any.
+
+        Every button carries a command as text and a press routes it through
+        ``_answer`` exactly as if it had been typed -- one definition of what
+        a command means, the allow-list and BLOCKED_COMMANDS included.
+        """
+        parts = command.split()
+        name = _bare_command(parts[0]) if parts else ""
+        action = parts[1].lower() if len(parts) > 1 else ""
+        rows: list[list[tuple[str, str]]] = []
+        if name in {"/start", "/help", "/status"}:
+            rows = AGENT_BUTTONS if self.locked_agent_id else MAIN_BUTTONS
+        elif name == "/agents" and not self.locked_agent_id:
+            agents = self.environment.registry.all()[:MAX_LISTED_BUTTONS]
+            rows = [[(f"💬 {agent.name}", f"/chat {agent.id}")] for agent in agents]
+        elif name == "/ideas":
+            rows = [
+                [(f"✅ #{idea.number}", f"idea approve {idea.number}"),
+                 (f"❌ #{idea.number}", f"idea reject {idea.number}")]
+                for idea in self.environment.ideas.pending()[:MAX_LISTED_BUTTONS]
+            ]
+        elif name == "/evolution" and action in {"", "status"} and not self.locked_agent_id:
+            rows = [[("🔄 Refresh", "/evolution status")]]
+            state = await self.environment.evolver.pipeline_state()
+            if state.get("stage") == "await-human" and state.get("awaiting"):
+                rows.insert(
+                    0, [("✅ Promote", "/evolution promote"), ("🗑 Discard", "/evolution discard")]
+                )
+        return _keyboard(rows)
+
+    async def _press(self, query: dict[str, Any]) -> None:
+        """A tapped inline button: its data is a command, or an idea verdict."""
+        message = query.get("message") or {}
+        chat_id = int((message.get("chat") or {}).get("id", 0))
+        data = str(query.get("data") or "")
+        allowed = chat_id in self._allowed
+        # Answered first: until it is, the button spins on the phone, and a
+        # command like /evolution status can take a moment.
+        try:
+            await self._call(
+                "answerCallbackQuery",
+                {"callback_query_id": query.get("id"),
+                 **({} if allowed else {"text": "This chat is not allowed."})},
+            )
+        except (httpx.HTTPError, TelegramError) as exc:
+            logger.warning("Could not answer a Telegram button press: %s", exc)
+        if not allowed or not data:
+            return
+        try:
+            if data.startswith("idea "):
+                _, verdict, number = data.split()
+                reply = await self._decide_idea(chat_id, int(number), verdict, "button")
+                if self._idea_for(chat_id, message.get("message_id")) is not None:
+                    # An idea's own message: decided, so its buttons go.
+                    await self._call(
+                        "editMessageReplyMarkup",
+                        {"chat_id": chat_id, "message_id": message.get("message_id"),
+                         "reply_markup": {"inline_keyboard": []}},
+                    )
+                await self.send(chat_id, reply)
+                return
+            reply = await self._answer(chat_id, data)
+        except (KeyError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+            reply = f"Error: {exc}"
+        await self._deliver(chat_id, data, reply)
 
     # -- ideas ----------------------------------------------------------
 
@@ -377,10 +517,17 @@ class TelegramChannel:
 
     async def announce_idea(self, number: int, text: str) -> None:
         """Send an idea and remember which message carries it."""
+        buttons = _keyboard(
+            [[("✅ Approve", f"idea approve {number}"), ("❌ Reject", f"idea reject {number}")]]
+        )
+        chunks = _chunks(text)
         for chat_id in sorted(self._allowed):
-            for chunk in _chunks(text):
+            for index, chunk in enumerate(chunks):
+                payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+                if index == len(chunks) - 1 and buttons:
+                    payload["reply_markup"] = buttons
                 try:
-                    sent = await self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
+                    sent = await self._call("sendMessage", payload)
                 except (httpx.HTTPError, TelegramError) as exc:
                     logger.warning("Could not send an idea to Telegram chat %s: %s", chat_id, exc)
                     break
@@ -399,10 +546,14 @@ class TelegramChannel:
                 f"This chat ({chat_id}) is not allowed to talk to EvoMesh. "
                 "Add the id in the Control Center under Telegram."
             )
-        if text.split()[0].lower() in BLOCKED_COMMANDS:
+        first, _, rest = text.partition(" ")
+        command = _bare_command(first)
+        if command.startswith("/"):
+            # A menu tap in a group arrives as /status@botname.
+            text = f"{command} {rest}".strip()
+        if command in BLOCKED_COMMANDS:
             return "Stopping the mesh is only possible from the Control Center."
-        command = text.split()[0].lower()
-        if command in {"/start", "/start@evomesh"}:
+        if command == "/start":
             return self._welcome()
         if self.locked_agent_id and command in {"/chat"}:
             return f"This bot only talks to {self.locked_agent_name}."
@@ -486,10 +637,16 @@ class TelegramChannel:
         for chat_id in sorted(self._allowed):
             await self.send(chat_id, text)
 
-    async def send(self, chat_id: int, text: str) -> None:
-        for chunk in _chunks(text):
+    async def send(
+        self, chat_id: int, text: str, markup: dict[str, Any] | None = None
+    ) -> None:
+        chunks = _chunks(text)
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if markup and index == len(chunks) - 1:
+                payload["reply_markup"] = markup
             try:
-                await self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
+                await self._call("sendMessage", payload)
             except (httpx.HTTPError, TelegramError) as exc:
                 logger.warning("Could not send to Telegram chat %s: %s", chat_id, exc)
                 return
@@ -584,6 +741,27 @@ def _incoming_attachment(message: dict[str, Any]) -> tuple[str, str] | None:
         if isinstance(largest, dict) and largest.get("file_id"):
             return str(largest["file_id"]), f"{largest['file_id']}.jpg"
     return None
+
+
+def _bare_command(token: str) -> str:
+    """``/Status@evomesh_bot`` -> ``/status``; anything else unchanged but lowered."""
+    lowered = token.lower()
+    return lowered.split("@", 1)[0] if lowered.startswith("/") else lowered
+
+
+def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any] | None:
+    """An inline keyboard, leaving out any button whose data Telegram would
+    refuse -- a whole message rejected over one long agent id is worse."""
+    keyboard = [
+        [
+            {"text": label, "callback_data": data}
+            for label, data in row
+            if len(data.encode("utf-8")) <= CALLBACK_LIMIT
+        ]
+        for row in rows
+    ]
+    keyboard = [row for row in keyboard if row]
+    return {"inline_keyboard": keyboard} if keyboard else None
 
 
 def _chunks(text: str) -> list[str]:

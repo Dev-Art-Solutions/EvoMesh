@@ -307,10 +307,13 @@ async def test_a_mesh_with_an_idea_scout_stops_the_evolver_scouting(tmp_path: Pa
 class FakeTelegram:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
         self.next_id = 100
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
+        if request.content and request.headers.get("content-type") == "application/json":
+            self.calls.append((method, json.loads(request.content)))
         if method == "sendMessage":
             body = json.loads(request.content)
             self.next_id += 1

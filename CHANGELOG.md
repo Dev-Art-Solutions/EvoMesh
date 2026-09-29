@@ -6,6 +6,15 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **Telegram menu and buttons.** On connect the bot fills Telegram's "/" menu
+  (`setMyCommands`) with the commands that work with no arguments; a private
+  agent bot gets its own short list. Answers carry inline buttons: `/start`,
+  `/help` and `/status` get the common checks, `/agents` a "talk to" button
+  per agent, `/ideas` an approve/reject pair per idea, `/evolution status` a
+  refresh plus promote/discard while a candidate waits on you, and every
+  announced idea arrives with Approve/Reject (its buttons clear once decided).
+  A press runs the same command through the same router as typing it, so the
+  allow-list and the `/exit` block still apply.
 - **A web-crawler template.** Give the Crawler a site and what you care about,
   and it answers with the lines that mention it, page by page. Ask for it on a
   schedule ("every morning at 9", "each hour") and it adds a recurring task

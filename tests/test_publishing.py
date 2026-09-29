@@ -568,6 +568,9 @@ class FakeTelegram:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
         payload = json.loads(request.content or b"{}")
+        if method == "setMyCommands":
+            self.menu = json.loads(request.content or b"{}").get("commands", [])
+            return self._ok(True)
         if method == "getMe":
             return self._ok({"username": "evomesh_test_bot"})
         if method == "sendMessage":
