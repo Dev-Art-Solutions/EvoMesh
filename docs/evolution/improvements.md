@@ -189,7 +189,7 @@ the line below the title.
     >             logger.warning("Watcher command exited %s: %s", result.exit_code, message[:500])
     >             return result
     1. [x] src/evomesh/watchers.py `AgentWatcher._loop` -- capture the `CommandResult` returned by `_tick` and reset `_timeout_streak` only when `exit_code == 0`, otherwise increment it (capped at 5) just like a timeout, so a persistently failing command backs off instead of hammering.
-- [ ] Validate in `read_message` that a decoded native-messaging payload is a JSON object
+- [x] Validate in `read_message` that a decoded native-messaging payload is a JSON object
     In `handle_tool_request`, a malformed tool *response* that isn't a dict is rejected with `raise TypeError(...)`, but the matching validation for a malformed tool *request* is missing: `read_message` returns `json.loads(...)` without checking the type, so a non-object payload (an array, number, or string) flows straight into `on_message`, which does `message["type"]` and raises a confusing `KeyError: 'type'` instead of a clear validation error.
     >         return json.loads(payload.decode("utf-8"))
-    1. [ ] src/evomesh/browser_bridge.py `read_message` -- after `json.loads`, raise `ValueError` if the decoded value is not a dict, with a message like "native message is not a JSON object"
+    1. [x] src/evomesh/browser_bridge.py `read_message` -- after `json.loads`, raise `ValueError` if the decoded value is not a dict, with a message like "native message is not a JSON object"

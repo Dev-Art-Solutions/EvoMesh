@@ -57,6 +57,12 @@ def test_read_message_refuses_a_length_over_the_cap() -> None:
         read_message(stream)
 
 
+def test_read_message_rejects_a_non_object_json_payload() -> None:
+    stream = io.BytesIO(struct.pack("<I", len('[1, 2]')) + b"[1, 2]")
+    with pytest.raises(ValueError, match="not a JSON object"):
+        read_message(stream)
+
+
 def test_write_message_refuses_to_send_over_the_cap() -> None:
     huge = {"text": "x" * (MAX_MESSAGE_BYTES + 1)}
     with pytest.raises(ValueError, match="too large"):

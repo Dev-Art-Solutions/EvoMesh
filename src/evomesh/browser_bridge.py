@@ -76,7 +76,10 @@ def read_message(stream: BinaryIO) -> dict[str, Any]:
     if length > MAX_MESSAGE_BYTES:
         raise ValueError(f"native message too large: {length} bytes")
     payload = _read_exactly(stream, length)
-    return json.loads(payload.decode("utf-8"))
+    message = json.loads(payload.decode("utf-8"))
+    if not isinstance(message, dict):
+        raise ValueError("native message is not a JSON object")
+    return message
 
 
 def _read_exactly(stream: BinaryIO, count: int) -> bytes:
