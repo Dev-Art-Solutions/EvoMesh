@@ -1644,6 +1644,14 @@ class Environment:
             # Kept even when the job failed: what it managed to change before
             # it broke is the part a human has to look at.
             self.harness_sessions[job.number] = list(session.entries)
+            self.prune_harness_sessions()
+
+    def prune_harness_sessions(self) -> None:
+        """Keep transcripts only for jobs the queue still knows about. The
+        queue prunes finished jobs; every whole transcript kept past that was
+        never read again and grew for the mesh's whole uptime."""
+        for number in [n for n in self.harness_sessions if n not in self.harness_queue.jobs]:
+            del self.harness_sessions[number]
 
     async def _deliver_harness(self, job: HarnessJob) -> None:
         """A finished job is an ordinary inbound message, not a callback.

@@ -174,3 +174,19 @@ def test_fact_respects_the_at_argument_for_future_and_expired() -> None:
     assert temp_just_before.value == 42
     assert board.fact("temp", at=expires) is None
     assert board.fact("temp", at=expires + timedelta(seconds=1)) is None
+
+
+async def test_transcripts_of_pruned_jobs_are_dropped(tmp_path: Path) -> None:
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider()})
+    await environment.start()
+    try:
+        kept = HarnessJob(number=3, objective="x", root=tmp_path, agent_id="", notify=False)
+        environment.harness_queue.jobs[3] = kept
+        environment.harness_sessions[3] = [{"kind": "write", "path": "a.md"}]
+        environment.harness_sessions[1] = [{"kind": "write", "path": "old.md"}]
+
+        environment.prune_harness_sessions()
+
+        assert list(environment.harness_sessions) == [3]
+    finally:
+        await environment.stop()
