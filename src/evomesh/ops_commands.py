@@ -262,7 +262,14 @@ class OperationsCommands:
         if action in {"grant", "revoke"} and len(parts) == 4:
             agent = environment.registry.get(parts[2])
             server = parts[3]
-            if server not in {config.name for config in environment.mcp.mesh_wide}:
+            known = {config.name for config in environment.mcp.mesh_wide}
+            if action == "revoke" and agent.mcp is not None and server in agent.mcp:
+                # Also how a grant for a server since removed from the config
+                # is dropped (Environment.stale_grants).
+                agent.mcp = [name for name in agent.mcp if name != server]
+                await environment.repository.save_agent(agent)
+                return f"{agent.name} may use MCP servers: {', '.join(agent.mcp) or 'none'}."
+            if server not in known:
                 return f"No mesh-wide MCP server '{server}' (an agent's own server needs no grant)."
             current = environment.mcp_allowed(agent)
             names = (

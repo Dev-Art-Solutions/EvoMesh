@@ -921,6 +921,8 @@ class Environment:
             # memory until something else happened to save the blackboard.
             await self._save_blackboard()
         self._apply_evolution_settings()
+        for problem in self.stale_grants():
+            logger.warning("stale grant: %s", problem)
         provider = self.providers.get(default_name)
         if provider:
             self.provider_health = await provider.health()
@@ -1297,6 +1299,27 @@ class Environment:
         if definition.mcp is not None:
             return list(definition.mcp)
         return [] if definition.type == "system" else None
+
+    def stale_grants(self) -> list[str]:
+        """Email accounts and mesh-wide MCP servers an agent was granted that
+        the config no longer has. The tool just stops being offered, so
+        without this the only symptom is an agent that quietly cannot mail."""
+        servers = {config.name for config in self.mcp.mesh_wide}
+        problems: list[str] = []
+        for agent in self.registry.all():
+            for name in agent.email_accounts:
+                if name not in self.mailer.accounts:
+                    problems.append(
+                        f"{agent.name} may send from email account '{name}', which is not "
+                        "in email.accounts (/email revoke to drop it)"
+                    )
+            for name in agent.mcp or []:
+                if name not in servers:
+                    problems.append(
+                        f"{agent.name} may use MCP server '{name}', which is not in "
+                        "mcp_servers (/mcp revoke to drop it)"
+                    )
+        return problems
 
     def builtin_tools_for(self, definition: AgentDefinition) -> tuple[Tool, ...]:
         """send_email (only with a granted account) and the knowledge wiki

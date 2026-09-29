@@ -214,3 +214,31 @@ async def test_email_commands_grant_and_offer_the_tool(smtp: FakeSmtp, tmp_path:
         assert "send_email" not in names
     finally:
         await environment.stop()
+
+
+async def test_stale_grants_are_named_and_can_be_revoked(tmp_path: Path) -> None:
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        workspace_path=tmp_path / "workspace",
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    try:
+        agent = AgentDefinition(
+            name="Analyst",
+            purpose="p",
+            model_name="mock-model",
+            email_accounts=["gone"],
+            mcp=["vanished"],
+        )
+        await environment.register_agent(agent)
+        problems = environment.stale_grants()
+        assert any("'gone'" in problem for problem in problems)
+        assert any("'vanished'" in problem for problem in problems)
+        console = ConsoleChannel(environment)
+        assert "no longer" in await console.route("/email revoke Analyst gone")
+        assert "none" in await console.route("/mcp revoke Analyst vanished")
+        assert environment.stale_grants() == []
+    finally:
+        await environment.stop()
