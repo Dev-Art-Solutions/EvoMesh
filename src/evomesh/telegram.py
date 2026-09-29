@@ -132,6 +132,8 @@ class TelegramChannel:
             f"This is {self.locked_agent_name}'s private line.\n\n"
             "Just send a message -- everything you type goes straight to this "
             "agent, no other agent can be reached from here.\n"
+            "/reports [n] - its last reports as sent to you (default 10)\n"
+            "/wiki - what it has learned (its knowledge pages)\n"
             "/status - environment and provider health\n"
             "/help - every command\n\n"
             "Stopping the mesh is deliberately not possible from here."

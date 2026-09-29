@@ -602,6 +602,10 @@ Exit code 86 is the whole contract: it means *start me again*, and it is deliber
 
 Set `evolution.auto_restart: false` to go back to being told rather than restarted; the flag is still raised and `/evolution status` still says `RESTART REQUIRED`.
 
+### When the mesh stops answering
+
+Every agent, the control port and Telegram share one event loop, so a slow synchronous call anywhere freezes all of them — and the supervisor's `/ping` watchdog kills a mesh that does not answer for ~5 minutes. A loop watchdog thread (`loop_watchdog.py`) logs `event loop blocked for Ns so far; it is running:` with the loop's current stack whenever the loop has not run for 5 s, and `event loop was blocked for Ns` when it recovers; `/status` shows `loop_stalls`. That stack is the bug: fix the code it names (move the work to `asyncio.to_thread`), do not raise a timeout.
+
 Set `evolution.autonomous: false` to park the Evolver, `evolution.auto_validate: false` to skip the validation suite, `evolution.max_repairs` to bound how often it may fix its own candidate, or `evolution.auto_promote` to take yourself out of the loop.
 
 ## Telegram

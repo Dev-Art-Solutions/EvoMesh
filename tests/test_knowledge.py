@@ -155,6 +155,8 @@ async def test_reports_and_wiki_commands(tmp_path: Path) -> None:
         # A private bot's conversation is locked to its agent: no name needed.
         locked = ConsoleChannel(environment, locked_agent_id=agent.id)
         assert "report 2" in await locked.route("/reports")
+        only_one = await locked.route("/reports 1")
+        assert "last 1 report(s)" in only_one and "report 1" not in only_one
         memory.wiki.write_page("Gold", "Safe haven.", "gold basics")
         assert "[[gold]] -- gold basics" in await console.route("/wiki Analyst")
         assert "Safe haven." in await console.route("/wiki Analyst gold")
