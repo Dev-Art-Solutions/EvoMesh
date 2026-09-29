@@ -20,7 +20,10 @@ what you *concluded* from it. Pattern from Andrej Karpathy's "LLM wiki".
 
 Durable = still true next week and useful again: how a source behaves, what
 moves an instrument, a procedure that worked, a human's stated preference.
-Not durable: today's headline, a one-off number.
+Not durable: today's headline, a one-off number -- and never a running list of
+items you have processed ("headlines already assessed"): such a page only grows,
+hits the page size limit within a day, and teaches nothing. What you already
+reported is in `recent_reports`; what you saw recently is in your memory.
 
 1. `wiki_search` for an existing page on the topic.
 2. If one exists, `wiki_read` it and **merge**: rewrite the whole page with

@@ -217,7 +217,13 @@ class AgentMemory:
         # Keep the newest entries that fit half the budget (never fewer than
         # three). It was the newest third by count: with 1000 entries that is
         # still far over budget, so the file compacted again every cycle.
-        keep = _newest_within(entries, self.budget.memory_chars // 2, minimum=3)
+        # A third each for the kept entries and the summary, not half: halves
+        # plus the header rebuilt a file right at the budget, so the very next
+        # line compacted again -- a summarizer model call on nearly every
+        # cycle of every agent (the wiki log showed one-entry ingests each
+        # cycle, 2026-09-29). A third leaves room for a third of a budget of
+        # new lines between compactions.
+        keep = _newest_within(entries, self.budget.memory_chars // 3, minimum=3)
         overflow = entries[: len(entries) - len(keep)]
         # What the summarizer sees is bounded by the prompt budget too. Found
         # by the benchmark: 200 KB of memory went to the model in one prompt,
@@ -250,7 +256,7 @@ class AgentMemory:
             if previous.startswith("Nothing compacted yet."):
                 previous = ""
             head = before
-        merged = clip(f"{previous}\n{summary}".strip(), max(200, self.budget.memory_chars // 2))
+        merged = clip(f"{previous}\n{summary}".strip(), max(200, self.budget.memory_chars // 3))
         rebuilt = (
             f"{head.rstrip()}\n\n{SUMMARY_SECTION}\n\n{merged}\n\n"
             f"{RECENT_SECTION}\n\n" + "\n".join(keep) + "\n"

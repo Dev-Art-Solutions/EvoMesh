@@ -168,3 +168,24 @@ async def test_reports_and_wiki_commands(tmp_path: Path) -> None:
         assert environment.builtin_tools_for(environment.registry.get("evolver")) == ()
     finally:
         await environment.stop()
+
+
+async def test_compaction_leaves_room_before_the_next_one(tmp_path: Path) -> None:
+    """Found live: halves for summary and kept entries rebuilt memory.md at
+    the budget, so every new line compacted again -- a model call a cycle."""
+    calls: list[str] = []
+
+    async def summarize(text: str) -> str:
+        calls.append(text)
+        return "summary of older facts " * 80
+
+    definition = AgentDefinition(name="Analyst", purpose="p", model_name="m")
+    memory = AgentMemory(tmp_path, definition, MemoryBudget(memory_chars=3000, prompt_chars=6000))
+    await memory.ensure()
+    for number in range(60):
+        await memory.remember(f"fact number {number} about the euro and the fed, with detail")
+    assert await memory.compact(summarize)
+    for number in range(5):
+        await memory.remember(f"a new fact {number} learned after compaction, also detailed")
+        assert not await memory.compact(summarize), f"compacted again after {number + 1} line(s)"
+    assert len(calls) == 1
