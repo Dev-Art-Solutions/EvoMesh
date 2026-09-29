@@ -63,3 +63,17 @@ async def test_tool_shell_reports_exit_0_for_a_successful_command():
     ctx = ToolContext(root=Path("."), allow_write=True, shell_allow=frozenset({"python"}))
     result = await tool_shell(ctx, {"command": 'python -c "pass"'})
     assert result == "exit 0"
+
+
+def test_walk_files_never_enters_skipped_directories(tmp_path: Path) -> None:
+    from evomesh.harness_tools import walk_files
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x", encoding="utf-8")
+    for skipped in (".runtime", ".venv", "generations"):
+        (tmp_path / skipped / "deep").mkdir(parents=True)
+        (tmp_path / skipped / "deep" / "b.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "c.txt").write_text("x", encoding="utf-8")
+
+    assert walk_files(tmp_path, "*.py") == [tmp_path / "src" / "a.py"]
+    assert walk_files(tmp_path, "src/*.py") == [tmp_path / "src" / "a.py"]

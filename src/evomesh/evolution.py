@@ -1568,7 +1568,9 @@ class EnvironmentEvolver:
         # A directory of its own per run: an orphan of an earlier run (a mesh
         # killed mid-suite) may still hold the last one open. Old ones are
         # swept best-effort; a locked one just stays until it is free.
-        shutil.rmtree(root / BASELINE_TEMP, ignore_errors=True)
+        # In a thread: a suite's temp tree is thousands of files, and deleting
+        # it on the loop stalled the whole mesh for 25-35 s (loop watchdog).
+        await asyncio.to_thread(shutil.rmtree, root / BASELINE_TEMP, True)
         basetemp = root / BASELINE_TEMP / f"run-{time.time_ns()}"
         suite = await run_command(
             uv,

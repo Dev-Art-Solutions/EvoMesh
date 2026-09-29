@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import fnmatch
 import json
 import os
 import re
@@ -49,6 +50,30 @@ SKIP_DIRECTORIES = frozenset(
         "generations",
     }
 )
+# Never descended into by a recursive search. .runtime holds the baseline
+# venv and every validation's pytest temp -- hundreds of thousands of files.
+# rglob walked all of them and filtered afterwards, on the event loop: the
+# loop watchdog caught grep and a missing-path hint blocking the whole mesh
+# for 25-46 s at a time (2026-09-29), long enough to fail the /ping watchdog.
+WALK_SKIP = SKIP_DIRECTORIES | {".runtime"}
+
+
+def walk_files(base: Path, pattern: str) -> list[Path]:
+    """``sorted(base.rglob(pattern))`` for files, without ever entering a
+    WALK_SKIP directory. Blocking -- callers on the loop use a thread."""
+    if "/" in pattern or "\\" in pattern:
+        return sorted(
+            path
+            for path in base.rglob(pattern)
+            if not WALK_SKIP & set(path.relative_to(base).parts[:-1])
+        )
+    found: list[Path] = []
+    for directory, dirnames, filenames in os.walk(base):
+        dirnames[:] = [name for name in dirnames if name not in WALK_SKIP]
+        found.extend(
+            Path(directory, name) for name in filenames if fnmatch.fnmatch(name, pattern)
+        )
+    return sorted(found)
 
 
 @dataclass
@@ -370,7 +395,18 @@ async def tool_grep(context: ToolContext, args: dict[str, Any]) -> str:
         raise _missing(context, target)
     context.tally.reads += 1
     glob = str(args.get("glob", "*.py") or "*.py")
-    files = [target] if target.is_file() else sorted(target.rglob(glob))
+    return await asyncio.to_thread(_grep_files, context, target, expression, glob, note, pattern)
+
+
+def _grep_files(
+    context: ToolContext,
+    target: Path,
+    expression: re.Pattern[str],
+    glob: str,
+    note: str,
+    pattern: str,
+) -> str:
+    files = [target] if target.is_file() else walk_files(target, glob)
     # _resolve_readable can hand back a path entirely outside context.root --
     # the mesh-wide skills/ fallback it documents on itself -- in which case
     # _inside(context.root, ...) can never find path.relative_to(context.root)
@@ -436,7 +472,7 @@ def _missing(context: ToolContext, target: Path) -> ToolDenied:
         if re.fullmatch(r"\d{6}-candidate", part):
             offer(context.root.joinpath(*parts[index + 1 :]))
     if target.name and len(guesses) < 3:
-        for path in sorted(context.root.rglob(target.name))[:20]:
+        for path in walk_files(context.root, target.name)[:20]:
             if not SKIP_DIRECTORIES & set(_inside(context.root, path)):
                 offer(path)
     hint = f" Did you mean: {', '.join(guesses[:3])}?" if guesses else ""
@@ -542,7 +578,7 @@ def _find_elsewhere(context: ToolContext, target: Path, old: str) -> str | None:
     if not candidates:
         return None
     needle = max(candidates, key=len)
-    for path in sorted(context.root.rglob("*.py")):
+    for path in walk_files(context.root, "*.py"):
         if path == target or not path.is_file():
             continue
         if SKIP_DIRECTORIES & set(_inside(context.root, path)):
@@ -950,7 +986,7 @@ async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, s
             base = _resolve_readable(context, roots[0] if roots else ".")
             hits = sorted(
                 "/".join(_inside(context.root, path))
-                for path in base.rglob(name)
+                for path in walk_files(base, name)
                 if not SKIP_DIRECTORIES & set(_inside(context.root, path))
             )
             listing = "\n".join(hits[:40]) or f"no file named {name}"
