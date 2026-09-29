@@ -182,13 +182,13 @@ the line below the title.
     On /restart the environment wakes and re-runs, but the Evolver's baseline run on lane 0 is still in flight and the env only lets it finish (it has a 150s timeout) before stopping — that is the ~2.5-minute wait.
     > restart_requested = self.evolver.restart_requested
     Not yet anchored in the code: it quotes code that is in none of its files: 'restart_requested = self.evolver.restart_requested'.
-- [ ] Back off a watcher whose command keeps exiting non-zero, like one that keeps timing out
+- [x] Back off a watcher whose command keeps exiting non-zero, like one that keeps timing out
     `AgentWatcher._loop` increments `_timeout_streak` (which drives the `interval_seconds * 2 ** _timeout_streak` sleep) only inside the `except TimeoutError:` branch, but a command that fails with a non-zero exit code returns normally from `_tick`, so the unconditional `self._timeout_streak = 0` after a successful tick resets the streak and the command runs on the base interval every cycle, warning each time.
     > self._timeout_streak = 0
     >         if result.exit_code != 0:
     >             logger.warning("Watcher command exited %s: %s", result.exit_code, message[:500])
     >             return result
-    1. [ ] src/evomesh/watchers.py `AgentWatcher._loop` -- capture the `CommandResult` returned by `_tick` and reset `_timeout_streak` only when `exit_code == 0`, otherwise increment it (capped at 5) just like a timeout, so a persistently failing command backs off instead of hammering.
+    1. [x] src/evomesh/watchers.py `AgentWatcher._loop` -- capture the `CommandResult` returned by `_tick` and reset `_timeout_streak` only when `exit_code == 0`, otherwise increment it (capped at 5) just like a timeout, so a persistently failing command backs off instead of hammering.
 - [ ] Validate in `read_message` that a decoded native-messaging payload is a JSON object
     In `handle_tool_request`, a malformed tool *response* that isn't a dict is rejected with `raise TypeError(...)`, but the matching validation for a malformed tool *request* is missing: `read_message` returns `json.loads(...)` without checking the type, so a non-object payload (an array, number, or string) flows straight into `on_message`, which does `message["type"]` and raises a confusing `KeyError: 'type'` instead of a clear validation error.
     >         return json.loads(payload.decode("utf-8"))

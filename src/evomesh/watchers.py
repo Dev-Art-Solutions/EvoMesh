@@ -65,8 +65,11 @@ class AgentWatcher:
     async def _loop(self) -> None:
         while True:
             try:
-                await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)
-                self._timeout_streak = 0
+                result = await asyncio.wait_for(self._tick(), timeout=self.timeout_seconds)
+                if result.exit_code == 0:
+                    self._timeout_streak = 0
+                else:
+                    self._timeout_streak = min(5, self._timeout_streak + 1)
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
