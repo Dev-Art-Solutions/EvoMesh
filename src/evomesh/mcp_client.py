@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mcp import Client, StdioServerParameters
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.types import TextContent
 
 from evomesh.contracts import McpServerConfig
@@ -54,14 +56,23 @@ class McpConnectionError(Exception):
     """
 
 
-def _target(config: McpServerConfig) -> StdioServerParameters | str:
+def _target(config: McpServerConfig) -> tuple[Any, Any]:
+    """What ``Client`` connects to, and the HTTP client this module owns
+    (None when there is none to close). A bare URL string is the SDK's own
+    default client; ``headers`` (an API key, a bearer token) need a client
+    of ours -- before, they were accepted in the config and silently never
+    sent, so an authenticated HTTP server just refused every connect."""
     if config.command:
-        return StdioServerParameters(
+        params = StdioServerParameters(
             command=config.command,
             args=list(config.args),
             env=dict(config.env) or None,
         )
-    return config.url
+        return params, None
+    if not config.headers:
+        return config.url, None
+    http = create_mcp_http_client(headers=dict(config.headers))
+    return streamable_http_client(config.url, http_client=http), http
 
 
 def _content_text(blocks: list[Any]) -> str:
@@ -92,6 +103,7 @@ class McpConnection:
     def __init__(self, config: McpServerConfig) -> None:
         self.config = config
         self._client: Client | None = None
+        self._http: Any = None
         self._tools: list[McpToolInfo] | None = None
         self.last_error = ""
         self._failed_at: float | None = None
@@ -114,14 +126,19 @@ class McpConnection:
                 raise McpConnectionError(
                     f"{self.config.name}: unavailable ({self.last_error}); retrying later"
                 )
+            http = None
             try:
-                client = Client(_target(self.config))
+                target, http = _target(self.config)
+                client = Client(target)
                 await asyncio.wait_for(client.__aenter__(), self.config.timeout_seconds)
             except Exception as exc:  # noqa: BLE001 - any transport/spawn failure
+                if http is not None:
+                    await http.aclose()
                 self._failed_at = time.monotonic()
                 self.last_error = f"could not connect: {_why(exc)}"
                 raise McpConnectionError(f"{self.config.name}: {self.last_error}") from exc
             self._client = client
+            self._http = http
             self._failed_at = None
             self.last_error = ""
         return self._client
@@ -174,12 +191,18 @@ class McpConnection:
 
     async def close(self) -> None:
         client, self._client = self._client, None
+        http, self._http = self._http, None
         self._tools = None
         if client is not None:
             try:
                 await asyncio.wait_for(client.__aexit__(None, None, None), 10)
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 logger.warning("mcp: %s did not close cleanly", self.config.name, exc_info=True)
+        if http is not None:
+            try:
+                await http.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.warning("mcp: %s http client did not close", self.config.name)
 
 
 def _why(exc: BaseException) -> str:

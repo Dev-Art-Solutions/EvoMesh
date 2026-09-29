@@ -255,3 +255,37 @@ async def test_mcp_commands_and_per_agent_access(tmp_path: Path) -> None:
         assert "dropped" in await console.route("/mcp reload")
     finally:
         await environment.stop()
+
+
+async def test_http_headers_are_sent_to_the_server() -> None:
+    """headers used to be accepted in the config and never sent. A raw HTTP
+    listener records what the MCP client's first request carried, then
+    refuses it -- the connect fails, but the header has been seen."""
+    import asyncio
+
+    seen: list[str] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while (line := await reader.readline()) not in (b"\r\n", b""):
+            seen.append(line.decode("latin-1").strip().lower())
+        writer.write(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    config = McpServerConfig(
+        name="remote",
+        url=f"http://127.0.0.1:{port}/mcp",
+        headers={"X-Api-Key": "s3cret"},
+        timeout_seconds=10,
+    )
+    manager = McpManager([config])
+    try:
+        assert await manager.tools_for([]) == ()
+        assert "x-api-key: s3cret" in seen
+        assert manager.status()[0].last_error.startswith("could not connect")
+    finally:
+        await manager.shutdown()
+        server.close()
+        await server.wait_closed()
