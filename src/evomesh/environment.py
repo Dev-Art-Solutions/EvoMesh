@@ -68,6 +68,7 @@ from evomesh.improvements import (
     ImprovementTriage,
 )
 from evomesh.knowledge import build_knowledge_tools
+from evomesh.loop_watchdog import LoopWatchdog
 from evomesh.mailer import Mailer, build_send_email_tool
 from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
@@ -145,6 +146,8 @@ class Environment:
         self.skills = SkillRegistry(self.project_root)
         self.tools = CustomToolRegistry(self.project_root)
         self.mcp = McpManager(settings.mcp_servers)
+        # Set by __main__ in a real run (loop_watchdog.py); None under tests.
+        self.loop_watchdog: LoopWatchdog | None = None
         self.mailer = Mailer(
             settings.email.accounts,
             audit_path=settings.data_path.parent / "email-audit.jsonl",
@@ -1894,6 +1897,11 @@ class Environment:
             "provider": self.settings.models.default_provider,
             "provider_ready": self.provider_health[0],
             "provider_message": self.provider_health[1],
+            "loop_stalls": (
+                f"{self.loop_watchdog.stalls} (longest {self.loop_watchdog.longest:.1f}s)"
+                if self.loop_watchdog is not None
+                else "not watched"
+            ),
             "cognition": self.cognition.metrics.snapshot(),
             "events": len(self.events.history),
             "goals_completed_without_model": sum(

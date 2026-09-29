@@ -577,6 +577,36 @@ def fetch_and_cache(
     return collected
 
 
+def _clean_link(link: str) -> str:
+    """A link without its utm_* tracking parameters -- they are most of a
+    feed link's length and none of its meaning."""
+    parts = urllib.parse.urlsplit(link)
+    if not parts.query:
+        return link
+    kept = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_")
+    ]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(kept)))
+
+
+def render(items: list[dict], *, links: bool = False) -> str:
+    """A JSON array, one headline per line. It was indent=2, which spent a
+    third of the harness's 4000-char tool result on whitespace: a 30-item
+    request came back cut off after ~16 items, and the agent wrote itself a
+    skill about the "truncation artifact" instead of reading the rest."""
+    rows = [
+        json.dumps(
+            {"title": i["title"], "published": i["published"]}
+            | ({"link": _clean_link(i["link"])} if links else {}),
+            ensure_ascii=False,
+        )
+        for i in items
+    ]
+    return "[\n" + ",\n".join(rows) + "\n]" if rows else "[]"
+
+
 def main() -> int:
     config = _load_config()
     request: dict = {}
@@ -590,11 +620,13 @@ def main() -> int:
     raw_keywords = request.get("keywords") or config.get("keywords") or []
     keywords = [str(item).lower() for item in raw_keywords]
     limit = int(request.get("limit") or config.get("limit") or DEFAULT_LIMIT)
+    # Links are half of every line and no part of an analysis; ask for them.
+    links = bool(request.get("links"))
 
     if request.get("from_cache"):
         since_hours = request.get("since_hours")
         since_hours = float(since_hours) if since_hours is not None else None
-        print(json.dumps(_cached_items(keywords, since_hours)[:limit], indent=2))
+        print(render(_cached_items(keywords, since_hours)[:limit], links=links))
         return 0
 
     feeds = request.get("feeds") or config.get("feeds") or DEFAULT_FEEDS
@@ -612,9 +644,7 @@ def main() -> int:
             or any(keyword in item["title"].lower() for keyword in keywords)
         ]
 
-    result = [{"title": i["title"], "link": i["link"], "published": i["published"]}
-              for i in collected]
-    print(json.dumps(result[:limit], indent=2))
+    print(render(collected[:limit], links=links))
     return 0
 
 

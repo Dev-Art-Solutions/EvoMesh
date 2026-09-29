@@ -34,28 +34,25 @@ only `low` confidence. Format a reported item as one line:
 <SYMBOL> <direction> (<confidence>): <headline> -- <why>
 ```
 
-Every line you actually report (not the silent misses, not the reasoning) also gets
-appended, verbatim and timestamped, to `scripts/.news_reports.log` beside this SKILL.md
-(`write`/`edit` it directly -- create it the first time it does not exist). Unlike the
-reasoning scratch file below, this log **is** meant to be read back: it is the only
-durable record of what you have ever actually told a human, since an announced report
-line itself is not saved anywhere else once it has scrolled past in chat.
+The mesh keeps every line you report: whatever your final answer announces is appended to
+your report journal by code, so **do not keep a reports log yourself** -- no
+`.news_reports.log`, no appending, no checking that an append "persisted". That
+bookkeeping used to eat most of a cycle's steps and was never reliable.
 
-**A direct question ("what was your last analysis", "any recent findings", "what have
-you found") is answered from that log, not from a fresh fetch.** Read the tail of
-`scripts/.news_reports.log` and return the most recent entries as-is. Do not re-run
-today's fetch-and-filter check for this -- "nothing in the last 24 hours" is true and
-useless in the same breath when the human is asking about anything you have ever
-reported, not only what is fresh since your last cycle. If the log does not exist yet
-or is empty, say plainly that nothing has been analyzed yet, rather than silently
-running the recurring-cycle logic and reporting an empty result as if it answered the
-question.
+**A direct question ("what was your last analysis", "your last 10 analyses", "what have
+you found") is answered with the `recent_reports` tool**, not from a fresh fetch: call it
+(`limit` = how many were asked for, default 10) and return what it gives, newest first.
+Do not re-run today's fetch-and-filter check for this -- "nothing in the last 24 hours"
+is true and useless in the same breath when the human is asking about anything you have
+ever reported. If it says there are no reports yet, say that plainly.
+
+What you learn that stays true -- a source that truncates, which keywords really move an
+instrument, a feed that went dead -- goes in your knowledge wiki (`wiki_write`, see the
+knowledge-wiki skill), not in a scratch log.
 
 **Keep the working-through-it part out of the reply.** Do the per-headline reasoning
-(matching keywords, weighing direction, judging confidence) silently, and if you want a
-record of it, `write`/append it to a scratch file such as `scripts/.news_reasoning.log`
-beside this SKILL.md -- that file is your own scratchpad, never read by the human and
-never pruned by this skill, so trim it yourself if it grows large. Calling `news_fetch`
+(matching keywords, weighing direction, judging confidence) silently; do not write it to a
+file. Calling `news_fetch`
 (or reading the cache) is fine to narrate turn by turn -- that narration is never sent
 anywhere. Only your **very last message, the one with no further tool call**, is what
 reaches the human, and that message must contain **only** the formatted report line(s)
@@ -65,9 +62,8 @@ That means your last message never starts with, or contains anywhere in it, any 
 "Done", "Here's what I found", "I verified...", "I read the file directly...", "I
 checked...", "Let me...", "Based on my analysis...", "Changes made", "no change
 needed", or any other sentence describing what you just did, which files you
-touched (`config.json`, the scratch log, the cache), or how sure you are that you
-did it right -- all of that is process narration, not analysis, and belongs in the
-scratch file if anywhere. In particular, never write a changelog-style summary of
+touched (`config.json`, the cache), or how sure you are that you
+did it right -- all of that is process narration, not analysis. In particular, never write a changelog-style summary of
 this cycle's own bookkeeping (e.g. "appended this cycle's assessment to
 .news_reasoning.log as the Nth entry") -- that the scratch log was written to is
 never itself news. Concretely:

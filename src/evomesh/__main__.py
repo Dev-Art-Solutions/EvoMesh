@@ -13,6 +13,7 @@ from evomesh.config import load_settings
 from evomesh.console import ConsoleChannel
 from evomesh.control import CONTROL_HOST, CONTROL_PORT, ControlServer, wait_for_console_or_shutdown
 from evomesh.environment import Environment, shutdown_step
+from evomesh.loop_watchdog import LoopWatchdog
 from evomesh.processes import kill_running
 from evomesh.singleton import AlreadyRunningError, SingletonLock
 from evomesh.telegram import TelegramChannel
@@ -130,6 +131,9 @@ async def application(
             return ALREADY_RUNNING_EXIT_CODE
     try:
         environment = Environment(settings)
+        watchdog = LoopWatchdog()
+        watchdog.start()
+        environment.loop_watchdog = watchdog
         await environment.start(start_agent_loops=True)
         shutdown = asyncio.Event()
         control = ControlServer(environment, shutdown, control_host, control_port)
@@ -154,6 +158,7 @@ async def application(
                     await shutdown_step(f"stopping {task.get_name()}", _settled(task))
             await shutdown_step("closing the control port", control.stop())
             await environment.stop()
+            watchdog.stop()
         return RESTART_EXIT_CODE if environment.restart_requested.is_set() else 0
     finally:
         if lock is not None:

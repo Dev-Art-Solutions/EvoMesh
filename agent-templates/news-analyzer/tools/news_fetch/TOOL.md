@@ -14,11 +14,13 @@ parameters:
       entirely and read back headlines already seen over the retention
       window (config.json's "cache_days", default 3) instead of a live
       snapshot; add "since_hours" to narrow that further, e.g. the last day.
+      Add "links": true only when you need the article URLs.
     required: false
 ---
 
-Read-only. Returns a JSON list of {"title", "link", "published"} objects,
-most recent first, already filtered by keyword if any were given. Every
+Read-only. Returns a JSON list of {"title", "published"} objects, one per
+line ("link" too with "links": true -- it doubles the size and an analysis
+never needs it), most recent first, already filtered by keyword if any were given. Every
 live fetch (from_cache omitted or false) also feeds a durable cache beside
 this template, so nothing seen is lost the moment a feed's own "latest"
 window moves past it -- ask with "from_cache": true for anything gathered
