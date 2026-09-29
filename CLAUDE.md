@@ -51,6 +51,10 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `console.py`, `control.py`, `telegram.py` | the three channels onto the same command router |
 | `architect.py` | the one-shot Agent Architect |
 | `skills.py`, `permissions.py` | skill discovery (see rule 19) and path grants (application-level, not an OS sandbox) |
+| `knowledge.py` | per-agent wiki (Karpathy's raw → pages → index/log; lint is code) and `reports.md`, the journal `/reports` reads |
+| `mailer.py` | SMTP accounts → `send_email`, only for agents granted an account; rate limit, allow-list, audit file |
+| `mcp_client.py` | MCP servers as tool sources; per-agent access mirrors `tools` (system agents: none by default) |
+| `ops_commands.py` | `/reports`, `/wiki`, `/email`, `/mcp` — a ConsoleChannel mixin, so console.py stays readable |
 
 ## Build / test / run
 

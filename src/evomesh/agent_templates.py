@@ -33,6 +33,7 @@ from evomesh.contracts import (
     Autonomy,
     FilesystemGrant,
     GoalCondition,
+    McpServerConfig,
     TelegramSettings,
 )
 from evomesh.rules import rules_from_config
@@ -123,6 +124,16 @@ class AgentTemplateDefinition(BaseModel):
     # template has no opinion, so the mesh-wide HarnessSettings.
     # self_check_command applies, same as before this field existed.
     self_check: str | None = None
+    # Names of evomesh.yaml's email.accounts the agent may send from. Only
+    # the ones that exist on this mesh are granted -- a template shared
+    # between machines names an account, it cannot create one.
+    email: list[str] = Field(default_factory=list)
+    # Mesh-wide MCP servers by name (AgentDefinition.mcp); None = default.
+    mcp: list[str] | None = None
+    # MCP servers only this agent uses, McpServerConfig shape.
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    # AgentDefinition.knowledge -- the wiki tools; None = default (on).
+    knowledge: bool | None = None
     path: Path
     created_by: str = "system"
 
@@ -208,6 +219,16 @@ def parse_agent_template(
             self_check=(
                 str(meta["self_check"]) if meta.get("self_check") is not None else None
             ),
+            email=[str(item).strip() for item in (meta.get("email") or []) if str(item).strip()],
+            mcp=(
+                [str(item).strip() for item in meta["mcp"] if str(item).strip()]
+                if isinstance(meta.get("mcp"), list)
+                else None
+            ),
+            mcp_servers=[
+                McpServerConfig.model_validate(item) for item in (meta.get("mcp_servers") or [])
+            ],
+            knowledge=bool(meta["knowledge"]) if meta.get("knowledge") is not None else None,
             path=path,
             created_by=created_by,
         )
@@ -349,6 +370,12 @@ class AgentTemplateRegistry:
             # field existed -- the agent still gets its own playground.
             project_path=(project_path or template.project).strip(),
             self_check_command=template.self_check,
+            email_accounts=[
+                name for name in template.email if name in environment.mailer.accounts
+            ],
+            mcp=list(template.mcp) if template.mcp is not None else None,
+            mcp_servers=[config.model_copy() for config in template.mcp_servers],
+            knowledge=template.knowledge,
         )
         for goal in template.goals:
             definition.mind.add_goal(

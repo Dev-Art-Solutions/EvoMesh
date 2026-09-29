@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from evomesh.contracts import AgentDefinition, now_utc
+from evomesh.knowledge import AgentWiki, ReportJournal
 
 Summarizer = Callable[[str], Awaitable[str]]
 
@@ -112,6 +113,16 @@ class AgentMemory:
         there, not a new tree to configure.
         """
         return self.directory / "playground"
+
+    @property
+    def wiki(self) -> AgentWiki:
+        """The agent's compiled knowledge (see knowledge.py) -- beside
+        memory.md, for the same reason the playground is."""
+        return AgentWiki(self.directory / "wiki")
+
+    @property
+    def reports(self) -> ReportJournal:
+        return ReportJournal(self.directory / "reports.md")
 
     async def ensure_playground(self) -> Path:
         await asyncio.to_thread(self.playground_path.mkdir, parents=True, exist_ok=True)
@@ -212,6 +223,15 @@ class AgentMemory:
         # by the benchmark: 200 KB of memory went to the model in one prompt,
         # which a 4k-context server silently truncates.
         shown = _newest_within(overflow, max(400, self.budget.prompt_chars - 400), minimum=1)
+        # Karpathy's raw layer: what compaction folds away is kept verbatim
+        # first, so the summary below is a convenience, not the only copy.
+        # A disk error here must not stop compaction -- an over-budget
+        # memory.md is the worse failure (rule 3).
+        try:
+            await asyncio.to_thread(self.wiki.archive_raw, overflow, "memory")
+            await asyncio.to_thread(self.wiki.lint)
+        except OSError:
+            pass
         dropped = len(overflow) - len(shown)
         summary = ""
         if summarizer is not None and shown:

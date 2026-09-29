@@ -72,13 +72,16 @@ feed's own "latest" list is not simply gone -- ask for `{"from_cache": true,
 missed rather than only ever judging whatever a source happens to show right now.
 Entries older than `cache_days` are pruned automatically.
 
-Every report line this agent has ever actually sent (not its per-headline reasoning,
-which lives in its own never-pruned `scripts/.news_reasoning.log` scratchpad) is also
-appended to `scripts/.news_reports.log`, beside this AGENT.md -- ask this agent directly
-for "your last analysis" or "what you've found recently" any time to have it read that
-log back, rather than re-running the recurring cycle's own "anything new" check, which
-answers a different question and stays silent once nothing has changed since the last
-pass.
+Every report this agent actually sent is kept by the mesh itself (not by the model) in
+`workspace/agents/<slug>/reports.md`. `/reports NewsAnalyzer` (or just `/reports` on its
+own Telegram bot) returns the last 10, newest first; `/reports NewsAnalyzer 25` any other
+number. Asked in plain words ("your last 10 analyses"), the agent reads the same journal
+with its `recent_reports` tool rather than re-running the recurring cycle's own
+"anything new" check, which answers a different question and stays silent once nothing
+has changed since the last pass.
+
+What it learns about sources and instruments over time belongs in its knowledge wiki
+(`wiki_write`, see the knowledge-wiki skill) -- `/wiki NewsAnalyzer` shows the index.
 
 This agent never trades and never talks to a Trader agent directly -- EvoMesh agents
 only ever reach each other through the mesh's own mailboxes, and nothing wires this

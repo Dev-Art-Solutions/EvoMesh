@@ -26,10 +26,11 @@ PACKAGE = "evomesh"
 # ``browser_bridge`` is executed as ``python -m evomesh.browser_bridge`` --
 # not by anything in this package, but by Chrome itself, spawning
 # scripts/chrome-native-host.bat the moment browser-extension/background.js
-# calls connectNative. A module nothing in this repository imports is
+# calls connectNative, and ``mcp_server``, launched by an MCP client (Claude
+# Code, Claude Desktop) as a stdio server. A module nothing in this repository imports is
 # usually genuinely dead; one whose only caller is an external process this
 # repository does not control is not the same thing.
-ENTRY_POINTS = frozenset({"__init__", "__main__", "smoke", "browser_bridge"})
+ENTRY_POINTS = frozenset({"__init__", "__main__", "smoke", "browser_bridge", "mcp_server"})
 
 
 @dataclass(frozen=True)

@@ -423,6 +423,40 @@ class GitSettings(BaseModel):
         return PublishPolicy(enabled=self.auto_push, remote=self.remote, branch=self.branch)
 
 
+class EmailAccountSettings(BaseModel):
+    """One SMTP account an agent may send from -- see mailer.py.
+
+    The password never has to sit in evomesh.yaml: ``password_ref`` names a
+    key in evomesh.secrets.yaml, resolved by load_settings() the same way a
+    provider's api_key_ref is."""
+
+    host: str
+    port: int = 587
+    # starttls on 587, ssl (implicit TLS) on 465, none only for a local relay.
+    security: Literal["starttls", "ssl", "none"] = "starttls"
+    username: str = ""
+    password: str = ""
+    password_ref: str | None = None
+    from_address: str
+    from_name: str = ""
+    # Empty means any recipient. Otherwise each entry is a full address or a
+    # "@domain" -- a guard against a model mailing a stranger, not a spam
+    # filter.
+    allowed_recipients: list[str] = Field(default_factory=list)
+    # Sends per rolling hour for this account, across every agent using it.
+    max_per_hour: int = 20
+    max_recipients: int = 10
+    max_body_chars: int = 20000
+    timeout_seconds: float = 30
+
+
+class EmailSettings(BaseModel):
+    """Named SMTP accounts. An agent sends from none of them unless it is
+    granted one by name (AgentDefinition.email_accounts, `/email grant`)."""
+
+    accounts: dict[str, EmailAccountSettings] = Field(default_factory=dict)
+
+
 class Settings(BaseModel):
     environment_name: str = "local"
     data_path: Path = Path("data/evomesh.db")
@@ -453,6 +487,7 @@ class Settings(BaseModel):
     # list (the default) is itself "off", the same shape HarnessSettings.
     # shell_allow already uses for its own allow-list.
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    email: EmailSettings = Field(default_factory=EmailSettings)
 
     def resolve(self, root: Path) -> Settings:
         clone = self.model_copy(deep=True)
@@ -491,9 +526,21 @@ def _resolve_api_key_refs(settings: Settings, root: Path) -> Settings:
         for name, provider in settings.models.providers.items()
         if provider.api_key_ref
     ]
-    if not refs_used:
+    mail_refs = [
+        (name, account.password_ref)
+        for name, account in settings.email.accounts.items()
+        if account.password_ref
+    ]
+    if not refs_used and not mail_refs:
         return settings
     secrets = _load_secrets(root)
+    for name, ref in mail_refs:
+        if ref not in secrets:
+            raise ValueError(
+                f"email.accounts.{name}.password_ref '{ref}' is not in "
+                f"{root / SECRETS_FILENAME}. See {SECRETS_FILENAME}.example for the format."
+            )
+        settings.email.accounts[name].password = secrets[ref]
     for name, ref in refs_used:
         if ref not in secrets:
             secrets_path = root / SECRETS_FILENAME

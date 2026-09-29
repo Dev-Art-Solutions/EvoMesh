@@ -840,6 +840,18 @@ class AgentRuntime:
                         )
                     summary = filtered
                 silent = goal.recurring and _is_silent_outcome(summary)
+                if genuinely_done and not silent and goal.recurring:
+                    # The journal a human asks for "your last 10 analyses"
+                    # (/reports, the recent_reports tool): exactly what was
+                    # announced, written by code, not recalled by the model.
+                    try:
+                        await asyncio.to_thread(
+                            self.memory.reports.append, summary, goal=goal.description
+                        )
+                    except OSError:
+                        logger.warning(
+                            "%s: could not write reports.md", self.definition.name, exc_info=True
+                        )
                 if genuinely_done and not silent:
                     # A recurring goal "finishes" every cycle by design, so
                     # re-quoting its whole description (often a paragraph,

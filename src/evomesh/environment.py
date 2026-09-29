@@ -67,6 +67,8 @@ from evomesh.improvements import (
     ImprovementScout,
     ImprovementTriage,
 )
+from evomesh.knowledge import build_knowledge_tools
+from evomesh.mailer import Mailer, build_send_email_tool
 from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
 from evomesh.messaging import MessageBus
@@ -143,6 +145,10 @@ class Environment:
         self.skills = SkillRegistry(self.project_root)
         self.tools = CustomToolRegistry(self.project_root)
         self.mcp = McpManager(settings.mcp_servers)
+        self.mailer = Mailer(
+            settings.email.accounts,
+            audit_path=settings.data_path.parent / "email-audit.jsonl",
+        )
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
         # non-durability the harness queue's own jobs already accept.
@@ -1277,8 +1283,37 @@ class Environment:
         list_tools() round trip against each connected server, not a
         filesystem scan."""
         definition = self.registry.get(agent_id) if agent_id and self._has(agent_id) else None
-        overrides = definition.mcp_servers if definition is not None else []
-        return await self.mcp.tools_for(overrides)
+        if definition is None:
+            return await self.mcp.tools_for([])
+        return await self.mcp.tools_for(definition.mcp_servers, self.mcp_allowed(definition))
+
+    def mcp_allowed(self, definition: AgentDefinition) -> list[str] | None:
+        """Which mesh-wide MCP servers ``definition`` may use: the ones it
+        names, or -- naming none -- all for an ordinary agent and none for a
+        system agent (see AgentDefinition.mcp). None means all."""
+        if definition.mcp is not None:
+            return list(definition.mcp)
+        return [] if definition.type == "system" else None
+
+    def builtin_tools_for(self, definition: AgentDefinition) -> tuple[Tool, ...]:
+        """send_email (only with a granted account) and the knowledge wiki
+        tools (ordinary agents, unless turned off) -- tools whose sandbox is
+        the agent's own grant or directory, never the job root."""
+        tools: list[Tool] = []
+        mail = build_send_email_tool(self.mailer, definition.email_accounts, definition.name)
+        if mail is not None:
+            tools.append(mail)
+        knowledge = (
+            definition.knowledge
+            if definition.knowledge is not None
+            else definition.type != "system"
+        )
+        if knowledge:
+            memory = self.memory_for(definition)
+            tools.extend(
+                build_knowledge_tools(memory.wiki, memory.reports, writer=definition.name)
+            )
+        return tuple(tools)
 
     def _make_delegate_work(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
         """A harness job's ``delegate_work`` tool, bound to the agent it runs
@@ -1556,6 +1591,11 @@ class Environment:
             if reading
             else custom_tools
             + await self.active_mcp_tools(job.agent_id or "")
+            + (
+                self.builtin_tools_for(self.registry.get(job.agent_id))
+                if acting and self._has(job.agent_id)
+                else ()
+            )
             + (
                 self.procedure_learning.tools_for(
                     job.agent_id, task_id=f"harness:{job.number}", allow_write=job.allow_write

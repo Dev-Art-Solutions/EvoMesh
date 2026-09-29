@@ -237,6 +237,25 @@ Every prompt is assembled under a hard character budget (`runtime.prompt_chars` 
 /memory <agent>      /context <agent>      /context world
 ```
 
+### Knowledge wiki: memory that compounds
+
+memory.md is a diary, and compaction used to fold its oldest lines into one summary sentence. Every ordinary agent now also keeps a small wiki in `workspace/agents/<agent>/wiki/` — Andrej Karpathy's "LLM wiki" pattern:
+
+- `raw/` — immutable sources. What compaction folds away lands here verbatim first, so nothing is lost.
+- `pages/` — one Markdown page per topic, written by the agent with `wiki_write` (merge, never duplicate) and linked with `[[page]]`.
+- `index.md` — one line per page. The lines relevant to the current goal ride in the prompt, inside the memory budget; the agent opens a page with `wiki_read` or searches with `wiki_search`.
+- `log.md` — every ingest, write and lint, newest last.
+
+Lint is code, not a model: `/wiki lint <agent>` repairs index drift and reports broken links, orphans, stale and oversized pages (it also runs on every compaction). The [knowledge-wiki](skills/knowledge-wiki/SKILL.md) skill teaches the workflow. `knowledge: false` in an AGENT.md turns it off for one agent.
+
+### Reports: "give me your last 10 analyses"
+
+Every report a recurring goal actually announced is appended to `workspace/agents/<agent>/reports.md` by the mesh, not by the model. `/reports <agent> [n]` returns the last *n* (default 10), newest first — on an agent's own Telegram bot just `/reports`. Asked in plain words, the agent reads the same journal with its `recent_reports` tool.
+
+```text
+/reports <agent> [n]   /wiki <agent> [page]   /wiki search|lint|log <agent>
+```
+
 ## BDI cognition
 
 Agents run the Rao and Georgeff practical-reasoning loop, not a set of BDI-shaped fields:
@@ -334,6 +353,34 @@ parameters:
 `build_custom_tool()` turns a `TOOL.md` into a real tool whose call shells out through the *exact* allow-listed subprocess path the `shell` tool itself uses — a parameter's value is appended as one more argv entry, never interpolated into a string that gets re-parsed — so a custom tool can never run anything beyond what its own `command` already names, and never anything at all unless that program is in `harness.shell_allow`. `/tools [query]` lists installed tools and says which are active for that reason; `/tool show <name>` previews one; `/tool install <path-or-url-or-directory>` is the same one-step mechanism `/skill install` already has — install first, then add the program to `harness.shell_allow` to activate it.
 
 **[`document_read`](tools/document_read/TOOL.md) and [`document_write`](tools/document_write/TOOL.md)** let an agent read or generate `.docx`, `.pdf`, `.xlsx`/`.xlsm`, and `.csv` files — a table/report/spreadsheet in, JSON out and back. Neither wraps a `python` command a model has to get right from prose; both take one JSON `request` parameter (a path, plus a title/paragraphs/table, or, for `.xlsx`, several named sheets). `command:` in both `TOOL.md` files points at a dedicated venv under `.runtime/docs/` (provisioned by `scripts/install-docs-env.ps1`/`.sh`), never this project's own `.venv` — python-docx, openpyxl, pypdf, and reportlab are exactly the kind of dependency weight rule 16 keeps out of the runtime, same reasoning as Scrapling above.
+
+## MCP servers
+
+Any [Model Context Protocol](https://modelcontextprotocol.io) server — stdio (`command` + `args`) or HTTP (`url`) — becomes a tool source; its tools appear as `mcp__<server>__<tool>`. Mesh-wide servers go under `mcp_servers:` in `evomesh.yaml` (see the example); every ordinary agent may use them unless narrowed, a system agent none unless granted. `tools:` limits which of a server's tools are offered — each schema rides on every turn of a small model's job. Connections are shared across jobs; a call that times out or breaks drops the connection so the next one reconnects, and a server that will not start is retried once a minute rather than on every job.
+
+```text
+/mcp servers                         state, tool count, calls, last error, which agents use it
+/mcp tools <server>                  connect and list its tools
+/mcp grant|revoke <agent> <server>   which mesh-wide servers one agent may use
+/mcp add <agent> <name> <command> [args...]  |  /mcp add <agent> <name> <url>
+/mcp remove <agent> <name>           /mcp reload [server]
+```
+
+An AGENT.md can say `mcp: [filesystem]` (mesh-wide servers by name) and `mcp_servers:` (servers only that agent uses, same shape as the config).
+
+**The other direction — EvoMesh as an MCP server.** `python -m evomesh.mcp_server` is a stdio MCP server over the running mesh's control port, so Claude Code, Claude Desktop or any MCP client can drive it: `mesh_status`, `list_agents`, `ask_agent`, `agent_reports`, `agent_knowledge`, `notifications`, and `run_command` for any console command (`/exit` is refused). For Claude Code:
+
+```bash
+claude mcp add evomesh -- "D:/Projects/Dev-art solutions/EvoMesh/.venv/Scripts/python.exe" -m evomesh.mcp_server
+```
+
+## Email
+
+Agents can send plain-text email through named SMTP accounts under `email.accounts` in `evomesh.yaml` — as many as you like, passwords by `password_ref` into `evomesh.secrets.yaml`. An agent sends from **none** of them until granted: `/email grant <agent> <account>`, or `email: [alerts]` in its AGENT.md. Only then is the `send_email` tool offered, limited to its accounts. Each account has an optional recipient allow-list (addresses or `@domain`), a per-hour limit shared by every agent using it, and a recipient cap. Every attempt, sent or refused, is appended to `data/email-audit.jsonl`.
+
+```text
+/email accounts   /email grant|revoke <agent> <account>   /email test <account> <to>   /email log [n]
+```
 
 ## Filesystem access grants
 

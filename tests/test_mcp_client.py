@@ -162,3 +162,96 @@ async def test_shutdown_clears_connections_and_a_fresh_call_still_works() -> Non
     tools = await manager.tools_for([])
     assert any(tool.name == "mcp__fixture__echo" for tool in tools)
     await manager.shutdown()
+
+
+# -- access control, tool allow-list, backoff, status ---------------------
+
+
+def test_allowed_names_filter_mesh_wide_but_never_the_agents_own() -> None:
+    manager = McpManager([McpServerConfig(name="a"), McpServerConfig(name="b")])
+
+    resolved = manager.resolve([McpServerConfig(name="own")], allowed=["b"])
+
+    assert set(resolved) == {"b", "own"}
+    assert set(manager.resolve([], allowed=[])) == set()
+
+
+async def test_config_tools_limit_what_a_server_offers() -> None:
+    config = _fixture_config()
+    config.tools = ["echo"]
+    manager = McpManager([config])
+
+    tools = await manager.tools_for([])
+
+    assert [tool.name for tool in tools] == ["mcp__fixture__echo"]
+    status = manager.status()
+    assert status[0].connected and status[0].tools == 1
+    await manager.shutdown()
+
+
+async def test_a_dead_server_is_not_retried_on_every_job() -> None:
+    config = McpServerConfig(
+        name="dead", command=sys.executable, args=["-c", "raise SystemExit(3)"],
+        timeout_seconds=10,
+    )
+    manager = McpManager([config])
+
+    assert await manager.tools_for([]) == ()
+    first_error = manager.status()[0].last_error
+    assert first_error.startswith("could not connect")
+    # Inside the retry window the second job fails fast, without a new spawn.
+    assert await manager.tools_for([]) == ()
+    assert manager.status()[0].last_error == first_error
+    await manager.shutdown()
+
+
+async def test_reload_drops_the_connection_and_the_next_use_reconnects() -> None:
+    manager = McpManager([_fixture_config()])
+    await manager.tools_for([])
+    assert manager.status()[0].connected
+
+    await manager.reload("fixture")
+
+    assert not manager.status()[0].connected
+    tools = await manager.tools_for([])
+    echo = next(tool for tool in tools if tool.name == "mcp__fixture__echo")
+    assert await echo.run(None, {"text": "again"}) == "again"  # type: ignore[arg-type]
+    await manager.shutdown()
+
+
+async def test_mcp_commands_and_per_agent_access(tmp_path: Path) -> None:
+    from evomesh.config import Settings
+    from evomesh.console import ConsoleChannel
+    from evomesh.contracts import AgentDefinition
+    from evomesh.environment import Environment
+    from evomesh.models import MockProvider
+
+    settings = Settings(
+        data_path=tmp_path / "data.db",
+        generation_path=tmp_path / "generations",
+        workspace_path=tmp_path / "workspace",
+        mcp_servers=[_fixture_config()],
+    )
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    try:
+        agent = AgentDefinition(name="Analyst", purpose="p", model_name="mock-model")
+        await environment.register_agent(agent)
+        console = ConsoleChannel(environment)
+        # Defaults: an ordinary agent gets the mesh-wide server, a system one not.
+        assert environment.mcp_allowed(agent) is None
+        assert environment.mcp_allowed(environment.registry.get("evolver")) == []
+        assert "agents: Analyst" in await console.route("/mcp servers")
+        assert "mcp__fixture__echo" in await console.route("/mcp tools fixture")
+        assert "none" in await console.route("/mcp revoke Analyst fixture")
+        assert await environment.active_mcp_tools(agent.id) == ()
+        assert "fixture" in await console.route("/mcp grant Analyst fixture")
+        assert len(await environment.active_mcp_tools(agent.id)) == 2
+        added = await console.route(f'/mcp add Analyst own "{sys.executable}" "{FIXTURE_SERVER}"')
+        assert "own MCP server 'own'" in added
+        names = {tool.name for tool in await environment.active_mcp_tools(agent.id)}
+        assert "mcp__own__echo" in names
+        assert "Removed" in await console.route("/mcp remove Analyst own")
+        assert "dropped" in await console.route("/mcp reload")
+    finally:
+        await environment.stop()

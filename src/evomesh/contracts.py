@@ -484,6 +484,15 @@ class McpServerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
+    # Only these of the server's tools are offered (by the server's own tool
+    # name, without the mcp__ prefix). Empty means all of them. Every schema
+    # rides on every turn of a job, so a 40-tool server a job needs two of
+    # is a real cost on a small context -- and a smaller menu is one a small
+    # model picks from correctly.
+    tools: list[str] = Field(default_factory=list)
+    # One connect, list or call past this is abandoned (and the connection
+    # dropped, so the next use reconnects) rather than hanging a job.
+    timeout_seconds: float = 120
 
 
 class MindState(BaseModel):
@@ -777,6 +786,19 @@ class AgentDefinition(BaseModel):
     # docstring for why its fields must never be settable from inside a
     # harness job.
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    # Which of the mesh-wide Settings.mcp_servers this agent may use, by name.
+    # None is the legacy default, same shape as `tools`: every mesh-wide
+    # server for an ordinary agent, none for a system agent (the Evolver's
+    # code jobs have no business calling out to a third-party server). Its
+    # own mcp_servers above are always its own. `/mcp grant|revoke`.
+    mcp: list[str] | None = None
+    # Names of Settings.email.accounts this agent may send from with the
+    # send_email tool. Empty (the default) means none, and no tool at all --
+    # mailing out is always an explicit grant. `/email grant|revoke`.
+    email_accounts: list[str] = Field(default_factory=list)
+    # The knowledge wiki tools (knowledge.py). None: on for an ordinary
+    # agent, off for a system agent, whose knowledge is the codebase itself.
+    knowledge: bool | None = None
     # A command run on its own short, fixed interval, outside this agent's
     # cognition cycle entirely -- for state that moves on a scale of seconds
     # (open orders, account equity) where an LLM turn every few seconds would

@@ -342,3 +342,33 @@ telegram:
   poll_timeout_seconds: 30
   # Say when a generation lands or the mesh restarts, not only when asked.
   announcements: true
+
+# Model Context Protocol servers every ordinary agent may use as a tool source
+# (tools appear as mcp__<name>__<tool>). System agents get none unless granted;
+# `/mcp grant|revoke <agent> <name>` narrows it per agent, `/mcp add <agent> ...`
+# gives one agent a server of its own. `tools:` keeps the menu small -- every
+# schema rides on every turn of a small model's job.
+mcp_servers: []
+#  - name: filesystem
+#    command: npx
+#    args: ["-y", "@modelcontextprotocol/server-filesystem", "D:/Shared"]
+#    tools: [read_file, list_directory]
+#    timeout_seconds: 120
+#  - name: remote
+#    url: "https://example.com/mcp"
+
+# SMTP accounts agents can send email from (send_email tool). An agent may use
+# none of them until granted by name: `/email grant <agent> <account>`, or
+# `email: [alerts]` in its AGENT.md. Passwords go in evomesh.secrets.yaml.
+email:
+  accounts: {}
+#    alerts:
+#      host: smtp.gmail.com
+#      port: 587
+#      security: starttls        # starttls | ssl (port 465) | none
+#      username: you@gmail.com
+#      password_ref: gmail_app_password
+#      from_address: you@gmail.com
+#      from_name: EvoMesh
+#      allowed_recipients: ["you@gmail.com", "@yourcompany.com"]  # empty = anyone
+#      max_per_hour: 20

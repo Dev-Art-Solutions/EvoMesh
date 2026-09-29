@@ -33,13 +33,15 @@ from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.improvements import ImprovementStatus
 from evomesh.models import describe
+from evomesh.ops_commands import OPS_HELP, OperationsCommands
 from evomesh.procedural_learning import ProcedureLearner
 from evomesh.procedure_host import ProcedureOperator
 from evomesh.rules import rule_from_config
 from evomesh.skills import InvalidSkillError, MissingSkillError
 from evomesh.tools import InvalidToolError, MissingToolError
 
-HELP = """Commands:
+HELP = (
+    """Commands:
   /help                         Show this help
   /status                       Environment and provider health
   /agents                       Agents with desired status and live phase
@@ -125,9 +127,12 @@ HELP = """Commands:
   /telegram allow|revoke <id> [agent]  Manage which chats may talk to it
   /telegram set <agent> <token>  Give one agent its own private Telegram bot
   /telegram unset <agent>        Take that agent's private bot away
-  /restart                      Restart the mesh into the code now in the tree
+"""
+    + OPS_HELP
+    + """  /restart                      Restart the mesh into the code now in the tree
   /exit                         Stop EvoMesh
 """
+)
 
 
 def _expanded(raw: str) -> Path:
@@ -188,7 +193,7 @@ def _copy_attachment(source: Path, dest_dir: Path) -> Path:
     return destination
 
 
-class ConsoleChannel:
+class ConsoleChannel(OperationsCommands):
     def __init__(
         self,
         environment: Environment,

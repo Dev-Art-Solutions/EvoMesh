@@ -14,6 +14,7 @@ hoping the server copes, is what keeps memory from evaporating mid-goal.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Sequence
@@ -293,6 +294,19 @@ class CycleContext:
             self.budget.memory_chars,
             recent_fallback=4,
         )
+        # The wiki's index lines that match this goal, inside the same memory
+        # budget (rule 3): a pointer to compiled knowledge the agent can open
+        # with wiki_read, never the pages themselves.
+        pages = self.select_relevant_text(
+            await asyncio.to_thread(self.memory.wiki.index_text),
+            query,
+            self.budget.memory_chars // 4,
+        )
+        if pages:
+            memory = clip(
+                f"{memory}\nKnowledge pages (wiki_read to open):\n{pages}",
+                self.budget.memory_chars,
+            )
         notes = self.select_relevant_text(
             await self.memory.read_context(self.budget.context_chars * 3),
             query,
