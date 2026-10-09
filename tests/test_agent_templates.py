@@ -356,3 +356,33 @@ def test_a_watch_block_can_set_its_command_timeout() -> None:
     assert parse_agent_template(Path("t/AGENT.md"), VALID).watch_timeout_seconds is None
     news = REPO_TEMPLATES / "news-watcher" / "AGENT.md"
     assert parse_agent_template(news, news.read_text(encoding="utf-8")).watch_timeout_seconds == 180
+
+
+def _bundled_and_installed() -> list[tuple[Path, Path]]:
+    root = REPO_TEMPLATES.parent
+    pairs = []
+    for kind in ("skills", "tools"):
+        for bundled in sorted(REPO_TEMPLATES.glob(f"*/{kind}/*")):
+            installed = root / kind / bundled.name
+            if bundled.is_dir() and installed.is_dir():
+                pairs.append((bundled, installed))
+    return pairs
+
+
+@pytest.mark.parametrize(
+    ("bundled", "installed"),
+    _bundled_and_installed(),
+    ids=lambda path: path.relative_to(REPO_TEMPLATES.parent).as_posix(),
+)
+def test_an_installed_skill_or_tool_matches_its_template(bundled: Path, installed: Path) -> None:
+    """The mesh runs tools/<name> and reads skills/<name>; a template ships its
+    own copy and spawning it copies that over the installed one. Found
+    2026-10-09, both ways: skills/web-crawling was two rewrites behind its
+    template (the live Crawler never read its fallback procedure), and
+    tools/news_fetch was a fix ahead of its template -- the next news-watcher
+    spawn would have undone it."""
+    for source in bundled.rglob("*"):
+        if source.is_file() and "__pycache__" not in source.parts:
+            copy = installed / source.relative_to(bundled)
+            assert copy.is_file(), f"{copy} is missing"
+            assert copy.read_bytes() == source.read_bytes(), f"{copy} differs from {source}"

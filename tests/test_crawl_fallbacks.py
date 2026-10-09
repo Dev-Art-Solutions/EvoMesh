@@ -396,19 +396,3 @@ def test_a_copy_from_elsewhere_is_said_first() -> None:
     )
 
     assert text.startswith(f"IMPORTANT, tell the human: {note}.")
-
-
-@pytest.mark.parametrize(
-    "part", ["tools/crawl_site", "tools/fetch_page", "skills/web-crawling"]
-)
-def test_the_installed_copy_matches_the_template(part: str) -> None:
-    """The mesh runs tools/<name> and reads skills/<name>; the template ships
-    its own copy. Found live: skills/web-crawling was two rewrites behind,
-    so the running Crawler never read its fallback procedure."""
-    template = TEMPLATE_TOOLS.parent / part
-    installed = ROOT / part
-    for source in template.rglob("*"):
-        if source.is_file() and "__pycache__" not in source.parts:
-            copy = installed / source.relative_to(template)
-            assert copy.is_file(), f"{copy} is missing"
-            assert copy.read_bytes() == source.read_bytes(), f"{copy} differs from the template"
