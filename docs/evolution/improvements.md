@@ -195,6 +195,7 @@ the line below the title.
     1. [x] src/evomesh/browser_bridge.py `read_message` -- after `json.loads`, raise `ValueError` if the decoded value is not a dict, with a message like "native message is not a JSON object"
 - [ ] Record the lock holder's PID/start time in the lock file and surface it on refusal
     `SingletonLock.acquire` writes a meaningless `b"\0"` placeholder into the lock file and nothing ever reads it, so the `AlreadyRunningError` can only say "another EvoMesh process already holds the lock" (the exact log line) with no PID, no start time, and no way to tell a live process from a crashed zombie. Fill the file with identifying data when we own the lock, and read it back (only if the lock is held) to identify the holder in the refusal message.
+    Windows trap: `_lock_exclusive_nonblocking` takes `msvcrt.locking` on byte 0, and another process cannot read a locked byte range -- keep byte 0 as the lock byte, write the identifying text after it (offset 1), and read it back from offset 1 only.
     >             self._path.write_bytes(b"\0")
     >                     raise AlreadyRunningError(
     >                         f"another EvoMesh process already holds the lock at {self._path} "
