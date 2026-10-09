@@ -74,18 +74,27 @@ class LoopWatchdog:
 
     def _watch(self) -> None:
         reported_since: float | None = None
+        reported_stack = ""
         while not self._stop.wait(HEARTBEAT_SECONDS / 2):
             lag = time.monotonic() - self._beat - HEARTBEAT_SECONDS
             if lag >= self.threshold and reported_since is None:
                 reported_since = self._beat
+                # Kept for the recovery line: by then the loop runs something
+                # else, and "blocked for 41.3s" alone means a search back
+                # through the log for the onset line to learn what did it.
+                reported_stack = self.stack()
                 self.stalls += 1
                 logger.warning(
                     "event loop blocked for %.1fs so far; it is running:\n%s",
                     lag,
-                    self.stack(),
+                    reported_stack,
                 )
             elif lag < self.threshold and reported_since is not None:
                 total = max(0.0, self._beat - reported_since - HEARTBEAT_SECONDS)
                 self.longest = max(self.longest, total)
-                logger.warning("event loop was blocked for %.1fs", total)
+                logger.warning(
+                    "event loop was blocked for %.1fs; it was running:\n%s",
+                    total,
+                    reported_stack,
+                )
                 reported_since = None

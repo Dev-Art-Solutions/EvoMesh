@@ -27,7 +27,10 @@ async def test_a_blocked_loop_is_reported_with_the_blocking_stack(
     caught = [message for message in messages if "blocked for" in message and "so far" in message]
     assert len(caught) == 1
     assert "_block_the_loop" in caught[0]
-    assert any("was blocked for" in message for message in messages)
+    recovered = [message for message in messages if "was blocked for" in message]
+    assert len(recovered) == 1
+    # Self-contained: what blocked the loop, without finding the onset line.
+    assert "_block_the_loop" in recovered[0]
     assert watchdog.stalls == 1
     assert watchdog.longest > 0.5
 
