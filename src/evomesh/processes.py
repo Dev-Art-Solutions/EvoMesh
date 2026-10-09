@@ -31,6 +31,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ async def run_command(
             # walks the tree instead (see _kill_tree).
             start_new_session=True,
         ) as process:
+            _attach_job(process)
             _RUNNING.add(process)
             try:
                 output, _ = process.communicate(timeout=timeout_seconds)
@@ -96,6 +98,7 @@ async def run_command(
                 return 124, output or b"", True
             finally:
                 _RUNNING.discard(process)
+                _close_job(process)
             return process.returncode, output or b"", False
 
     exit_code, output, timed_out = await asyncio.to_thread(call)
@@ -133,6 +136,7 @@ def _kill_tree(process: subprocess.Popen[bytes]) -> None:
     and a function Windows does not have -- so it never ran anywhere.
     """
     if sys.platform == "win32":
+        _terminate_job(process)
         subprocess.run(  # noqa: S603 - fixed program, our own child's pid
             ["taskkill", "/F", "/T", "/PID", str(process.pid)],  # noqa: S607
             stdout=subprocess.DEVNULL,
@@ -144,6 +148,60 @@ def _kill_tree(process: subprocess.Popen[bytes]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
     with suppress(OSError):
         process.kill()
+
+
+# Windows: one job object per child, so a timeout reaches everything it
+# started. Found 2026-10-09: a venv's python.exe is a launcher that starts
+# the real interpreter as its own child; `taskkill /T` reported every kill a
+# success and the grandchild's interpreter still ran on, failing
+# test_a_timeout_kills_the_grandchildren_too and pausing evolution. A process
+# in a job (nested jobs included) cannot leave it, so TerminateJobObject
+# misses nothing the tree walk can.
+_JOBS: dict[int, int] = {}
+
+
+def _kernel32() -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _attach_job(process: subprocess.Popen[bytes]) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        kernel32 = _kernel32()
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return
+        handle = int(process._handle)  # type: ignore[attr-defined]  # noqa: SLF001
+        if kernel32.AssignProcessToJobObject(job, handle):
+            _JOBS[process.pid] = job
+        else:
+            kernel32.CloseHandle(job)
+    except (OSError, AttributeError):
+        return  # no job: taskkill /T still runs on a timeout
+
+
+def _terminate_job(process: subprocess.Popen[bytes]) -> None:
+    job = _JOBS.get(process.pid)
+    if job is not None:
+        with suppress(OSError):
+            _kernel32().TerminateJobObject(job, 1)
+
+
+def _close_job(process: subprocess.Popen[bytes]) -> None:
+    job = _JOBS.pop(process.pid, None)
+    if job is not None:
+        with suppress(OSError):
+            _kernel32().CloseHandle(job)
 
 
 def without_virtual_env() -> dict[str, str]:
