@@ -137,7 +137,9 @@ def main() -> int:
         f"Tried: {page.trail()}",
     ]
     if page.note:
-        head.append(f"Note: {page.note}")
+        # First, not after the trail: found live, the model answered from a
+        # three-day-old Wayback copy and never said so when this came last.
+        head.insert(0, f"IMPORTANT, tell the human: {page.note}.")
     with contextlib.suppress(OSError):
         head.append(f"Full text: {save(page)}")
     focus = [str(item) for item in request.get("focus") or []]

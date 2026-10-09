@@ -385,12 +385,28 @@ def test_the_crawl_budget_fits_inside_the_tool_timeout(monkeypatch: pytest.Monke
     assert crawl_site.time_budget({"time_budget_seconds": 150}) == 150
 
 
-@pytest.mark.parametrize("tool", ["crawl_site", "fetch_page"])
-def test_the_installed_copy_matches_the_template(tool: str) -> None:
-    """The mesh runs tools/<name>; the template ships its own copy. One edited
-    without the other is a crawler that behaves differently once installed."""
-    template = TEMPLATE_TOOLS / tool
-    installed = ROOT / "tools" / tool
+def test_a_copy_from_elsewhere_is_said_first() -> None:
+    """Found live: the model answered from a three-day-old Wayback copy of
+    g2.com and never said so -- the note came after the fetch trail."""
+    note = "archived copy from 2026-10-06 (web.archive.org), not the live page"
+    page = {"url": "https://g2.test/", "title": "CRM", "text": "Salesforce", "via": "archive"}
+
+    text = crawl_site.render(
+        {"pages": [{**page, "note": note}], "skipped": [], "errors": [], "fetch": []}
+    )
+
+    assert text.startswith(f"IMPORTANT, tell the human: {note}.")
+
+
+@pytest.mark.parametrize(
+    "part", ["tools/crawl_site", "tools/fetch_page", "skills/web-crawling"]
+)
+def test_the_installed_copy_matches_the_template(part: str) -> None:
+    """The mesh runs tools/<name> and reads skills/<name>; the template ships
+    its own copy. Found live: skills/web-crawling was two rewrites behind,
+    so the running Crawler never read its fallback procedure."""
+    template = TEMPLATE_TOOLS.parent / part
+    installed = ROOT / part
     for source in template.rglob("*"):
         if source.is_file() and "__pycache__" not in source.parts:
             copy = installed / source.relative_to(template)

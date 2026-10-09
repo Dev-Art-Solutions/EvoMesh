@@ -17,8 +17,9 @@ answer with what the site is about in general.
 headless browser, stealth browser, local Chrome, then archived/reader copies)
 and says `[via ...]` for each page. Read its header lines:
 
-1. **Pages came back** -- done; mention it when a page was an archived copy
-   (its `Note:` says so) because that is not the live page.
+1. **Pages came back** -- done. When the result starts with "IMPORTANT, tell
+   the human", say it in your answer: an archived copy (and its date) or a
+   third-party reader's copy is not the live page.
 2. **"No page could be read" or only "(partial)" pages** -- run
    `fetch_page` with `{"url": "<the start url>", "probe": true}`. It tries
    every method and lists which worked.

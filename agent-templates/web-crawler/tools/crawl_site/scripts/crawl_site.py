@@ -275,6 +275,10 @@ def render(result: dict, saved: str = "", budget: int = OUTPUT_BUDGET) -> str:
     content, and answered from imagination."""
     pages = result["pages"]
     head = [f"Crawled {len(pages)} page(s)."]
+    copies = sorted({page["note"] for page in pages if page.get("note")})
+    if copies:
+        # Before everything: a small model drops a note that comes later.
+        head.insert(0, "IMPORTANT, tell the human: " + "; ".join(copies) + ".")
     if saved:
         head[0] += f" Full text: {saved} (read it for more)."
     if result.get("note"):
