@@ -168,6 +168,25 @@ def test_what_worked_on_a_site_is_tried_first_next_time(
     assert page.ok and calls == ["browser"]
 
 
+def test_a_copy_from_elsewhere_is_never_remembered_as_the_way_in(
+    strategies: dict[str, Callable[..., Any]],
+) -> None:
+    """Found live: g2.com was remembered as "archive", so every later crawl
+    would have skipped the live site for an old snapshot."""
+    calls: list[str] = []
+    strategies["plain"] = _fake(DATADOME, 403, calls, "plain")
+    strategies["archive"] = _fake(ARTICLE, 200, calls, "archive")
+    memory = {"old.test": "archive"}  # written before this rule existed
+
+    config = {"strategies": ["plain", "archive"]}
+    first = webfetch.fetch("https://site.test/", config, memory=memory)
+    again = webfetch.fetch("https://old.test/", config, memory=memory)
+
+    assert first.strategy == again.strategy == "archive"
+    assert "site.test" not in memory
+    assert calls == ["plain", "archive", "plain", "archive"], "the live site is tried first"
+
+
 def test_when_nothing_is_ok_the_fullest_partial_page_is_kept(
     strategies: dict[str, Callable[..., Any]],
 ) -> None:

@@ -479,7 +479,9 @@ def order(config: dict, host: str, memory: dict[str, str]) -> list[str]:
     configured = config.get("strategies") or DEFAULT_STRATEGIES
     names = [name for name in configured if name in STRATEGIES]
     remembered = memory.get(host)
-    if remembered in names:
+    # Never a copy held elsewhere first: the live site is always tried again
+    # (an entry written before save_memory stopped keeping them is ignored).
+    if remembered in names and remembered not in REMOTE:
         names.remove(remembered)
         names.insert(0, remembered)
     return names
@@ -551,7 +553,10 @@ def fetch(
             best = page
     result = winner or best or Fetched(url=url)
     result.attempts = attempts
-    if winner:
+    # Only a way into the live site is worth remembering. Found 2026-10-09:
+    # g2.com was remembered as "archive", so every later crawl would have
+    # gone straight to an old snapshot, even once the live page opened up.
+    if winner and winner.strategy not in REMOTE:
         memory[host] = winner.strategy
     return result
 
