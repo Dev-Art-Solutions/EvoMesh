@@ -361,6 +361,44 @@ def test_a_start_page_without_links_is_crawled_through_its_sitemap(
     assert memory == {spa.base.removeprefix("http://"): "http"}
 
 
+def test_feed_discovery_reads_only_real_feeds_and_their_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A guessed /feed that 404s with an HTML page used to give up its
+    stylesheet link as a page to crawl; an Atom feed its rel="self" link."""
+    responses = {
+        "https://s.test/feed": webfetch.Raw(
+            body='<html><head><link rel="stylesheet" href="https://s.test/site.css"></head>'
+            "<body>Not found</body></html>",
+            status=404,
+        ),
+        "https://s.test/rss": webfetch.Raw(
+            body='<html><link rel="icon" href="https://s.test/favicon.ico"></html>', status=200
+        ),
+        "https://s.test/atom.xml": webfetch.Raw(
+            body='<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'
+            '<link rel="self" href="https://s.test/atom.xml"/>'
+            '<link rel="hub" href="https://hub.test/"/>'
+            '<entry><link rel="alternate" href="https://s.test/post-1"/></entry>'
+            '<entry><link href="https://s.test/post-2"/></entry></feed>',
+            status=200,
+        ),
+        "https://s.test/rss.xml": webfetch.Raw(
+            body="<rss><channel><item><link>https://s.test/news-1</link></item></channel></rss>",
+            status=200,
+        ),
+    }
+
+    def fake_get(url: str, timeout: float, **_: Any) -> Any:
+        return responses[url]
+
+    monkeypatch.setattr(webfetch, "http_get", fake_get)
+
+    links = webfetch.feed_links(list(responses), deadline=None)
+
+    assert links == ["https://s.test/post-1", "https://s.test/post-2", "https://s.test/news-1"]
+
+
 def test_a_crawl_that_reads_nothing_says_what_to_try_next(spa: SpaSite) -> None:
     result = crawl_site.crawl({"url": f"{spa.base}/nowhere", "discover": False}, _config())
 

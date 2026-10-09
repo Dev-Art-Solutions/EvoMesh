@@ -637,15 +637,32 @@ def sitemap_links(root: str, config: dict, deadline: float | None, robots_text: 
 
 
 def feed_links(urls: list[str], deadline: float | None) -> list[str]:
-    """Item links from RSS/Atom feeds."""
+    """Item links from up to three RSS/Atom feeds among `urls`.
+
+    Only a real feed counts. Before, a guessed /feed that answered with a 404
+    HTML page was read like one, and its <link rel="stylesheet" href=...>
+    tags were queued as pages to crawl; so were an Atom feed's rel="self"
+    (the feed itself) and rel="hub" links."""
     found: list[str] = []
-    for url in urls[:3]:
-        if deadline is not None and deadline - time.monotonic() < 5:
+    feeds = 0
+    for url in urls:
+        if feeds == 3 or (deadline is not None and deadline - time.monotonic() < 5):
             break
         try:
             raw = http_get(url, 15)
         except ValueError:
             continue
+        head = raw.body[:2000].lower()
+        if (raw.status or 200) >= 400 or not any(tag in head for tag in FEED_TAGS):
+            continue
+        feeds += 1
         found += re.findall(r"<link>\s*(https?://[^<\s]+)\s*</link>", raw.body)
-        found += re.findall(r"<link[^>]+href=\"(https?://[^\"]+)\"", raw.body)
+        for tag in re.findall(r"<link\b[^>]*>", raw.body):
+            href = re.search(r"href=[\"'](https?://[^\"']+)[\"']", tag)
+            rel = re.search(r"rel=[\"']([^\"']*)[\"']", tag)
+            if href and (rel is None or rel.group(1).strip().lower() == "alternate"):
+                found.append(href.group(1))
     return found
+
+
+FEED_TAGS = ("<rss", "<feed", "<rdf:rdf")
