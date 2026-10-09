@@ -193,3 +193,11 @@ the line below the title.
     In `handle_tool_request`, a malformed tool *response* that isn't a dict is rejected with `raise TypeError(...)`, but the matching validation for a malformed tool *request* is missing: `read_message` returns `json.loads(...)` without checking the type, so a non-object payload (an array, number, or string) flows straight into `on_message`, which does `message["type"]` and raises a confusing `KeyError: 'type'` instead of a clear validation error.
     >         return json.loads(payload.decode("utf-8"))
     1. [x] src/evomesh/browser_bridge.py `read_message` -- after `json.loads`, raise `ValueError` if the decoded value is not a dict, with a message like "native message is not a JSON object"
+- [ ] Record the lock holder's PID/start time in the lock file and surface it on refusal
+    `SingletonLock.acquire` writes a meaningless `b"\0"` placeholder into the lock file and nothing ever reads it, so the `AlreadyRunningError` can only say "another EvoMesh process already holds the lock" (the exact log line) with no PID, no start time, and no way to tell a live process from a crashed zombie. Fill the file with identifying data when we own the lock, and read it back (only if the lock is held) to identify the holder in the refusal message.
+    >             self._path.write_bytes(b"\0")
+    >                     raise AlreadyRunningError(
+    >                         f"another EvoMesh process already holds the lock at {self._path} "
+    >                         "-- refusing to start a second instance against the same data"
+    >                     ) from exc
+    1. [ ] src/evomesh/singleton.py `SingletonLock.acquire` -- after acquiring the OS lock, write the current process's PID and start time into the lock file (e.g. `f"{os.getpid()}\0{start_ts}\0"` via a new tiny helper) so any coexisting instance can identify us; when `_lock_exclusive_nonblocking` raises, if we failed to acquire, read the file's existing bytes and append the holder's PID (and start time, if parseable) into the `AlreadyRunningError` message instead of the static text.
