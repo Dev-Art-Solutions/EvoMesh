@@ -561,6 +561,27 @@ def fetch(
     return result
 
 
+KEEP_SAVED = 200
+
+
+def prune_saved(directory: Path, keep: int = KEEP_SAVED) -> int:
+    """Delete all but the newest `keep` saved pages (*.md) in `directory`;
+    how many went. A crawl scheduled every hour saves 24 files a day, and
+    nothing else ever removed one."""
+    try:
+        saved = sorted(directory.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return 0
+    removed = 0
+    for path in saved[keep:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def load_memory(path: Path) -> dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

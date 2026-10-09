@@ -262,6 +262,7 @@ def save_full(result: dict, request: dict) -> Path:
     for page in result["pages"]:
         parts.append(f"# {page['title'] or page['url']}\n{page['url']}\n\n{page['text']}\n")
     target.write_text("\n".join(parts), encoding="utf-8")
+    webfetch.prune_saved(target.parent)
     return target
 
 

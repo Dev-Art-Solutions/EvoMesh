@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import threading
 import time
@@ -185,6 +186,21 @@ def test_a_copy_from_elsewhere_is_never_remembered_as_the_way_in(
     assert first.strategy == again.strategy == "archive"
     assert "site.test" not in memory
     assert calls == ["plain", "archive", "plain", "archive"], "the live site is tried first"
+
+
+def test_saved_pages_are_capped_and_only_saved_pages_go(tmp_path: Path) -> None:
+    crawls = tmp_path / "crawls"
+    crawls.mkdir()
+    for index in range(5):
+        page = crawls / f"{index}.md"
+        page.write_text("x", encoding="utf-8")
+        os.utime(page, (1000 + index, 1000 + index))
+    (crawls / "strategies.json").write_text("{}", encoding="utf-8")
+
+    removed = webfetch.prune_saved(crawls, keep=2)
+
+    assert removed == 3
+    assert sorted(path.name for path in crawls.iterdir()) == ["3.md", "4.md", "strategies.json"]
 
 
 def test_when_nothing_is_ok_the_fullest_partial_page_is_kept(

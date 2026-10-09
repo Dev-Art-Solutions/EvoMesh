@@ -63,6 +63,7 @@ def save(page: webfetch.Fetched) -> str:
     target = Path.cwd() / "crawls" / f"{stamp}-{slug}-{page.strategy}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(f"# {page.title or page.url}\n{page.url}\n\n{page.text}\n", encoding="utf-8")
+    webfetch.prune_saved(target.parent)
     return target.relative_to(Path.cwd()).as_posix()
 
 
