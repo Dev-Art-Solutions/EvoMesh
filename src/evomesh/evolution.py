@@ -537,6 +537,8 @@ ENVIRONMENT_MARKERS = (
     "Connection refused",
     "Temporary failure in name resolution",
 )
+# pytest's location line for an exception raised in this project's source.
+RAISED_IN_PROJECT = re.compile(r"src[\\/]evomesh[\\/][\w\\/]+\.py:\d+: (\w+)")
 
 
 class ValidationResult(BaseModel):
@@ -558,7 +560,22 @@ class ValidationResult(BaseModel):
         if failure.get("blocked"):
             return str(failure.get("output", "")).strip().splitlines()[0][:120]
         output = str(failure.get("output", ""))
-        return next((marker for marker in ENVIRONMENT_MARKERS if marker in output), None)
+        # An exception the project's own code raised is the candidate's: pytest
+        # names where it came from as "src/evomesh/x.py:95: PermissionError".
+        # Found live 2026-10-09: generation 1674 read the byte its own lock
+        # held, Windows refused, and the run was called "blocked by this
+        # machine" -- no repair attempt, straight to a human.
+        raised_here = {
+            match.group(1) for match in RAISED_IN_PROJECT.finditer(output)
+        }
+        return next(
+            (
+                marker
+                for marker in ENVIRONMENT_MARKERS
+                if marker in output and marker not in raised_here
+            ),
+            None,
+        )
 
     def failure(self) -> dict[str, object] | None:
         """The command that broke the candidate, or None when nothing did."""

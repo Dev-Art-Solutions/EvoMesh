@@ -1900,6 +1900,24 @@ async def test_a_missing_toolchain_is_blocked_not_failed(tmp_path: Path) -> None
     assert busy.environment_blocker() == "os error 32"
     assert real.environment_blocker() is None, "a failing test is the candidate's fault"
 
+    def pytest_failed(output: str) -> ValidationResult:
+        command = {"command": "uv run pytest", "exit_code": 1, "output": output}
+        return ValidationResult(passed=False, commands=[command])
+
+    # Found live: generation 1674 read the byte its own lock held.
+    own_code = pytest_failed(
+        ">       msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)\n"
+        "E       PermissionError: [Errno 13] Permission denied\n\n"
+        "D:\\gen\\001674-candidate\\src\\evomesh\\singleton.py:95: PermissionError\n"
+        "FAILED tests/test_singleton.py::test_used_as_a_context_manager - PermissionEr..."
+    )
+    tmp_setup = pytest_failed(
+        "E   PermissionError: [WinError 5] Access is denied: 'C:\\\\tmp\\\\pytest-of-AI'\n"
+        "C:\\py\\Lib\\site-packages\\_pytest\\pathlib.py:250: PermissionError\n"
+    )
+    assert own_code.environment_blocker() is None, "the project's own code raised it"
+    assert tmp_setup.environment_blocker() is not None, "pytest's temp dir is the host's"
+
 
 def test_subprocesses_leave_no_asyncio_transport_behind() -> None:
     """Why this project runs commands on a thread rather than through asyncio.
