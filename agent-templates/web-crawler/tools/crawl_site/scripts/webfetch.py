@@ -282,12 +282,19 @@ def scrapling_get(url: str, timeout: float) -> Raw:
     return _scrapling(url, timeout, "get", [])
 
 
+# Images, fonts and media are never page text, and on an ad-heavy page
+# their requests keep the network from going idle. Found live 2026-10-09:
+# an idealo.de search page took 51 s with --network-idle alone, 7 s with
+# this too, and came back the same size; scripts still run.
+BROWSER_FLAGS = ["--network-idle", "--disable-resources"]
+
+
 def scrapling_browser(url: str, timeout: float) -> Raw:
-    return _scrapling(url, timeout, "fetch", ["--network-idle"])
+    return _scrapling(url, timeout, "fetch", BROWSER_FLAGS)
 
 
 def scrapling_stealth(url: str, timeout: float) -> Raw:
-    return _scrapling(url, timeout, "stealthy-fetch", ["--solve-cloudflare", "--network-idle"])
+    return _scrapling(url, timeout, "stealthy-fetch", ["--solve-cloudflare", *BROWSER_FLAGS])
 
 
 def curl_get(url: str, timeout: float) -> Raw:
