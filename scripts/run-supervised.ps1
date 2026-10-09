@@ -83,6 +83,18 @@ $meshLog = Join-Path $Root '.runtime\logs\mesh.log'
 $supervisorLog = Join-Path $Root '.runtime\logs\supervisor.log'
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $meshLog) | Out-Null
 
+function Invoke-LogRotation {
+    # mesh.log rotates inside Python; this file had nothing, and a service
+    # restarting for years would grow it forever. One old copy is enough:
+    # the supervisor only ever says starts, restarts and watchdog kills.
+    try {
+        $item = Get-Item -LiteralPath $supervisorLog -ErrorAction Stop
+        if ($item.Length -gt 5MB) {
+            Move-Item -LiteralPath $supervisorLog -Destination "$supervisorLog.1" -Force -ErrorAction Stop
+        }
+    } catch {}
+}
+
 function Write-Log([string] $Message) {
     $line = "$(Get-Date -Format o) $Message"
     # Found live: this whole script ran under $ErrorActionPreference = 'Stop',
@@ -223,6 +235,7 @@ while ($true) {
         break
     }
     Start-OllamaIfDown
+    Invoke-LogRotation
     Write-Log '[supervisor] starting EvoMesh'
     $code = Invoke-Mesh
 
