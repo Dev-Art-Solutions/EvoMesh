@@ -92,3 +92,50 @@ def test_acquire_gives_up_after_timeout(tmp_path):
             waiter.acquire(wait_seconds=0.5)
     finally:
         holder.release()
+
+
+def test_the_refusal_names_the_process_that_holds_the_lock(tmp_path: Path) -> None:
+    """The holder is another process, as in real life: on Windows the lock
+    byte cannot be read across processes, which is what sank generations
+    1674-1676. The identity sits after it and is read from there."""
+    import subprocess
+    import sys
+
+    path = tmp_path / "evomesh.lock"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; from pathlib import Path; "
+            "from evomesh.singleton import SingletonLock; "
+            "lock = SingletonLock(Path(sys.argv[1])); lock.acquire(); print('held', flush=True); "
+            "time.sleep(30)",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held"
+
+        # Not holder.pid: a venv's python.exe is a launcher, and the lock is
+        # held by the interpreter it starts -- a different pid.
+        with pytest.raises(AlreadyRunningError, match=r"process \(pid \d+, started \d{4}-"):
+            SingletonLock(path).acquire()
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_new_holder_replaces_the_old_identity(tmp_path: Path) -> None:
+    from evomesh.singleton import read_holder
+
+    path = tmp_path / "evomesh.lock"
+    path.write_bytes(b"\0pid 99999, started long ago and much longer text than ours")
+
+    with SingletonLock(path):
+        held = read_holder(path)
+
+    assert held.startswith("pid ") and "99999" not in held and "longer text" not in held
+    assert path.read_bytes()[:1] == b"\0", "byte 0 stays the lock byte"
