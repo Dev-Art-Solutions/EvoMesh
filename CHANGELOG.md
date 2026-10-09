@@ -6,6 +6,30 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **The Crawler finds another way in.** Give it a URL and it no longer stops
+  at the first fetcher that fails. Every page goes through a fallback chain:
+  Scrapling, plain HTTP, curl, a headless browser, the stealth browser, the
+  local Chrome/Edge, then the Wayback Machine's copy or r.jina.ai's reading.
+  Each result is judged rather than trusted by exit code: a 403, a bot wall
+  (Cloudflare, DataDome, PerimeterX, Imperva) or an empty JavaScript shell
+  counts as a failure, and the next strategy is tried. Each page says which
+  way got it (`[via stealth]`); what worked on a site is remembered in the
+  agent's `crawls/strategies.json` and tried first next time; a start page
+  with no links is crawled through the site's sitemap or RSS feed.
+  - New tool `fetch_page`: one URL by a chosen method, or `"probe": true` to
+    try every method and report which works, so the agent can crawl again
+    with that one. The skill walks the agent through it, at most three rounds,
+    and then has it report exactly what was tried.
+  - A private or localhost URL never goes to the remote copies;
+    `"allow_remote": false` in the crawler's `config.json` turns them off.
+  - Custom tools can set `timeout_seconds` in `TOOL.md` (up to 600) when
+    `harness.shell_seconds` is too short, and are told their limit in
+    `EVOMESH_TOOL_TIMEOUT`. The crawler tools use 200–210 s.
+  - An agent spawned from a template gains, at startup, the tools and
+    `config.json` keys the template added since. Nothing it has is removed
+    or overwritten.
+  - Fixed: Scrapling saves a 403 page with exit 0, so the crawler used to
+    report a bot wall as the site's content.
 - **Telegram menu and buttons.** On connect the bot fills Telegram's "/" menu
   (`setMyCommands`) with the commands that work with no arguments; a private
   agent bot gets its own short list. Answers carry inline buttons: `/start`,

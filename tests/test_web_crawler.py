@@ -104,13 +104,26 @@ class Site:
 
 
 @pytest.fixture
-def site(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+def site(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # type: ignore[no-untyped-def]
     # The Scrapling CLI's shape, played by a small script: CI has no Scrapling.
     fake = Path(__file__).with_name("fake_scrapling.py")
     monkeypatch.setenv("EVOMESH_SCRAPER", json.dumps([sys.executable, str(fake)]))
+    # The crawler remembers what worked under crawls/ in its working directory.
+    monkeypatch.chdir(tmp_path)
     server = Site()
     yield server
     server.close()
+
+
+def _config(**overrides: Any) -> dict[str, Any]:
+    """No pause, and only the fetchers a CI box has: no browser, no Chrome."""
+    return {
+        **crawl_site.DEFAULTS,
+        "delay_seconds": 0.0,
+        "strategies": ["scrapling", "http"],
+        "min_text_chars": 10,
+        **overrides,
+    }
 
 
 REAL_SCRAPLING = Path(__file__).resolve().parents[1] / ".runtime/scrapling/Scripts/scrapling.exe"
@@ -119,7 +132,7 @@ REAL_SCRAPLING = Path(__file__).resolve().parents[1] / ".runtime/scrapling/Scrip
 @pytest.mark.skipif(not REAL_SCRAPLING.is_file(), reason="Scrapling is not installed here")
 def test_the_real_fetcher_crawls_the_site(site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EVOMESH_SCRAPER", str(REAL_SCRAPLING))
-    config = {**crawl_site.DEFAULTS, "delay_seconds": 0.0}
+    config = _config(strategies=["scrapling"])
 
     result = crawl_site.crawl({"url": f"{site.base}/", "focus": ["gold"]}, config)
 
@@ -128,15 +141,20 @@ def test_the_real_fetcher_crawls_the_site(site: Site, monkeypatch: pytest.Monkey
     assert result["pages"][1]["matches"][0].startswith("Gold price rises today.")
 
 
-def test_without_a_fetcher_the_crawl_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_scrapling_the_crawl_falls_back_to_plain_http(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It used to refuse outright; now Scrapling is one way in of several."""
     monkeypatch.setenv("EVOMESH_SCRAPER", "")
 
-    with pytest.raises(crawl_site.NoFetcher):
-        crawl_site.crawl({"url": "https://example.com/"}, dict(crawl_site.DEFAULTS))
+    result = crawl_site.crawl({"url": f"{site.base}/", "focus": ["gold"]}, _config())
+
+    assert [page["via"] for page in result["pages"]] == ["http", "http", "http"]
+    assert result["pages"][1]["matches"][0].startswith("Gold price rises today.")
 
 
 def test_a_crawl_stays_on_the_site_honours_robots_and_finds_the_focus(site: Site) -> None:
-    config = {**crawl_site.DEFAULTS, "delay_seconds": 0.0}
+    config = _config()
 
     result = crawl_site.crawl({"url": f"{site.base}/", "focus": ["gold"]}, config)
 
@@ -158,7 +176,7 @@ def test_the_answer_fits_the_harness_and_shows_matches_first(
     from evomesh.harness_tools import ToolLimits, _clip  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.chdir(tmp_path)
-    config = {**crawl_site.DEFAULTS, "delay_seconds": 0.0}
+    config = _config()
     result = crawl_site.crawl({"url": f"{site.base}/", "focus": ["gold"]}, config)
     result["pages"][0]["text"] = "long navigation text " * 2000  # a real page's bulk
     saved = crawl_site.save_full(result, {"url": site.base}).relative_to(tmp_path).as_posix()
@@ -174,7 +192,7 @@ def test_the_answer_fits_the_harness_and_shows_matches_first(
 
 
 def test_max_pages_and_follow_bound_the_crawl(site: Site) -> None:
-    config = {**crawl_site.DEFAULTS, "delay_seconds": 0.0}
+    config = _config()
 
     only_one = crawl_site.crawl({"url": f"{site.base}/", "max_pages": 1}, config)
     followed = crawl_site.crawl({"url": f"{site.base}/", "follow": ["/a"]}, config)
@@ -306,8 +324,44 @@ async def test_the_template_spawns_with_its_tools_and_skill(tmp_path: Path) -> N
 
     assert crawler.identity == "Crawler"
     assert crawler.harness_root != ""
-    assert {"crawl_site", "crawl_schedule", "send_results"} <= {
+    assert {"crawl_site", "fetch_page", "crawl_schedule", "send_results"} <= {
         tool.name for tool in environment.tools.discover()
     }
     assert "web-crawling" in {skill.name for skill in environment.skills.discover()}
+    await environment.stop()
+
+
+async def test_a_crawler_spawned_earlier_gains_the_tools_its_template_added(
+    tmp_path: Path,
+) -> None:
+    """The Crawler's tool list is a copy taken at spawn time: one spawned
+    before fetch_page existed never got it."""
+    from evomesh.config import HarnessSettings
+
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    settings.harness = HarnessSettings(enabled=True, shell_allow=["python"])
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.agent_templates.install_directory(TEMPLATE)
+    crawler = await environment.agent_templates.instantiate(environment, "web-crawler")
+    assert crawler.tools is not None
+    # As it was spawned a week earlier, before the fallback work.
+    crawler.tools.remove("fetch_page")
+    crawler.capabilities.remove("tool.fetch_page")
+    config_path = Path(crawler.harness_root) / "config.json"
+    old = json.loads(config_path.read_text(encoding="utf-8"))
+    for key in ("strategies", "allow_remote"):
+        old.pop(key)
+    old["max_pages"] = 3  # a human's own value
+    config_path.write_text(json.dumps(old), encoding="utf-8")
+
+    added = await environment.agent_templates.bring_up_to_date(environment, crawler)
+    again = await environment.agent_templates.bring_up_to_date(environment, crawler)
+
+    assert added == ["tool fetch_page", "config strategies", "config allow_remote"]
+    assert again == []
+    assert "fetch_page" in crawler.tools and "tool.fetch_page" in crawler.capabilities
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["strategies"][0] == "scrapling" and config["max_pages"] == 3
+    assert "fetch_page" in {tool.name for tool in environment.custom_tools_for(crawler)}
     await environment.stop()

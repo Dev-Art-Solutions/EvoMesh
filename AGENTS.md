@@ -87,7 +87,9 @@ parameters:
     required: true
 ---
 ```
-`name`, `description`, `command` required; `parameters` optional. `{tool_dir}` resolves to the
+`name`, `description`, `command` required; `parameters` optional; `timeout_seconds` optional
+(default `harness.shell_seconds`, at most 600 -- the script sees its limit in
+`EVOMESH_TOOL_TIMEOUT` and should print before then). `{tool_dir}` resolves to the
 tool's own absolute directory, substituted before parsing. A call shells out through the same
 allow-listed subprocess path the harness's `shell` tool uses; it only runs if the basename of the
 command's first word (e.g. `python`) is listed in `harness.shell_allow` in `evomesh.yaml`.

@@ -19,6 +19,7 @@ the first, same as SkillRegistry.install_directory / ToolRegistry.install_direct
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -434,3 +435,65 @@ class AgentTemplateRegistry:
         if definition.provider in environment.providers:
             await environment.start_agent(definition.id)
         return definition
+
+    async def bring_up_to_date(
+        self, environment: Environment, definition: AgentDefinition
+    ) -> list[str]:
+        """Give an agent spawned from a template what the template has gained
+        since: tools it now lists (installed if bundled, named in the agent's
+        tools and capabilities) and keys its config.json now has. Additions
+        only: nothing the agent already has is removed or changed, and a
+        value set in its own config.json keeps that value. Returns what was
+        added.
+
+        Found 2026-10-09: the web-crawler template gained fetch_page, and the
+        Crawler spawned from it a week earlier could not have used it -- its
+        tool list is a copy taken at spawn time."""
+        prefix = "template:"
+        if not definition.created_by.startswith(prefix) or definition.tools is None:
+            return []
+        template = self._templates.get(definition.created_by.removeprefix(prefix))
+        if template is None:
+            return []
+        bundle_root = self.root / template.path.parent
+        added: list[str] = []
+        for tool_name in template.tools:
+            if tool_name in definition.tools:
+                continue
+            bundled = bundle_root / "tools" / tool_name
+            if await asyncio.to_thread(bundled.is_dir):
+                await environment.tools.install_directory(bundled, created_by="agent-template")
+            definition.tools.append(tool_name)
+            if f"tool.{tool_name}" not in definition.capabilities:
+                definition.capabilities.append(f"tool.{tool_name}")
+            added.append(f"tool {tool_name}")
+        if definition.harness_root:
+            added += await asyncio.to_thread(
+                _merge_new_config_keys,
+                bundle_root / "config.json",
+                Path(definition.harness_root) / "config.json",
+            )
+        if added:
+            definition.touch()
+        return added
+
+
+def _merge_new_config_keys(bundled: Path, target: Path) -> list[str]:
+    """Top-level keys the template's config.json has and the agent's copy
+    lacks, written into the copy; existing keys keep the agent's values."""
+    try:
+        source = json.loads(bundled.read_text(encoding="utf-8"))
+        current = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(source, dict) or not isinstance(current, dict):
+        return []
+    missing = [key for key in source if key not in current]
+    if not missing:
+        return []
+    current.update({key: source[key] for key in missing})
+    try:
+        target.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [f"config {key}" for key in missing]

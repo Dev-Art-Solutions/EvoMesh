@@ -65,6 +65,9 @@ class ToolParameter(BaseModel):
         )
 
 
+MAX_TOOL_SECONDS = 600.0
+
+
 class ToolDefinition(BaseModel):
     name: str
     description: str
@@ -76,6 +79,10 @@ class ToolDefinition(BaseModel):
     parameters: list[ToolParameter] = Field(default_factory=list)
     path: Path
     created_by: str = "system"
+    # How long one call may run, when harness.shell_seconds is too short: a
+    # tool that falls back through headless browsers needs minutes, not 60 s.
+    # None means shell_seconds; capped at MAX_TOOL_SECONDS.
+    timeout_seconds: float | None = None
 
     def parameters_schema(self) -> dict[str, Any]:
         return {
@@ -120,6 +127,15 @@ def parse_tool(path: Path, text: str, *, created_by: str = "system") -> ToolDefi
         parameters = [ToolParameter.model_validate(item) for item in raw_parameters]
     except (TypeError, ValueError) as exc:
         raise InvalidToolError(f"{path}: invalid entry in 'parameters': {exc}") from exc
+    timeout = meta.get("timeout_seconds")
+    if timeout is not None:
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise InvalidToolError(f"{path}: 'timeout_seconds' must be a number") from exc
+        if timeout <= 0:
+            raise InvalidToolError(f"{path}: 'timeout_seconds' must be positive")
+        timeout = min(timeout, MAX_TOOL_SECONDS)
     return ToolDefinition(
         name=name,
         description=description,
@@ -127,6 +143,7 @@ def parse_tool(path: Path, text: str, *, created_by: str = "system") -> ToolDefi
         parameters=parameters,
         path=path,
         created_by=created_by,
+        timeout_seconds=timeout,
     )
 
 

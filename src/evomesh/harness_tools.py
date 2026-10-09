@@ -1153,6 +1153,7 @@ def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = Non
         if missing:
             raise ToolDenied(f"DENIED: {definition.name} needs: {', '.join(missing)}")
         values = [str(args[param.name]) for param in definition.parameters if param.name in args]
+        seconds = definition.timeout_seconds or context.shell_seconds
         # Which agent is calling, from the runtime -- never a parameter the
         # model fills in, so a tool acting on "its own" agent cannot be
         # pointed at another one.
@@ -1164,6 +1165,8 @@ def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = Non
             # second HTTP stack of its own. Empty when none is configured.
             "EVOMESH_SCRAPER": context.scraping_executable or "",
             "EVOMESH_SCRAPER_TIMEOUT": str(int(context.scraping_timeout)),
+            # So the tool can finish and print before it is killed.
+            "EVOMESH_TOOL_TIMEOUT": str(int(seconds)),
         }
         try:
             result = await run_command(
@@ -1171,15 +1174,13 @@ def build_custom_tool(definition: ToolDefinition, *, tool_dir: Path | None = Non
                 *base[1:],
                 *values,
                 cwd=context.root,
-                timeout_seconds=context.shell_seconds,
+                timeout_seconds=seconds,
                 env=env,
             )
         except OSError as exc:
             raise ToolDenied(f"DENIED: {definition.name} could not be started: {exc}") from exc
         if result.timed_out:
-            raise ToolDenied(
-                f"DENIED: {definition.name} did not finish within {context.shell_seconds:.0f}s"
-            )
+            raise ToolDenied(f"DENIED: {definition.name} did not finish within {seconds:.0f}s")
         context.tally.reads += 1
         body = _clip(result.output.rstrip(), context.limits, unit="lines")
         return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"

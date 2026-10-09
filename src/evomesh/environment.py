@@ -903,6 +903,8 @@ class Environment:
                     definition.id
                 ]
             self._reconcile(definition, seeded.get(definition.id))
+            if added := await self.agent_templates.bring_up_to_date(self, definition):
+                logger.info("%s gained from its template: %s", definition.name, ", ".join(added))
             if definition.id not in known_ids:
                 self.registry.register(definition)
                 self.capabilities.register(definition)

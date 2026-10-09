@@ -30,7 +30,10 @@ parameters:
 ---
 ```
 
-`name`, `description`, and `command` are required; `parameters` defaults to none. `{tool_dir}` in
+`name`, `description`, and `command` are required; `parameters` defaults to none.
+`timeout_seconds` (optional, at most 600) lets a slow tool -- one that drives a headless browser,
+say -- run longer than `harness.shell_seconds`; the script is told its limit in the
+`EVOMESH_TOOL_TIMEOUT` environment variable and should print its answer before it. `{tool_dir}` in
 `command` is substituted with the tool's own **absolute** installed directory before the command is
 parsed -- a harness job's root is whatever the job is about (an agent's own playground, most of the
 time), never reliably this tool's own directory, so a bare relative script path breaks the moment

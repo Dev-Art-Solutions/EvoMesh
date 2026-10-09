@@ -11,7 +11,7 @@ purpose: >
 autonomy: cyclic
 cycle_seconds: 120
 skills: [web-crawling]
-tools: [crawl_site, crawl_schedule, send_results]
+tools: [crawl_site, fetch_page, crawl_schedule, send_results]
 harness: true
 ---
 
@@ -20,6 +20,15 @@ The Crawler reads websites for you. Tell it the site and what interests you:
 - **Now:** "Look at https://example.com/blog for anything about pricing."
   It crawls a few pages (`crawl_site`: same site, robots.txt honoured, a pause
   between requests) and answers with the lines that match, each with its page.
+- **Finds a way in:** every page goes through a fallback chain -- Scrapling,
+  plain HTTP, curl, a headless browser, the stealth browser (bot walls), the
+  local Chrome, then the Wayback Machine or r.jina.ai's copy -- until one
+  returns real text. A 403, a bot wall ("Just a moment...", DataDome) or an
+  empty JavaScript shell counts as a failure, not as the page. When the crawl
+  still comes back empty, `fetch_page` probes every method on one URL and the
+  agent crawls again with the one that worked. What worked on a site is
+  remembered (`crawls/strategies.json`) and tried first next time. A start
+  page with no links is crawled through the site's sitemap or RSS feed.
 - **On a schedule:** "Check https://example.com/jobs every morning at 9 for
   Python roles and send them to hr-api." It schedules a recurring task for
   itself (`crawl_schedule`): an interval such as 30m, 2h or 1d, or a cron
@@ -33,11 +42,13 @@ The Crawler reads websites for you. Tell it the site and what interests you:
 
 - `harness.enabled: true` and `python` in `harness.shell_allow` in
   `evomesh.yaml` -- the bundled tools are Python scripts.
-- **Scrapling is required** (`scraping.enabled: true` and `scraping.executable`,
-  see `scripts/install-scrapling.ps1`). `crawl_site` fetches every page and
-  robots.txt through it -- the same fetcher as the built-in `fetch` tool --
-  and refuses when it is not configured. `"dynamic": true` needs the browser
-  (`install-scrapling.ps1 -WithBrowser`).
+- **Scrapling is recommended** (`scraping.enabled: true` and
+  `scraping.executable`, see `scripts/install-scrapling.ps1 -WithBrowser`):
+  it is the first, the browser and the stealth strategy. Without it the chain
+  still has plain HTTP, curl, a locally installed Chrome/Edge and the remote
+  copies. `"allow_remote": false` in config.json keeps URLs away from
+  web.archive.org and r.jina.ai (a private or localhost URL never goes there).
+  `"strategies"` sets the order.
 - Endpoints are named in `config.json`. Put a copy beside the agent (its
   playground, `workspace/agents/<name>/playground/config.json`) to give one
   instance its own endpoints; otherwise the template's own `config.json` is
@@ -49,7 +60,9 @@ The Crawler reads websites for you. Tell it the site and what interests you:
   "respect_robots": true,
   "delay_seconds": 1.0,
   "max_pages": 10,
-  "time_budget_seconds": 45,
+  "time_budget_seconds": 150,
+  "strategies": ["scrapling", "http", "curl", "browser", "stealth", "chrome", "archive", "reader"],
+  "allow_remote": true,
   "control_port": 8765,
   "min_interval_seconds": 300,
   "max_tasks": 20,
