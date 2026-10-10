@@ -288,17 +288,23 @@ class ArchitectInterview:
             return "No candidate drafted yet."
         candidate = self.candidate
         access = candidate.permissions[0] if candidate.permissions else "none"
-        return (
-            f"Draft ready.\n"
-            f"  name:     {candidate.name}\n"
-            f"  purpose:  {candidate.purpose}\n"
-            f"  model:    {candidate.provider}:{candidate.model_name}\n"
-            f"  skills:   {', '.join(candidate.skills) or 'none'}\n"
-            f"  access:   {access}\n"
-            f"  first goal: {candidate.mind.goals[0].description}\n"
+        lines = [
+            "Draft ready.\n",
+            f"  name:     {candidate.name}\n",
+            f"  purpose:  {candidate.purpose}\n",
+            f"  model:    {candidate.provider}:{candidate.model_name}\n",
+            f"  skills:   {', '.join(candidate.skills) or 'none'}\n",
+            f"  access:   {access}\n",
+            f"  first goal: {candidate.mind.goals[0].description}\n",
+        ]
+        constraints = self.answers.get("constraints")
+        if constraints:
+            lines.append(f"  constraints: {constraints}\n")
+        lines.append(
             "Type /confirm to activate it, /cancel to discard it, or just tell me what to "
             "change (for example: name: Scout, or model: ollama:qwen3:4b)."
         )
+        return "".join(lines)
 
     def confirm(self) -> AgentDefinition:
         if self.candidate is None:

@@ -654,6 +654,22 @@ async def test_architect_rejects_a_generic_name_from_the_model() -> None:
     assert "weekly summary" in interview.candidate.purpose
 
 
+async def test_architect_summary_shows_the_constraints() -> None:
+    interview = ArchitectInterview()
+
+    async def bounded(prompt: str, system: str) -> str:
+        return (
+            '{"name": "Diagnostics Bot", "purpose": "watch the log and raise an '
+            'alert", "constraints": "make no external network calls of any kind"}'
+        )
+
+    await interview.draft("watch the server log for errors", infer=bounded)
+
+    summary = interview.summary()
+    assert "constraints:" in summary
+    assert "make no external network calls" in summary
+
+
 def test_uv_is_found_in_a_tools_directory_above_the_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
