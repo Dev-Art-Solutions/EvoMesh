@@ -52,6 +52,14 @@ EvoMesh includes an experimental multi-agent trading stack built around MetaTrad
 
 > **Experimental / Alpha.** This trading stack is for research, development, and demo-account testing. It is not financial advice, and it is not presented as a production-ready autonomous trading system. Review its configuration, use a demo account, and keep a human in the loop before pointing it at anything else.
 
+## Web crawling
+
+The **[Crawler](agent-templates/web-crawler/AGENT.md)** takes a URL and what you care about, and answers with the matching lines page by page — now, or on a schedule it sets for itself, delivered to you, an API you configured, or another agent.
+
+- **[`crawl_site`](tools/crawl_site/TOOL.md)** fetches each page through a fallback chain — Scrapling, plain HTTP, curl, a headless browser, the stealth browser, the local Chrome/Edge, then the Wayback Machine's copy or r.jina.ai's — until one returns real text. A 403, a bot wall (Cloudflare, DataDome, …) or an empty JavaScript shell counts as a failure, not as the page. Each page says how it was got, what worked is remembered per site, and a start page with no links is crawled through its sitemap or feed.
+- **[`fetch_page`](tools/fetch_page/TOOL.md)** reads one page a chosen way, or probes every way and reports which works, so the agent can crawl again with that one.
+- robots.txt is honoured, requests are paced, an answer from an archived copy says so, and a private or localhost URL never goes to a remote copy (`"allow_remote": false` turns those off altogether).
+
 ## Why it exists
 
 Most agent systems treat agents as prompts around API calls. EvoMesh treats them as persistent participants in a shared world, with structured minds, reusable capabilities, explicit access grants, and a generational path for improving the runtime itself.
