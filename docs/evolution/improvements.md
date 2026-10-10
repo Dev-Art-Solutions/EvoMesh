@@ -210,3 +210,9 @@ the line below the title.
     > logger.warning("event loop was blocked for %.1fs", total)
     1. [x] src/evomesh/loop_watchdog.py `LoopWatchdog._watch` -- in the onset branch, capture `reported_stack = self.stack()` alongside `reported_since = self._beat`.
     2. [x] src/evomesh/loop_watchdog.py `LoopWatchdog._watch` -- in the recovery branch, log with the captured stack, e.g. `logger.warning("event loop was blocked for %.1fs; it was running:\n%s", total, reported_stack)`, so each recovery line still names the code that was blocking the loop.
+- [ ] Surface the constraints summary when drafting an agent
+    When the interview collects constraints (via `_absorb`/`derive_constraints` at architect.py:105-113, stored in `self.answers["constraints"]`), the resulting draft never shows them. `ArchatureInterview.summary()` (architect.py:286-301) prints `name`, `purpose`, `model`, `skills`, `access` and the first goal — but there is no `constraints:` line. The human's answer to "What must the agent NOT do?" is collected and then dropped from the confirmation review, so an agent that was told "no external calls" can be activated without the human seeing that their constraint was recorded.
+    > f"  skills:   {', '.join(candidate.skills) or 'none'}\n"
+    > f"  access:   {access}\n"
+    > f"  first goal: {candidate.mind.goals[0].description}\n"
+    1. [ ] src/evomesh/architect.py `ArchitectInterview.summary` -- read the captured constraints (`self.answers.get("constraints")`) and, when non-empty, append a `constraints: <value>` line to the returned draft string.
