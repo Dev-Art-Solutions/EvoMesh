@@ -1,5 +1,7 @@
 from evomesh.architect import (
+    DEFAULT_CONSTRAINTS,
     derive_access,
+    derive_constraints,
     derive_model,
     derive_name,
     derive_skills,
@@ -60,6 +62,18 @@ def test_derive_skills_returns_the_installed_skill_the_need_mentions():
         "I need an agent that reads markdown files",
         {"Markdown.Read": "Reads markdown documents"},
     ) == ["Markdown.Read"]
+
+
+def test_derive_constraints_keeps_what_the_human_stated():
+    # Without a model (provider not ready just after a restart) the draft used
+    # DEFAULT_CONSTRAINTS and dropped the human's own "Constraints:" clause.
+    assert derive_constraints(
+        "Watch the error log. Constraints: no external calls, never edit the log."
+    ) == "no external calls, never edit the log."
+    assert derive_constraints(
+        "Watch the error log and alert me. It must never delete a log file."
+    ) == "It must never delete a log file."
+    assert derive_constraints("Summarise the weekly sales report.") == DEFAULT_CONSTRAINTS
 
 
 def test_derive_skills_ignores_words_hidden_inside_other_words():

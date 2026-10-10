@@ -14,12 +14,15 @@ working default behind it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
 
 from evomesh.contracts import AgentDefinition, AgentStatus, Autonomy
+
+logger = logging.getLogger(__name__)
 
 Inference = Callable[[str, str], Awaitable[str]]
 
@@ -143,6 +146,26 @@ def derive_skills(need: str, available: dict[str, str] | None = None) -> list[st
     ]
 
 
+STATED_CONSTRAINTS = re.compile(r"\bconstraints?\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
+PROHIBITION = re.compile(r"\b(must not|mustn't|never|do not|don't|no external)\b", re.IGNORECASE)
+
+
+def derive_constraints(need: str) -> str:
+    """What the human said the agent must not do, without a model.
+
+    The model call that normally words the constraints is skipped whenever the
+    provider is not ready (the first seconds after a restart), and the draft
+    then fell back to DEFAULT_CONSTRAINTS -- dropping an explicit
+    "Constraints: no external calls" the human had typed. An explicit
+    ``Constraints:`` clause wins; otherwise any sentence with a prohibition in it.
+    """
+    stated = STATED_CONSTRAINTS.search(need)
+    if stated and stated.group(1).strip():
+        return stated.group(1).strip()
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", need) if PROHIBITION.search(s)]
+    return " ".join(sentences) or DEFAULT_CONSTRAINTS
+
+
 def derive_access(need: str) -> str:
     match = PATH_LIKE.search(need)
     return match.group(1).strip() if match else "none"
@@ -178,7 +201,7 @@ class ArchitectInterview:
             "initial_need": need,
             "name": derive_name(need),
             "purpose": need,
-            "constraints": DEFAULT_CONSTRAINTS,
+            "constraints": derive_constraints(need),
             "access": derive_access(need),
             "skills": ", ".join(derive_skills(need, self.available_skills)),
             "model": f"{selected_provider}:{selected_model}",
@@ -203,8 +226,10 @@ class ArchitectInterview:
                 "You name and describe agents. Output JSON only, never a question.",
             )
             self._absorb(raw)
-        except (RuntimeError, ValueError, TimeoutError, json.JSONDecodeError):
-            pass  # the deterministic draft already stands on its own
+        except (RuntimeError, ValueError, TimeoutError, json.JSONDecodeError) as exc:
+            # The deterministic draft already stands on its own; say why it is the one shown.
+            reason = str(exc) or type(exc).__name__
+            logger.info("Architect draft kept its deterministic wording: %s", reason)
         self._build()
         return self.summary()
 
