@@ -8,9 +8,9 @@ description: What to do when a news_fetch result comes back cut off, so you can 
 Every tool result is capped at 4000 characters (`harness.tool_result_chars`).
 `news_fetch` prints one `{"title", "published"}` line per headline, so roughly
 25-30 headlines fit. A bigger `limit` is cut at a line boundary, and the result
-ends with `[... N more lines withheld, use offset=M ...]`. The data is not
-damaged. You asked for more than one result can show. Ignore the `offset` hint:
-`news_fetch` has no `offset` parameter.
+ends with `[... N more lines withheld, this tool has no offset, so ask for
+less: narrow its arguments ...]`. The data is not damaged. You asked for more
+than one result can show.
 
 Calling it again with the same request returns the same cut-off view. Do not
 retry and expect a different result.

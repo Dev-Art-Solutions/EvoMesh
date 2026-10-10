@@ -341,7 +341,12 @@ def _clip(text: str, limits: ToolLimits, *, unit: str, offset: int | None = None
         if unit != "lines":
             hint = "narrow the pattern"
         elif offset is None:
-            hint = f"use offset={len(shown) + 1}"
+            # Only read pages. Everything else that clips lines -- shell, fetch,
+            # ask_agent, a custom tool -- has no offset to give, and the hint used
+            # to name one anyway: NewsAnalyzer, told "use offset=31" by a
+            # news_fetch with no such parameter, wrote eight skills about working
+            # around a truncation the tool had already said how to avoid.
+            hint = "this tool has no offset, so ask for less: narrow its arguments"
         else:
             first, last = offset, offset + len(shown) - 1
             hint = f"showing lines {first}-{last}, use offset={last + 1 - partial}"

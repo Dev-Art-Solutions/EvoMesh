@@ -48,6 +48,7 @@ from evomesh.harness_tools import (
     ToolContext,
     ToolLimits,
     ToolRegistry,
+    _clip,
     build_custom_tool,
     custom_tool_program,
     tool_grep,
@@ -286,6 +287,21 @@ async def test_a_truncated_read_says_what_it_withheld_and_how_to_ask(project: Pa
 
     assert "40 more lines withheld" in result
     assert "use offset=11" in result
+
+
+def test_a_clipped_result_from_a_tool_without_offset_does_not_offer_one() -> None:
+    # Found live: news_fetch output cut at the character budget said "use
+    # offset=31", and the agent spent eight self-written skills on a parameter
+    # the tool never had.
+    clipped = _clip(
+        "\n".join(f'{{"title": "headline {n}"}}' for n in range(50)),
+        ToolLimits(result_lines=10),
+        unit="lines",
+    )
+
+    assert "40 more lines withheld" in clipped
+    assert "offset=" not in clipped
+    assert "narrow its arguments" in clipped
 
 
 async def test_refusals_name_paths_the_way_the_job_does(tmp_path: Path) -> None:
