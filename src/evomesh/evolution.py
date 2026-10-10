@@ -1514,6 +1514,9 @@ class EnvironmentEvolver:
         # a proposal a human approves, never straight into the backlog. True
         # when it was taken.
         self.idea_sink: Callable[[Improvement], bool] | None = None
+        # How many ideas wait on a human, so an idle pipeline can say that is
+        # what it waits on rather than asking for items nobody has to write.
+        self.pending_ideas: Callable[[], int] | None = None
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""

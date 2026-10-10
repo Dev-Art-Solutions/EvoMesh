@@ -60,6 +60,21 @@ async def test_an_empty_backlog_is_idle_with_no_model_call(
     assert _calls(context) == 0
 
 
+async def test_an_idle_evolver_points_at_the_ideas_waiting_for_review(
+    tmp_path: Path, idle_project: Path
+) -> None:
+    # Found live: eight ideas sat unreviewed for hours while the idle message
+    # asked the human to write backlog items instead.
+    context, evolver = await _context(tmp_path, idle_project)
+    evolver.pending_ideas = lambda: 8
+
+    outcome = await EvolverBehavior(test_backlog=False, scout_when_idle=False).cycle(context)
+
+    assert "nothing substantive" in outcome.summary
+    assert "8 idea(s) wait for review" in outcome.summary
+    assert "add an item there" not in outcome.summary
+
+
 async def test_an_empty_ranked_backlog_is_idle_too(tmp_path: Path, idle_project: Path) -> None:
     context, evolver = await _context(tmp_path, idle_project)
     plane, _ = control()

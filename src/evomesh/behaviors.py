@@ -884,12 +884,21 @@ class EvolverBehavior(BDIBehavior):
                 # replacement for it -- checked second, same rotation scheme.
                 untested = evolver.untested_objective(seed) if self.test_backlog else None
                 if untested is None and not self.test_backlog:
+                    # Found live 2026-10-10: eight ideas sat unreviewed for
+                    # hours while this asked the human to write items instead.
+                    waiting = evolver.pending_ideas() if evolver.pending_ideas else 0
+                    ask = (
+                        f"{waiting} idea(s) wait for review -- /ideas, then "
+                        "/idea approve|reject <n>"
+                        if waiting
+                        else "add an item there to steer the mesh"
+                    )
                     return await self._stall(
                         context,
                         f"idle:{seed}",
                         "nothing substantive to evolve: no failing tests, no open "
                         "item in docs/evolution/improvements.md, and no scout "
-                        "target left -- add an item there to steer the mesh",
+                        f"target left -- {ask}",
                     )
                 if untested is not None:
                     objective = untested

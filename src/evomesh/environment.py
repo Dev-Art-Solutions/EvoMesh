@@ -246,6 +246,7 @@ class Environment:
             settings.workspace_path / IDEAS_FILE_NAME, self.project_root, settings.git.identity()
         )
         self.evolver.idea_sink = self._idea_from_scout
+        self.evolver.pending_ideas = lambda: len(self.ideas.pending())
         self._idea_tasks: set[asyncio.Task[bool]] = set()
         # Set when a generation has landed in the tree this process is not
         # running. Whoever owns the process -- __main__, a test, a script --
