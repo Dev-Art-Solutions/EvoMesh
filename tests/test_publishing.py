@@ -9,6 +9,7 @@ plus the second console a human reaches it all from.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -823,3 +824,38 @@ async def test_a_telegram_429_is_explained_and_its_retry_after_honored(
     await channel._poll()
 
     assert slept == [17]
+
+
+async def test_a_commit_goes_through_an_empty_lock_a_dead_git_left(tmp_path: Path) -> None:
+    # Found live: an empty .git/index.lock from a git process that died
+    # mid-command failed every commit after it until a human removed it.
+    project = await checkout(tmp_path / "project")
+    lock = project / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    old = lock.stat().st_mtime - 600
+    os.utime(lock, (old, old))
+    (project / "src" / "app.py").write_text("ACTIVE = False\n", encoding="utf-8")
+    repository = GitRepository(project)
+
+    await repository.run("commit", "-am", "after a dead git")
+
+    assert not lock.exists()
+    assert "after a dead git" in await repository.history(1)
+
+
+@pytest.mark.parametrize("content, age", [(b"", 5.0), (b"DIRC", 600.0)])
+async def test_a_lock_a_git_may_still_own_is_left_alone(
+    tmp_path: Path, content: bytes, age: float
+) -> None:
+    # Fresh, or already holding the new index: a git process may still be
+    # writing it, so the commit fails rather than pulling the lock away.
+    project = await checkout(tmp_path / "project")
+    lock = project / ".git" / "index.lock"
+    lock.write_bytes(content)
+    old = lock.stat().st_mtime - age
+    os.utime(lock, (old, old))
+
+    with pytest.raises(GitError):
+        await GitRepository(project).run("commit", "--allow-empty", "-m", "blocked")
+
+    assert lock.exists()

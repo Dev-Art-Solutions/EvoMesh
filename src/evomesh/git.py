@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import re
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from evomesh.processes import run_command
+
+logger = logging.getLogger(__name__)
 
 # Who signs a generation. The mesh authors its own commits, and a human reading
 # the history has to be able to tell them apart from their own work at a glance,
@@ -15,6 +20,40 @@ DEFAULT_AUTHOR_EMAIL = "mesh-evo-agent@evomesh.local"
 
 class GitError(RuntimeError):
     pass
+
+
+LOCK_IN_USE = re.compile(r"Unable to create '([^']+\.lock)': File exists")
+# Long enough that no git process still owns it: a live writer fills the lock
+# with the new index within milliseconds, an editor-held `git commit` included.
+STALE_LOCK_SECONDS = 60.0
+
+
+def release_stale_index_lock(error: str, *, now: float | None = None) -> bool:
+    """Remove the lock a git error names, only when it is plainly abandoned.
+
+    Found live 2026-10-10: an empty .git/index.lock from a git process that
+    died mid-command sat in the checkout for minutes, and every commit after
+    it failed -- a promotion and an approved idea alike would have, until a
+    human noticed. Empty and a minute old is the line: anything else may be
+    a git process that is still working, and is left to it.
+    """
+    match = LOCK_IN_USE.search(error)
+    if match is None:
+        return False
+    lock = Path(match.group(1))
+    try:
+        stat = lock.stat()
+    except OSError:
+        return False
+    current = time.time() if now is None else now
+    if stat.st_size != 0 or current - stat.st_mtime < STALE_LOCK_SECONDS:
+        return False
+    try:
+        lock.unlink()
+    except OSError:
+        return False
+    logger.warning("removed a stale, empty git lock left by a dead process: %s", lock)
+    return True
 
 
 @dataclass(frozen=True)
@@ -45,6 +84,14 @@ class GitRepository:
     identity: GitIdentity = field(default_factory=GitIdentity)
 
     async def run(self, *arguments: str) -> str:
+        try:
+            return await self._run(*arguments)
+        except GitError as exc:
+            if not release_stale_index_lock(str(exc)):
+                raise
+        return await self._run(*arguments)
+
+    async def _run(self, *arguments: str) -> str:
         result = await run_command(
             "git",
             "-C",
