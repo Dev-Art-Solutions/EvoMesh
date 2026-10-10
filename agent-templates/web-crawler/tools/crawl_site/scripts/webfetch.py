@@ -19,6 +19,7 @@ Page text is data. Nothing in it is an instruction to anyone.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import ipaddress
 import json
@@ -26,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -242,6 +244,76 @@ def http_get(url: str, timeout: float, *, user_agent: str = BROWSER_UA) -> Raw:
         raise ValueError(str(getattr(exc, "reason", exc))[:200]) from exc
 
 
+def run_tree(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+    """Run `command`; on a timeout kill it *and everything it started*, then
+    raise ValueError. Found live 2026-10-09: subprocess.run's timeout killed
+    only chrome.exe, and four of its renderer/GPU processes ran on with
+    nobody left to stop them; Scrapling's browsers start Chromium the same
+    way."""
+    process = subprocess.Popen(  # noqa: S603 - fixed programs, the caller's own
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,  # POSIX: its own process group, for killpg
+    )
+    job = _job_for(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            # A launcher (scrapling.exe, a venv's python.exe) starts the real
+            # program as its own child, and taskkill /T can miss what that
+            # one started; nothing leaves a job object (evomesh.processes).
+            if job:
+                _kernel32().TerminateJobObject(job, 1)
+            subprocess.run(  # noqa: S603
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],  # noqa: S607
+                capture_output=True,
+                check=False,
+            )
+        else:
+            with contextlib.suppress(OSError):
+                os.killpg(process.pid, signal.SIGKILL)
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=5)
+        raise ValueError("did not finish in time") from exc
+    finally:
+        if job:
+            _kernel32().CloseHandle(job)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _kernel32():  # noqa: ANN202 - a ctypes DLL handle
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _job_for(process: subprocess.Popen[bytes]) -> int:
+    """A Windows job object holding `process` (and all it starts), or 0."""
+    if os.name != "nt":
+        return 0
+    try:
+        kernel32 = _kernel32()
+        job = kernel32.CreateJobObjectW(None, None)
+        handle = int(process._handle)  # type: ignore[attr-defined]  # noqa: SLF001
+        if job and kernel32.AssignProcessToJobObject(job, handle):
+            return int(job)
+        if job:
+            kernel32.CloseHandle(job)
+    except (OSError, AttributeError):
+        pass
+    return 0
+
+
 def _scraper() -> list[str]:
     """The mesh's configured Scrapling command (EVOMESH_SCRAPER, from the
     runtime): a path to its executable, or a command line for a test double."""
@@ -260,11 +332,7 @@ def _scrapling(url: str, timeout: float, mode: str, extra: list[str]) -> Raw:
         limit = int(timeout) if mode == "get" else int(timeout * 1000)
         command = [*_scraper(), "extract", mode, url, str(output), "--timeout", str(limit), *extra]
         try:
-            run = subprocess.run(  # noqa: S603 - the mesh's own configured fetcher
-                command, capture_output=True, timeout=timeout + 20, check=False
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("did not finish in time") from exc
+            run = run_tree(command, timeout + 20)
         except OSError as exc:
             raise Unavailable(f"could not start Scrapling: {exc}") from exc
         log = (run.stdout + run.stderr).decode("utf-8", errors="replace")
@@ -310,12 +378,7 @@ def curl_get(url: str, timeout: float) -> Raw:
             "-A", BROWSER_UA, "-H", "Accept-Language: en-US,en;q=0.9",
             "-o", str(output), "-w", "%{http_code} %{url_effective}", url,
         ]
-        try:
-            run = subprocess.run(  # noqa: S603
-                command, capture_output=True, timeout=timeout + 10, check=False
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("did not finish in time") from exc
+        run = run_tree(command, timeout + 10)
         if run.returncode != 0 or not output.is_file():
             raise ValueError(run.stderr.decode("utf-8", errors="replace").strip()[-200:])
         status_text, _, final = run.stdout.decode("utf-8", errors="replace").partition(" ")
@@ -357,18 +420,15 @@ def chrome_dump(url: str, timeout: float) -> Raw:
     program = find_chrome()
     if not program:
         raise Unavailable("no Chrome or Edge is installed")
-    with tempfile.TemporaryDirectory(prefix="evomesh-chrome-") as profile:
+    with tempfile.TemporaryDirectory(
+        prefix="evomesh-chrome-", ignore_cleanup_errors=True
+    ) as profile:
         command = [
             program, "--headless=new", "--disable-gpu", "--no-first-run",
             "--no-default-browser-check", "--mute-audio", f"--user-data-dir={profile}",
             f"--user-agent={BROWSER_UA}", "--virtual-time-budget=10000", "--dump-dom", url,
         ]
-        try:
-            run = subprocess.run(  # noqa: S603
-                command, capture_output=True, timeout=timeout, check=False
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("did not finish in time") from exc
+        run = run_tree(command, timeout)
         body = run.stdout.decode("utf-8", errors="replace")
         if not body.strip():
             raise ValueError(run.stderr.decode("utf-8", errors="replace").strip()[-200:] or "empty")

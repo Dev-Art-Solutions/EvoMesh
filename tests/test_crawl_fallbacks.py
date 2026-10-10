@@ -203,6 +203,25 @@ def test_saved_pages_are_capped_and_only_saved_pages_go(tmp_path: Path) -> None:
     assert sorted(path.name for path in crawls.iterdir()) == ["3.md", "4.md", "strategies.json"]
 
 
+def test_a_timed_out_fetcher_takes_everything_it_started_with_it(tmp_path: Path) -> None:
+    """Found live: a timed-out headless Chrome left four of its processes
+    running. The grandchild here writes a marker after 4 s; the command is
+    timed out after 1 s, so the marker must never appear."""
+    marker = tmp_path / "survived"
+    grandchild = "import sys, time; time.sleep(4); open(sys.argv[1], 'w').write('x')"
+    child = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, sys.argv[1]]); "
+        "time.sleep(30)"
+    )
+
+    with pytest.raises(ValueError, match="did not finish in time"):
+        webfetch.run_tree([sys.executable, "-c", child, str(marker)], 1)
+    time.sleep(5)
+
+    assert not marker.exists()
+
+
 def test_when_nothing_is_ok_the_fullest_partial_page_is_kept(
     strategies: dict[str, Callable[..., Any]],
 ) -> None:
