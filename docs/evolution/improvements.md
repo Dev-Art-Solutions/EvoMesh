@@ -216,3 +216,7 @@ the line below the title.
     > f"  access:   {access}\n"
     > f"  first goal: {candidate.mind.goals[0].description}\n"
     1. [ ] src/evomesh/architect.py `ArchitectInterview.summary` -- read the captured constraints (`self.answers.get("constraints")`) and, when non-empty, append a `constraints: <value>` line to the returned draft string.
+- [ ] Keep ArchitectInterview's `need` a `str` and `answers` a `dict[str, str]` — no str-as-answers type error
+    Read src/evomesh/architect.py 147–171: `ArchitectInterview` is a dataclass whose `answers` and `available_skills` fields are `dict[str, str]` (dataclass __init__ first positional param = `answers`), while `begin()` takes `initial_need: str`. It is constructed with no arguments in src/evomesh/console.py:211, so no `str` is ever passed where a `dict` is expected; the human need goes only into `begin(initial_need: str)`. The note's `tests/test_architect.py:70:36` call does not exist — that file is 62 lines and never instantiates the class. The code already does what the idea asks.
+    >         self, initial_need: str, provider: str = "ollama", model: str = "qwen3"
+    1. [ ] src/evomesh/architect.py `ArchitectInterview.begin` -- no change required; the method already receives the human need as `initial_need: str` and stores it under the `dict[str, str]` `answers` field (begin at architect.py:159–171), so nothing passes a `str` to the `dict[str, str]` parameter the dataclass `__init__` declares.
