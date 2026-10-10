@@ -36,6 +36,8 @@ STOP_WORDS = frozenset(
     {
         "a", "an", "the", "that", "which", "for", "to", "of", "and", "or", "my",
         "our", "with", "on", "in", "it", "its", "should", "will", "can", "agent",
+        "me", "i", "you", "we", "is", "be", "no", "not", "must", "never", "need",
+        "want", "build", "make", "please", "this", "from", "when", "every", "all",
     }
 )
 
@@ -121,14 +123,23 @@ def derive_skills(need: str, available: dict[str, str] | None = None) -> list[st
     guess from any more, so the interview is handed whatever the registry
     currently holds (name -> description) and matches against that instead,
     or against nothing if the mesh has not installed any skills yet.
+
+    Whole words only, and a description needs two of them: a substring match
+    on one word handed a log-watching agent seven news and web skills, because
+    "me" is inside "time" and "no" inside "knowledge". A word in the skill's own name
+    is a strong enough signal on its own.
     """
     words = {
-        word for word in re.findall(r"[a-z][\w-]*", need.lower()) if word not in STOP_WORDS
+        word for word in re.findall(r"[a-z][a-z0-9]*", need.lower()) if word not in STOP_WORDS
     }
+
+    def tokens(text: str) -> set[str]:
+        return set(re.findall(r"[a-z][a-z0-9]*", text.lower()))
+
     return [
         name
         for name, description in (available or {}).items()
-        if any(word in f"{name} {description}".lower() for word in words)
+        if words & tokens(name) or len(words & tokens(description)) >= 2
     ]
 
 

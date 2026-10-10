@@ -60,3 +60,19 @@ def test_derive_skills_returns_the_installed_skill_the_need_mentions():
         "I need an agent that reads markdown files",
         {"Markdown.Read": "Reads markdown documents"},
     ) == ["Markdown.Read"]
+
+
+def test_derive_skills_ignores_words_hidden_inside_other_words():
+    # Found live: "Build me an agent that watches the server error log" came
+    # back with every news skill, because "me" is a substring of "time" and
+    # "no" of "knowledge". One stray common word in a description is not a match.
+    available = {
+        "knowledge-wiki": "Keep what you know in a wiki, not in scratch files.",
+        "news-report-export": "Export the reports you made at the time the human calls for them.",
+        "log-triage": "Triage an error log and decide what is worth an alert.",
+    }
+    assert derive_skills(
+        "Build me an agent that watches the server error log and alerts me on "
+        "Telegram. It must make no external network calls.",
+        available,
+    ) == ["log-triage"]
