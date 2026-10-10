@@ -30,6 +30,22 @@ All notable changes to EvoMesh are documented in this file.
     or overwritten.
   - Fixed: Scrapling saves a 403 page with exit 0, so the crawler used to
     report a bot wall as the site's content.
+  - An answer built from an archived or reader copy says so first, and such
+    a copy is never remembered as a site's way in, so the live site is
+    always tried again.
+  - The browsers skip images, fonts and media: an ad-heavy idealo.de crawl
+    went from 2 min 37 s to 29 s.
+  - Saved pages under `crawls/` are capped at the newest 200.
+  - Feed discovery reads only real RSS/Atom feeds and only their entries
+    (no stylesheets from a 404 page, no `rel="self"` links).
+  - A timed-out fetcher takes its whole process tree with it; a headless
+    Chrome timeout used to leave four processes running.
+- **A refused second start names the process holding the lock.** The lock
+  file now carries `pid N, started <time>` after its lock byte, and the
+  refusal reads it from there.
+- **The loop watchdog's recovery line says what blocked the loop**, so
+  "event loop was blocked for 41.3s" stands on its own.
+- **`supervisor.log` rotates at 5 MB**, keeping one old copy.
 - **Telegram menu and buttons.** On connect the bot fills Telegram's "/" menu
   (`setMyCommands`) with the commands that work with no arguments; a private
   agent bot gets its own short list. Answers carry inline buttons: `/start`,
@@ -57,6 +73,17 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **A timeout left a grandchild running on Windows.** A venv's `python.exe`
+  is a launcher, and `taskkill /T` missed the interpreter it starts.
+  `run_command` now puts each child in a job object; the failing test had
+  paused evolution.
+- **A candidate's own error was blamed on the machine.** Any
+  `PermissionError` in the output meant "blocked by this machine": no repair
+  attempts, straight to a human. One raised in `src/evomesh/` is now the
+  candidate's.
+- **Template copies drifted from the installed ones.** `tools/news_fetch`
+  was a fix ahead of its template, so the next news-watcher spawn would have
+  undone it; every template's skills and tools are now checked for drift.
 - **Recovering a lost acceptance ran the work again.** When a stale save had
   dropped a child's goal and the delivery was replayed, the recipient built a
   new goal with a new identity. That goal's lookup found no execution, so the
