@@ -89,6 +89,15 @@ async def run_command(
                 output, _ = process.communicate(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 _kill_tree(process)
+                # _kill_tree's group kill can miss a grandchild that raised its
+                # own session; raise to the parent and forcibly kill it so one
+                # blocked on read() inside its own tree cannot hold the pipe
+                # open and defeat the 5s cleanup below. Falls back to killing
+                # `process` itself where a group kill is unavailable (Windows).
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (OSError, AttributeError):
+                    process.kill()
                 # A grandchild that escaped the tree may still hold the pipe
                 # open; do not wait on it forever for output nobody needs.
                 try:
