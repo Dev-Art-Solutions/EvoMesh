@@ -236,7 +236,7 @@ the line below the title.
     > `    except subprocess.TimeoutExpired:`
     > `        _kill_tree(process)`
     1. [x] src/evomesh/processes.py `run_command` -- after `TimeoutExpired`, guarantee the blocked grandchild is gone: raise the tree to the parent and forcibly kill it (e.g. `os.killpg(os.getpgid(process.pid), signal.SIGKILL)` or fall back to killing `process` directly) so a child blocked on `read()` inside its own tree can't keep the pipe open and defeat the 5s cleanup.
-- [ ] Fix the belief-length budget passed to `select_relevant_text` in `CycleContext.build_prompt` to use `belief_chars`, not `memory_chars`
+- [x] Fix the belief-length budget passed to `select_relevant_text` in `CycleContext.build_prompt` to use `belief_chars`, not `memory_chars`
     - `build_prompt` calls `select_relevant_text` a second time to build the knowledge section (lines 291–296), but the third positional argument (the `max_length` cap) is `self.budget.memory_chars` — the larger memory budget (e.g. 5000) — whereas the analogous call in `think` correctly passes `self.budget.belief_chars` (e.g. 3000).
     >             memory = self.select_relevant_text(
     >                 await self.memory.read_memory(self.budget.memory_chars * 4),
@@ -244,4 +244,4 @@ the line below the title.
     >                 self.budget.memory_chars,
     >                 recent_fallback=4,
     >             )
-    1. [ ] src/evomesh/cognition.py `CycleContext.build_prompt` -- change the third positional argument of the second `select_relevant_text` call from `self.budget.memory_chars` to `self.budget.belief_chars` so the knowledge section respects the belief budget, matching `CycleContext.think`.
+    1. [x] src/evomesh/cognition.py `CycleContext.build_prompt` -- change the third positional argument of the second `select_relevant_text` call from `self.budget.memory_chars` to `self.budget.belief_chars` so the knowledge section respects the belief budget, matching `CycleContext.think`.

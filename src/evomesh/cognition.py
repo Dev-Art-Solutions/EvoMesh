@@ -300,7 +300,7 @@ class CycleContext:
         pages = self.select_relevant_text(
             await asyncio.to_thread(self.memory.wiki.index_text),
             query,
-            self.budget.memory_chars // 4,
+            self.budget.beliefs_chars,
         )
         if pages:
             memory = clip(
