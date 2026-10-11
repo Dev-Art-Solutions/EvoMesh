@@ -53,6 +53,11 @@ def humanize_duration(seconds: float) -> str:
     if seconds < 1:
         rounded_ms = round(seconds * 1000)
         if rounded_ms < 1000:
+            # Below ~0.0005 s the millisecond rounding collapses to 0, which
+            # would read as "0 ms"; drop to microseconds so the value stays
+            # meaningful instead of rendering as "0 ms".
+            if rounded_ms == 0:
+                return f"{round(seconds * 1_000_000):.0f} µs"
             return f"{rounded_ms:.0f} ms"
         # Rounds up to a full second: render "1s" rather than the
         # truncated "0s" the seconds branch would otherwise produce.

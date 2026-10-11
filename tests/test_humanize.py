@@ -21,6 +21,12 @@ def test_humanize_duration_sub_second_renders_as_milliseconds():
     assert result == "500 ms"
 
 
+def test_humanize_duration_sub_millisecond_renders_in_microseconds():
+    # Below ~0.0005 s the millisecond rounding collapses to "0 ms"; fall through
+    # to microseconds so the value reads meaningfully instead of "0 ms".
+    assert humanize_duration(0.0001) == "100 µs"
+
+
 def test_humanize_duration_rounds_up_to_a_second_instead_of_1000_ms():
     # 0.9999 s * 1000 rounds to 1000 ms, which is a full second: fall through to
     # the seconds branch so it reads "1s", not "1000 ms".

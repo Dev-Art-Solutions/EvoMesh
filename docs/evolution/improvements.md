@@ -227,7 +227,7 @@ the line below the title.
     The sub-second branch multiplies `seconds` by 1000 and rounds to whole milliseconds without a bound, so 0.9999 s → "1000 ms" while the adjacent input 1.0 s → "1s"; anything under ~0.0005 s → "0 ms". `harness_session.py:42-43` feeds real elapsed times into this function, so a sub-second run can log "1000 ms".
     >         return f"{seconds * 1000:.0f} ms"
     1. [x] src/evomesh/humanize.py `humanize_duration` -- round `seconds * 1000` first and only take the milliseconds branch when the result stays below 1000 ms, otherwise fall through to the seconds branch so a value that rounds up to a full second shows "1s".
-- [ ] Capture the tiny-duration "0 ms" quirk in humanize_duration's backlog
+- [x] Capture the tiny-duration "0 ms" quirk in humanize_duration's backlog
     `humanize_duration` renders anything under ~0.0005 s as "0 ms": at line 53-54 `if seconds < 1: return f"{seconds * 1000:.0f} ms"`, so 0.0001 s → "0 ms", which reads awkwardly; the sub-second test (tests/test_humanize.py:18) only covers 0.5 s → "500 ms" and leaves this case uncovered.
     > `return f"{seconds * 1000:.0f} ms"`
-    1. [ ] src/evomesh/humanize.py `humanize_duration` -- handle sub-millisecond durations so values below ~0.0005 s render as a sensible value instead of "0 ms"
+    1. [x] src/evomesh/humanize.py `humanize_duration` -- handle sub-millisecond durations so values below ~0.0005 s render as a sensible value instead of "0 ms"
