@@ -21,6 +21,14 @@ def test_humanize_duration_sub_second_renders_as_milliseconds():
     assert result == "500 ms"
 
 
+def test_humanize_duration_rounds_up_to_a_second_instead_of_1000_ms():
+    # 0.9999 s * 1000 rounds to 1000 ms, which is a full second: fall through to
+    # the seconds branch so it reads "1s", not "1000 ms".
+    assert humanize_duration(0.9999) == "1s"
+    # Just under the 1000 ms bound still renders in milliseconds.
+    assert humanize_duration(0.9994) == "999 ms"
+
+
 def test_humanize_size_sub_1024_renders_as_whole_bytes():
     # Below one KiB the value stays in bytes and renders as a whole number, not a decimal.
     result = humanize_size(512)

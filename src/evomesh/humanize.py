@@ -51,7 +51,12 @@ def humanize_duration(seconds: float) -> str:
         raise TypeError("seconds must be a number, not None")
     seconds = max(0, _safe_float(seconds))
     if seconds < 1:
-        return f"{seconds * 1000:.0f} ms"
+        rounded_ms = round(seconds * 1000)
+        if rounded_ms < 1000:
+            return f"{rounded_ms:.0f} ms"
+        # Rounds up to a full second: render "1s" rather than the
+        # truncated "0s" the seconds branch would otherwise produce.
+        return "1s"
     # Seconds per unit, largest first. Found 2026-09-25: every divisor here
     # was one unit too small (a "week" of 86400 s, a "day" of 1440 s), and a
     # sub-week branch divided by 1440 -- so 238 s rendered as "0.0 days" and
