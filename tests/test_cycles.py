@@ -2625,8 +2625,6 @@ async def git_project(root: Path) -> Path:
     _seed_tree(root)
     repository = GitRepository(root)
     await repository.run("init", "-b", "main")
-    await repository.run("config", "user.email", "test@example.com")
-    await repository.run("config", "user.name", "Test")
     await repository.run("add", "-A")
     await repository.run("commit", "-m", "initial")
     return root
