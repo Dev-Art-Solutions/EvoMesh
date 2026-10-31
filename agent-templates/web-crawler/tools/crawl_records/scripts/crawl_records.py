@@ -82,13 +82,9 @@ def documents(body: str) -> list[Any]:
         if whole is not None:
             return [whole]
     found: list[Any] = []
-    pre = re.fullmatch(
-        r"(?is)\s*(?:<html.*?<body[^>]*>)?\s*<pre[^>]*>(.*)</pre>.*", stripped
-    )
-    if pre:
-        whole = _loads(html.unescape(pre.group(1)))
-        if whole is not None:
-            return [whole]
+    shown = _shown_json(stripped)
+    if shown is not None:
+        return [shown]
     for match in re.finditer(
         r"(?is)<script\b([^>]*)>(.*?)</script>", body
     ):
@@ -137,9 +133,23 @@ def _at(node: Any, path: str) -> Any:
 def is_data(body: str) -> bool:
     """Whether the response itself is JSON (or a browser's view of JSON),
     rather than an HTML page that may embed some."""
-    stripped = body.lstrip()[:2000].lower()
-    browser_view = re.match(r"(?:<html.*?<body[^>]*>)?\s*<pre", stripped, re.S)
-    return stripped[:1] in "{[" or bool(browser_view)
+    stripped = body.lstrip()
+    if stripped[:1] in "{[":
+        return True
+    return _shown_json(stripped) is not None
+
+
+def _shown_json(body: str) -> Any:
+    """The JSON a browser shows when it opens a JSON URL, whatever page it
+    wraps it in: Chrome's <body><pre>, a DOCTYPE and styles first, the JSON
+    viewer's extra divs, the page as Scrapling's browser saves it. Found
+    live 2026-11-01: a check for "<pre right after <body>" read the Chrome
+    dump of a format=json URL fine, while in the mesh, where Scrapling's
+    browser fetched it ("browser ok"), the same URL gave no records. What is
+    left once tags, scripts and styles go is the JSON, or this is a page."""
+    text = re.sub(r"(?is)<(script|style|head|template)\b.*?</\1\s*>", "", body)
+    text = html.unescape(re.sub(r"(?s)<[^>]*>", "", text)).strip()
+    return _loads(text) if text[:1] in "{[" else None
 
 
 def records_in(body: str, path: str = "") -> tuple[list[dict], dict, str, int]:

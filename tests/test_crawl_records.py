@@ -304,3 +304,29 @@ def test_a_page_without_records_mid_listing_is_tried_the_remaining_ways(
     assert calls[:4] == [("fast", 1), ("fast", 2), ("slow", 2), ("slow", 3)]
     assert not any(name == "reader" for name, _ in calls)
     assert result["stopped"].startswith("the site has no page 4")
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        "<html><head><meta charset='utf-8'></head><body><pre>{}</pre></body></html>",
+        "<!DOCTYPE html>\n<html><head><style>pre {{ margin: 0 }}</style></head>"
+        "<body><pre style='word-wrap: break-word'>{}</pre>"
+        "<div class='json-formatter-container'></div></body></html>",
+        "<html><body>\n  <div hidden></div><pre>{}</pre></body></html>",
+        "<pre>{}</pre>",
+    ],
+)
+def test_json_is_read_whatever_page_a_browser_wraps_it_in(wrap: str) -> None:
+    body = json.dumps({"projects": [_project(1), _project(2)], "note": "a < b & c"})
+
+    shown = wrap.format(html.escape(body))
+    items, _, where, _ = crawl_records.records_in(shown)
+
+    assert crawl_records.is_data(shown)
+    assert where == "projects" and len(items) == 2
+
+
+def test_an_ordinary_page_is_not_data() -> None:
+    assert not crawl_records.is_data(LISTING_HTML)
+    assert not crawl_records.is_data("<html><body><p>{curly} prose</p></body></html>")
