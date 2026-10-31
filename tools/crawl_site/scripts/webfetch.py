@@ -170,6 +170,9 @@ class Fetched:
     feeds: list[str] = field(default_factory=list)
     note: str = ""
     attempts: list[Attempt] = field(default_factory=list)
+    # What the strategy brought back, unparsed: crawl_records reads the JSON
+    # (or the data embedded in the HTML) that the text above throws away.
+    raw: str = field(default="", repr=False)
 
     def trail(self) -> str:
         """How the page was got, in one line: 'http blocked (403) -> browser ok'."""
@@ -499,7 +502,7 @@ def _text_links(text: str, base: str) -> list[str]:
 
 def judge(raw: Raw, min_chars: int) -> tuple[str, str, Fetched]:
     """(verdict, reason, page) for one strategy's result."""
-    page = Fetched(url=raw.url, note=raw.note)
+    page = Fetched(url=raw.url, note=raw.note, raw=raw.body)
     if raw.kind == "text":
         text = raw.body.strip()
         title = re.search(r"^Title:\s*(.+)$", text, re.MULTILINE)

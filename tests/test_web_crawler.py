@@ -324,7 +324,7 @@ async def test_the_template_spawns_with_its_tools_and_skill(tmp_path: Path) -> N
 
     assert crawler.identity == "Crawler"
     assert crawler.harness_root != ""
-    assert {"crawl_site", "fetch_page", "crawl_schedule", "send_results"} <= {
+    assert {"crawl_site", "fetch_page", "crawl_records", "crawl_schedule", "send_results"} <= {
         tool.name for tool in environment.tools.discover()
     }
     assert "web-crawling" in {skill.name for skill in environment.skills.discover()}

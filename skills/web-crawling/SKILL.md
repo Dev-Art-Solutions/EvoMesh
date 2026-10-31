@@ -11,6 +11,24 @@ Answer from the `matches` first, then the page text. Name the page each fact
 came from (its URL). If nothing matched, say so plainly -- do not pad the
 answer with what the site is about in general.
 
+## A table, a spreadsheet, a CSV, "all the information"
+
+When the human wants the records a listing shows -- every product, project,
+job -- with their links and fields, saved to a file, use `crawl_records`, not
+`crawl_site`: `{"url": "<the listing url as given>", "file": "<short name>",
+"max_pages": 200}`. It writes `results/<file>.csv` in your playground.
+
+- **"MORE PAGES LEFT"** -- call `crawl_records` again with exactly the
+  request it printed, and keep going until it no longer says so. Each call
+  adds to the same file.
+- **Done** -- tell the human the CSV's path, how many rows and columns, why
+  it stopped (the listing ended, the site's own page limit), and a few of
+  the first rows with their links.
+- **"No records found"** -- the page holds no list as data: say so, and
+  offer a `crawl_site` answer from its text instead.
+- A site that shows only so many pages (Kickstarter stops at page 200) stops
+  the listing there; say how many the site says it has in all.
+
 ## When the crawl does not get in -- find another way
 
 `crawl_site` already falls back page by page (Scrapling, plain HTTP, curl,

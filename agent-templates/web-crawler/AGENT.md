@@ -11,7 +11,7 @@ purpose: >
 autonomy: cyclic
 cycle_seconds: 120
 skills: [web-crawling]
-tools: [crawl_site, fetch_page, crawl_schedule, send_results]
+tools: [crawl_site, fetch_page, crawl_records, crawl_schedule, send_results]
 harness: true
 ---
 
@@ -29,6 +29,13 @@ The Crawler reads websites for you. Tell it the site and what interests you:
   agent crawls again with the one that worked. What worked on a site is
   remembered (`crawls/strategies.json`) and tried first next time. A start
   page with no links is crawled through the site's sitemap or RSS feed.
+- **As a table:** "Collect every project on this listing into a CSV."
+  `crawl_records` reads the data the listing is drawn from (its JSON, the
+  JSON it embeds, or the same URL with `format=json`), follows `?page=N`
+  and writes `results/<file>.csv` in its playground: one row per record,
+  its link in `url`, every field as a column (nested ones dotted, Unix times
+  with a readable `_utc` twin). A long listing continues over several calls
+  into the same file; records are kept once each, by id.
 - **On a schedule:** "Check https://example.com/jobs every morning at 9 for
   Python roles and send them to hr-api." It schedules a recurring task for
   itself (`crawl_schedule`): an interval such as 30m, 2h or 1d, or a cron
