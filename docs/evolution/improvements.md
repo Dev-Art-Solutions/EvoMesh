@@ -245,3 +245,8 @@ the line below the title.
     >                 recent_fallback=4,
     >             )
     1. [x] src/evomesh/cognition.py `CycleContext.build_prompt` -- change the third positional argument of the second `select_relevant_text` call from `self.budget.memory_chars` to `self.budget.belief_chars` so the knowledge section respects the belief budget, matching `CycleContext.think`.
+- [ ] Re-examine the recovery-line anchor in `LoopWatchdog._watch` for consistency once the onset `lag` anchor is corrected
+    The onset `lag` and the recovery anchor were each off by the same `HEARTBEAT_SECONDS`: `lag` subtracts it at the onset calculation, and `reported_since = self._beat` records the pre-beat time as the recovery anchor, so the recovery total (which subtracts `HEARTBEAT_SECONDS` again) is also off by one beat.
+    > `lag = time.monotonic() - self._beat - HEARTBEAT_SECONDS`
+    > `reported_since = self._beat`
+    1. [ ] src/evomesh/loop_watchdog.py `LoopWatchdog._watch` -- after the onset anchor is fixed, trace whether the recovery line `total = max(0.0, self._beat - reported_since - HEARTBEAT_SECONDS)` (which still references `HEARTBEAT_SECONDS`) yields a consistent blocked-time given the corrected `reported_since`; state the result on the detail line -- report only what the read code does, no change.
