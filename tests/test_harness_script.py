@@ -440,6 +440,16 @@ async def test_a_file_this_job_read_may_be_replaced_without_the_flag(project: Pa
     assert (project / "notes.md").read_text(encoding="utf-8") == "b\n"
 
 
+async def test_a_missing_file_named_like_a_tool_says_it_is_a_tool(project: Path) -> None:
+    registry = ToolRegistry(READ_ONLY_TOOLS + SHELL_TOOLS)
+
+    result = await registry.invoke(shell(project), "read", {"path": "shell.json"})
+    plain = await registry.invoke(shell(project), "read", {"path": "nothing.json"})
+
+    assert "shell is a tool, not a file: call it directly" in result
+    assert "is a tool" not in plain
+
+
 # -- the config.json the NewsAnalyzer never had --------------------------
 
 

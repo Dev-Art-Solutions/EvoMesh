@@ -175,6 +175,9 @@ class ToolContext:
     # Files this job has read or written, so `write` may replace one it has
     # actually seen without the overwrite flag (see tool_write).
     seen: set[Path] = field(default_factory=set)
+    # The tools this job was offered, filled in by ToolRegistry.invoke, so a
+    # missing path named like one of them can say it is a tool (see _missing).
+    tool_names: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -487,6 +490,12 @@ def _missing(context: ToolContext, target: Path) -> ToolDenied:
             if not SKIP_DIRECTORIES & set(_inside(context.root, path)):
                 offer(path)
     hint = f" Did you mean: {', '.join(guesses[:3])}?" if guesses else ""
+    # Found live 2026-10-31: NewsAnalyzer read `recent_reports.json` three
+    # times in its first jobs on v0.5 -- the name of its recent_reports tool
+    # as a file it imagined the tool kept.
+    stem = target.name.split(".", 1)[0]
+    if not guesses and stem in context.tool_names:
+        hint = f" {stem} is a tool, not a file: call it directly."
     return ToolDenied(f"DENIED: {shown} does not exist.{hint}")
 
 
@@ -2154,6 +2163,7 @@ class ToolRegistry:
         if tool is None:
             known = ", ".join(self.tools)
             return f"DENIED: there is no tool called {name}. Available tools: {known}"
+        context.tool_names = frozenset(self.tools)
         try:
             return await tool.run(context, args)
         except ToolDenied as exc:
