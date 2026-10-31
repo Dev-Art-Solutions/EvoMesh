@@ -117,11 +117,89 @@ def heredoc_command(raw: str) -> list[str] | None:
     return [program, "-c", match.group("body")]
 
 
+class Operator(str):
+    """An unquoted `|`, `&&`, `>` ... -- as opposed to the same text quoted,
+    which is a word: `grep '|'` searches for a bar."""
+
+
+_PUNCTUATION = "();<>|&"
+
+
 def tokens(raw: str) -> list[str]:
-    """Words and operators, quotes honoured: ``"a|b"`` stays one word."""
-    lexer = shlex.shlex(raw, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    return list(lexer)
+    """Words and operators, with POSIX quoting and escapes: ``"a|b"`` and
+    ``'|'`` stay words, and only an unquoted run of ``();<>|&`` is an
+    Operator.
+
+    Hand-written because neither shlex mode fits. POSIX mode drops the quotes
+    and with them the difference between `|` and `'|'` -- found live
+    2026-10-31, the first hour on this parser: `... | grep '|' | sort -u` was
+    refused as "a pipe with nothing on one side". Non-POSIX mode keeps the
+    quotes but not backslash escapes (`\\(`, `\\"`), which broke 22 logged
+    scripts that had parsed before. Raises ValueError for an unclosed quote,
+    as shlex does.
+    """
+    found: list[str] = []
+    word: list[str] = []
+    started = False
+    quote = ""
+    index = 0
+
+    def flush() -> None:
+        nonlocal started
+        if started:
+            found.append("".join(word))
+            word.clear()
+            started = False
+
+    while index < len(raw):
+        character = raw[index]
+        following = raw[index + 1] if index + 1 < len(raw) else ""
+        if quote == "'":
+            if character == "'":
+                quote = ""
+            else:
+                word.append(character)
+        elif quote == '"':
+            if character == '"':
+                quote = ""
+            elif character == "\\" and following in '"\\$`':
+                word.append(following)
+                index += 1
+            else:
+                word.append(character)
+        elif character == "\\":
+            if following == "\n":
+                index += 1
+            elif following:
+                word.append(following)
+                started = True
+                index += 1
+        elif character in "'\"":
+            quote = character
+            started = True
+        elif character.isspace():
+            flush()
+        elif character in _PUNCTUATION:
+            flush()
+            end = index
+            while end < len(raw) and raw[end] in _PUNCTUATION:
+                end += 1
+            found.append(Operator(raw[index:end]))
+            index = end
+            continue
+        else:
+            if character == "`" or (character == "$" and following == "("):
+                raise ScriptRefused(
+                    "command substitution (`$(...)` or backticks) is not supported. Use "
+                    "one plain command, or several joined by && || ; |."
+                )
+            word.append(character)
+            started = True
+        index += 1
+    if quote:
+        raise ValueError("No closing quotation")
+    flush()
+    return found
 
 
 def _stage(words: list[str]) -> Stage:
@@ -137,15 +215,16 @@ def _stage(words: list[str]) -> Stage:
     index = 0
     while index < len(words):
         word = words[index]
-        operator = word in _STDOUT_REDIRECTS | _DUP_REDIRECTS | _INPUT_REDIRECTS
-        if operator and kept and kept[-1] in _FD_TOKENS and len(kept) > 1:
+        operator = isinstance(word, Operator)
+        redirect = operator and word in _STDOUT_REDIRECTS | _DUP_REDIRECTS | _INPUT_REDIRECTS
+        if redirect and kept and kept[-1] in _FD_TOKENS and len(kept) > 1:
             descriptor = kept.pop()
         else:
             descriptor = ""
-        if word in _DUP_REDIRECTS:
+        if operator and word in _DUP_REDIRECTS:
             index += 2
             continue
-        if word in _STDOUT_REDIRECTS:
+        if operator and word in _STDOUT_REDIRECTS:
             target = words[index + 1] if index + 1 < len(words) else ""
             if target not in _NULL_TARGETS:
                 raise ScriptRefused(
@@ -156,12 +235,12 @@ def _stage(words: list[str]) -> Stage:
                 discard = True
             index += 2
             continue
-        if word in _INPUT_REDIRECTS:
+        if operator and word in _INPUT_REDIRECTS:
             raise ScriptRefused(
                 f"`{word}` feeds the program input, and nothing here does: it would "
                 "only hang until the timeout. Pass a script with python -c instead."
             )
-        if word in ("(", ")", "&", "|&", ";;") or word.startswith(("$(", "`")):
+        if operator:
             raise ScriptRefused(
                 f"`{word}` (subshells, background jobs, command substitution) is not "
                 "supported. Use one plain command, or several joined by && || ; |."
@@ -182,8 +261,9 @@ def parse(raw: str) -> list[Command]:
     commands: list[Command] = []
     connector = ""
     pipeline: list[list[str]] = [[]]
-    for word in tokens(raw) + [";"]:
-        if word in CONNECTORS:
+    for word in [*tokens(raw), Operator(";")]:
+        operator = isinstance(word, Operator)
+        if operator and word in CONNECTORS:
             if any(pipeline):
                 if not all(pipeline):
                     raise ScriptRefused("a pipe with nothing on one side of it")
@@ -191,7 +271,7 @@ def parse(raw: str) -> list[Command]:
             elif word != ";" or connector not in ("", ";"):
                 raise ScriptRefused(f"`{word}` with no command before it")
             connector, pipeline = word, [[]]
-        elif word == "|":
+        elif operator and word == "|":
             pipeline.append([])
         else:
             pipeline[-1].append(word)
@@ -269,6 +349,28 @@ _GREP_LONG_FLAGS = {
 }
 
 
+def _basic_to_python(pattern: str) -> str:
+    """A grep basic regular expression in Python's syntax.
+
+    In a BRE, ``| + ? ( ) { }`` are literal and their backslashed forms are
+    the operators -- the reverse of Python. Swapping only ``\\|`` used to
+    leave a bare ``|`` meaning alternation, so `grep '|'` matched every line.
+    """
+    special = "|+?(){}"
+    converted: list[str] = []
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "\\" and index + 1 < len(pattern):
+            following = pattern[index + 1]
+            converted.append(following if following in special else character + following)
+            index += 2
+            continue
+        converted.append(f"\\{character}" if character in special else character)
+        index += 1
+    return "".join(converted)
+
+
 def _grep(args: list[str], text: str) -> tuple[str, bool]:
     flags: set[str] = set()
     patterns: list[str] = []
@@ -316,9 +418,7 @@ def _grep(args: list[str], text: str) -> tuple[str, bool]:
         if "F" in flags:
             source = re.escape(pattern)
         elif not flags & {"E", "P"}:
-            # Basic regular expressions spell alternation and groups with a
-            # backslash; Python's do not.
-            source = pattern.replace(r"\|", "|").replace(r"\(", "(").replace(r"\)", ")")
+            source = _basic_to_python(pattern)
         if "w" in flags:
             source = rf"\b(?:{source})\b"
         if "x" in flags:

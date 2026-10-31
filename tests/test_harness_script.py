@@ -64,6 +64,44 @@ def test_quoted_operators_stay_inside_their_word() -> None:
     assert command.stages[0].words == ["python", "-c", "import x; print('a|b')"]
 
 
+def test_a_quoted_operator_is_a_word_not_an_operator() -> None:
+    # Found live: `... | grep '|' | sort -u` was refused as "a pipe with
+    # nothing on one side" -- POSIX lexing had dropped the quotes.
+    (command,) = parse("python a.py 2>&1 | grep '|' | grep \"&&\" | sort -u")
+
+    assert [stage.words for stage in command.stages] == [
+        ["python", "a.py"],
+        ["grep", "|"],
+        ["grep", "&&"],
+        ["sort", "-u"],
+    ]
+    assert apply_filter(["grep", "|"], "a | b\nc")[0] == "a | b"
+
+
+def test_backslash_escapes_parse_the_posix_way() -> None:
+    # Non-POSIX lexing broke these, 22 logged scripts in all.
+    (first, second) = parse(r"""find . \( -name a -o -name b \) ; grep -c "x\"y\|z" f""")
+
+    assert first.stages[0].words == ["find", ".", "(", "-name", "a", "-o", "-name", "b", ")"]
+    assert second.stages[0].words == ["grep", "-c", r'x"y\|z', "f"]
+
+
+def test_basic_regex_operators_are_the_backslashed_ones() -> None:
+    lines = "a+b\nab\nc|d\ncd"
+
+    assert apply_filter(["grep", "a+b"], lines)[0] == "a+b"
+    assert apply_filter(["grep", r"ab\|cd"], lines)[0] == "ab\ncd"
+    assert apply_filter(["grep", "-E", "ab|cd"], lines)[0] == "ab\ncd"
+
+
+def test_unquoted_substitution_is_refused_and_quoted_is_a_word() -> None:
+    with pytest.raises(ScriptRefused, match="command substitution"):
+        parse("ls $(pwd) | head")
+    (command,) = parse("python -c 'print(\"$(x)\")' | head -1")
+
+    assert command.stages[0].words == ["python", "-c", 'print("$(x)")']
+
+
 def test_stdout_to_null_drops_output_and_stderr_to_null_changes_nothing() -> None:
     (quiet,) = parse("python a.py >/dev/null 2>&1")
     (noisy,) = parse("python a.py 2>/dev/null")
