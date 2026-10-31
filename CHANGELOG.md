@@ -6,6 +6,18 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **`news_fetch` remembers what it showed you.** With `"unseen": true` it
+  returns only headlines this agent has never been handed. The memory is
+  `.news_seen.json` in the agent's own playground, keyed by a folded title so
+  the same story under another dash or case is not new, and kept for
+  `cache_days`. Only what is returned is remembered, so a `limit` never hides
+  the rest. Measured before: NewsAnalyzer's jobs averaged 37 steps, about 30%
+  of them hand-kept "already assessed" bookkeeping (its own cache files,
+  scripts to diff them, edits with misremembered anchors). The skill and the
+  template's goal now say to use `unseen` and keep no list.
+- `/goal text <agent> <id> "<text>"` rewords a goal in place. A template's
+  goal text is copied at spawn time and never follows the template later.
+
 - `sed` works in the harness shell, after a pipe and over a file: `-n`,
   `-E`, `-e`, addresses (`N`, `$`, `/re/`, ranges, `!`) and `p`, `d`, `q`,
   `=`, `s///`. It is applied in Python, never run; `-i` and `w` are refused.

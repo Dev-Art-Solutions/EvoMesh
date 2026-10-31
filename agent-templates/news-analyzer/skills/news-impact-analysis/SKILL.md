@@ -3,14 +3,16 @@ name: news-impact-analysis
 description: How to turn a fetched headline into a price-impact judgment (instrument, direction, confidence) on the recurring analysis goal, and when to actually report one.
 ---
 
-On the recurring analysis goal, call `news_fetch` for the configured feeds. If a cycle
-was missed or you want to be sure nothing slipped past a feed's own "latest" window,
-call it instead with `{"from_cache": true, "since_hours": 24}` (or whatever window makes
-sense) to see everything actually gathered over that period, not just what a source is
-showing right now.
+On the recurring analysis goal, call `news_fetch` with `{"unseen": true}`. It returns
+only headlines you have never been shown, and remembers what it handed you -- so
+**everything it returns is new to you, and you keep no list of your own**: no
+`assessed_headlines` file, no cache of what you judged, no script to diff them. That
+bookkeeping is the tool's job now. `[]` means nothing new since your last call: answer
+with nothing and stop. To look further back, add `"from_cache": true` (and
+`"since_hours": 24`); `unseen` still applies, so it never repeats a headline either.
 
-For each headline you have not already assessed in a previous cycle (check your own
-memory/context first -- never re-assess or re-report the same headline twice), decide:
+Your instruments, their keywords and `min_confidence` are in `config.json`, in your own
+folder -- read it once with `read`. For each headline it returns, decide:
 
 1. **Instrument**: which symbol in `config.json`'s `instruments` map this headline
    plausibly relates to, by matching its keywords against the headline text. A headline

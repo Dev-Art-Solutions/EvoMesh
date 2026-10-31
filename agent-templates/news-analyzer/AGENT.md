@@ -14,8 +14,9 @@ autonomy: cyclic
 cycle_seconds: 120
 goals:
   - text: >
-      Fetch the latest financial headlines with news_fetch. For each one you
-      have not already assessed (check your own memory/context first), judge
+      Fetch the headlines you have not been shown yet with news_fetch
+      {"unseen": true} -- it remembers what it gave you, so keep no list of
+      your own. For each one it returns, judge
       which configured instrument it plausibly affects, the likely direction
       (bullish/bearish/neutral), and your confidence (low/medium/high) per
       the news-impact-analysis skill. Report only headlines at or above

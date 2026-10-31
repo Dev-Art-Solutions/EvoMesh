@@ -82,6 +82,8 @@ HELP = (
   /goal pattern <agent> <goal-id> [<regex>|clear]  Only announce report lines
                                 matching this regex (a deterministic backstop for a
                                 skill's own strict-format rule); clear removes it
+  /goal text <agent> <goal-id> "<text>"  Reword a goal in place (a template's text is
+                                copied at spawn time and never follows it later)
   /notifications [since-id]     What the mesh has announced on its own, and their ids
   /memory <agent>               Show the agent's memory.md
   /procedures <agent> [approve <pattern>|forget <name>]
@@ -794,6 +796,7 @@ class ConsoleChannel(OperationsCommands):
                 "  |  /goal done|drop|pause|resume <agent> <id>"
                 "  |  /goal notify <agent> <id> [on|off]"
                 "  |  /goal pattern <agent> <id> [<regex>|clear]"
+                '  |  /goal text <agent> <id> "<new text>"'
             )
         action, agent_name = parts[1].lower(), parts[2]
         definition = self.environment.registry.get(agent_name)
@@ -885,8 +888,18 @@ class ConsoleChannel(OperationsCommands):
                     return f"Bad pattern: {error}"
                 goal.report_pattern = pattern
                 message = f"Goal {goal.id} will only announce report lines matching {pattern!r}."
+        elif action == "text":
+            # A template's goal text is copied at spawn time, so an agent
+            # keeps the old wording forever once its template changes -- found
+            # 2026-10-31: NewsAnalyzer's goal still told it to keep its own
+            # "already assessed" list after news_fetch learned "unseen".
+            goal = definition.mind.goal(parts[3])
+            if len(parts) <= 4 or not parts[4].strip():
+                return f'Usage: /goal text {definition.name} {goal.id} "<new text>"'
+            goal.description = parts[4].strip()
+            message = f"Goal {goal.id} now reads: {goal.description}"
         else:
-            return "Goal action must be add, done, drop, pause, resume, notify, or pattern."
+            return "Goal action must be add, done, drop, pause, resume, notify, pattern, or text."
         definition.touch()
         await self.environment.repository.save_agent(definition)
         return message

@@ -14,11 +14,13 @@ parameters:
       entirely and read back headlines already seen over the retention
       window (config.json's "cache_days", default 3) instead of a live
       snapshot; add "since_hours" to narrow that further, e.g. the last day.
-      Add "links": true only when you need the article URLs.
+      Add "links": true only when you need the article URLs. Add
+      "unseen": true to get only headlines you have never been shown --
+      the tool remembers what it handed you, so keep no list of your own.
     required: false
 ---
 
-Read-only. Returns a JSON list of {"title", "published"} objects, one per
+Reads the web, and with "unseen" remembers in your playground's .news_seen.json what it handed you. Returns a JSON list of {"title", "published"} objects, one per
 line ("link" too with "links": true -- it doubles the size and an analysis
 never needs it), most recent first, already filtered by keyword if any were given. Every
 live fetch (from_cache omitted or false) also feeds a durable cache beside

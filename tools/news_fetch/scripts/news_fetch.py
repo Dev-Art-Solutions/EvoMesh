@@ -531,6 +531,68 @@ def _cached_items(keywords: list[str], since_hours: float | None) -> list[dict[s
             for e in entries]
 
 
+SEEN_FILE = ".news_seen.json"
+
+
+def title_key(title: str) -> str:
+    """A headline as the same story, whichever feed spelled it: case,
+    punctuation and spacing folded away (`US–China` and `US-China`)."""
+    return " ".join(re.sub(r"[^\w]+", " ", title.lower()).split())
+
+
+def _seen_path() -> Path:
+    """In the caller's own working directory -- the calling agent's
+    playground (see the comment above _config_path) -- so every agent has
+    its own memory of what it was shown."""
+    return Path.cwd() / SEEN_FILE
+
+
+def unseen_only(items: list[dict], limit: int, config: dict) -> list[dict]:
+    """The first ``limit`` items this caller has never been handed, which
+    are then remembered as handed over.
+
+    Found 2026-10-31: NewsAnalyzer spent ~30% of every job's tool calls
+    keeping its own "already assessed" lists -- _cache/news_cache.json,
+    assessed_headlines.txt, scratch scripts to diff them -- re-invented each
+    run, edited with anchors it misremembered. Knowing what was already
+    shown is bookkeeping, and bookkeeping is code's job (rule 6). Only what
+    is actually returned is remembered, so a limit never hides the rest: the
+    next call gets them. Entries older than cache_days are forgotten, the
+    same window the headline cache keeps.
+    """
+    path = _seen_path()
+    try:
+        seen = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(seen, dict):
+            seen = {}
+    except (OSError, ValueError):
+        seen = {}
+    try:
+        days = float(config.get("cache_days") or DEFAULT_CACHE_DAYS)
+    except (TypeError, ValueError):
+        days = DEFAULT_CACHE_DAYS
+    now = time.time()
+    cutoff = now - days * 86400
+    seen = {
+        key: at for key, at in seen.items() if isinstance(at, (int, float)) and at >= cutoff
+    }
+    fresh: list[dict] = []
+    for item in items:
+        key = title_key(item.get("title", ""))
+        if not key or key in seen or any(title_key(kept["title"]) == key for kept in fresh):
+            continue
+        fresh.append(item)
+        if len(fresh) >= limit:
+            break
+    for item in fresh:
+        seen[title_key(item["title"])] = now
+    try:
+        path.write_text(json.dumps(seen), encoding="utf-8")
+    except OSError:
+        pass
+    return fresh
+
+
 def whole_feeds_of(config: dict, request: dict | None = None) -> list[str]:
     """RSS feeds reported in full, like a page, but fetched as plain RSS.
     Found live 2026-09-28: wsj.com's DataDome answered every page fetch --
@@ -623,10 +685,15 @@ def main() -> int:
     # Links are half of every line and no part of an analysis; ask for them.
     links = bool(request.get("links"))
 
+    unseen = bool(request.get("unseen"))
+
+    def chosen(items: list[dict]) -> list[dict]:
+        return unseen_only(items, limit, config) if unseen else items[:limit]
+
     if request.get("from_cache"):
         since_hours = request.get("since_hours")
         since_hours = float(since_hours) if since_hours is not None else None
-        print(render(_cached_items(keywords, since_hours)[:limit], links=links))
+        print(render(chosen(_cached_items(keywords, since_hours)), links=links))
         return 0
 
     feeds = request.get("feeds") or config.get("feeds") or DEFAULT_FEEDS
@@ -644,7 +711,7 @@ def main() -> int:
             or any(keyword in item["title"].lower() for keyword in keywords)
         ]
 
-    print(render(collected[:limit], links=links))
+    print(render(chosen(collected), links=links))
     return 0
 
 

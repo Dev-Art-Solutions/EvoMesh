@@ -198,3 +198,40 @@ def test_feeds_are_fetched_in_parallel_and_a_dead_one_is_skipped(
     assert time.monotonic() - started < 1.2
     assert [item["title"] for item in items] == ["one", "three"]
     assert items[0]["source"] == "https://a/one"
+
+
+def test_unseen_hands_each_headline_over_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NewsAnalyzer spent ~30% of its tool calls keeping its own "already
+    assessed" lists; with unseen the tool remembers what it handed over."""
+    monkeypatch.chdir(tmp_path)
+    items = [
+        {"title": "US–China agree on a deal", "published": "", "link": "a"},
+        {"title": "Gold edges up", "published": "", "link": "b"},
+        {"title": "US-China agree on a deal", "published": "", "link": "c"},
+        {"title": "Fed holds rates", "published": "", "link": "d"},
+    ]
+
+    first = news_fetch.unseen_only(items, 2, {})
+    second = news_fetch.unseen_only(items, 10, {})
+    third = news_fetch.unseen_only(items, 10, {})
+
+    assert [item["title"] for item in first] == ["US–China agree on a deal", "Gold edges up"]
+    # The same story spelled with another dash is not new; what the limit
+    # held back comes next.
+    assert [item["title"] for item in second] == ["Fed holds rates"]
+    assert third == []
+    assert (tmp_path / ".news_seen.json").is_file()
+
+
+def test_unseen_forgets_after_the_cache_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    old = news_fetch.title_key("Fed holds rates")
+    (tmp_path / ".news_seen.json").write_text(json.dumps({old: 1.0}), encoding="utf-8")
+
+    again = news_fetch.unseen_only([{"title": "Fed holds rates", "published": ""}], 5, {})
+
+    assert [item["title"] for item in again] == ["Fed holds rates"]

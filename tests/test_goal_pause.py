@@ -77,3 +77,26 @@ def test_a_goal_waiting_on_its_schedule_can_be_paused() -> None:
 
     assert manager.pause(goal)
     assert goal.blocked_reason == PAUSED
+
+
+async def test_a_goal_can_be_reworded_in_place(tmp_path: Path) -> None:
+    """A template's goal text is copied at spawn time; /goal text is how a
+    spawned agent's goal follows a reworded template."""
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    agent = AgentDefinition(name="Watcher", purpose="Watch", status=AgentStatus.ACTIVE)
+    await environment.register_agent(agent)
+    goal = agent.mind.add_goal("Keep your own list", recurring=True, interval_seconds=1800)
+    console = ConsoleChannel(environment)
+
+    changed = await console.route(f'/goal text Watcher {goal.id} "Ask the tool for unseen ones"')
+    empty = await console.route(f"/goal text Watcher {goal.id}")
+    stored = next(a for a in await environment.repository.load_agents() if a.id == agent.id)
+
+    assert "now reads: Ask the tool for unseen ones" in changed
+    assert empty.startswith("Usage: /goal text")
+    stored_goal = stored.mind.goal(goal.id)
+    assert stored_goal.description == "Ask the tool for unseen ones"
+    assert stored_goal.interval_seconds == 1800, "only the wording changes"
+    await environment.stop()
