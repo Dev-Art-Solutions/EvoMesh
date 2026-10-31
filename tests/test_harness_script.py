@@ -185,6 +185,18 @@ async def test_and_stops_at_the_first_failure(project: Path) -> None:
     assert "after" not in result
 
 
+async def test_a_file_test_answers_with_its_exit_code(project: Path) -> None:
+    here = await run(shell(project), "test -f notes.md && echo EXISTS || echo MISSING")
+    gone = await run(shell(project), "[ -f missing.md ] && echo EXISTS || echo MISSING")
+    outside = await run(shell(project), "test -e /etc/passwd || echo MISSING")
+    folder = await run(shell(project), "test ! -d notes.md && echo NOT-A-DIR")
+
+    assert here.rstrip().endswith("EXISTS")
+    assert gone.rstrip().endswith("MISSING")
+    assert outside.rstrip().endswith("MISSING")
+    assert folder.rstrip().endswith("NOT-A-DIR")
+
+
 async def test_a_script_of_nothing_but_refusals_is_a_refusal(project: Path) -> None:
     result = await run(shell(project), "curl x; wget y")
 

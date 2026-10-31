@@ -1350,6 +1350,38 @@ def _builtin(program: str, parts: list[str]) -> str | None:
     return None
 
 
+def _file_test(context: ToolContext, program: str, parts: list[str]) -> int | None:
+    """`test -f x` / `[ -d x ]` as an exit code, or None for any other shape.
+
+    Found live 2026-10-31: `test -f report.md && echo EXISTS || echo MISSING`
+    is how a model checks its own write, and it was refused every time. A
+    path outside the job root simply does not exist for this job (exit 1).
+    """
+    words = parts[1:]
+    if program == "[":
+        if words[-1:] != ["]"]:
+            return None
+        words = words[:-1]
+    elif program != "test":
+        return None
+    negate = words[:1] == ["!"]
+    words = words[1:] if negate else words
+    if len(words) != 2 or words[0] not in ("-e", "-f", "-d", "-s"):
+        return None
+    try:
+        target = _resolve_readable(context, words[1])
+    except ToolDenied:
+        holds = False
+    else:
+        holds = {
+            "-e": target.exists,
+            "-f": target.is_file,
+            "-d": target.is_dir,
+            "-s": lambda: target.is_file() and target.stat().st_size > 0,
+        }[words[0]]()
+    return 0 if holds != negate else 1
+
+
 async def _command(context: ToolContext, parts: list[str], seconds: float) -> _Ran:
     """One command: an allowed program, a builtin, or a read-only translation.
 
@@ -1362,6 +1394,8 @@ async def _command(context: ToolContext, parts: list[str], seconds: float) -> _R
     if program not in context.shell_allow:
         if (echoed := _builtin(program, parts)) is not None:
             return _Ran(0, echoed)
+        if (code := _file_test(context, program, parts)) is not None:
+            return _Ran(code, "")
         translated = await _shell_as_tool(context, parts)
         if translated is not None:
             tool, body = translated
