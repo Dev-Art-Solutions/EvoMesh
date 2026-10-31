@@ -249,8 +249,7 @@ def test_a_page_with_no_records_says_so_and_points_at_crawl_site(listing: Listin
 
     assert text.startswith("No records found") and "crawl_site" in text
     # What came back is shown and kept, so "no records" can be told apart.
-    assert "
-JSON twin " in text and "began: (nothing)" in text
+    assert "\nJSON twin " in text and "began: (nothing)" in text
 
 
 def test_the_installed_copy_matches_the_template() -> None:
