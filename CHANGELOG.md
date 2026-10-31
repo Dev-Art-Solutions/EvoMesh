@@ -6,6 +6,15 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **The Evolver tries a waiting idea instead of idling.** With nothing
+  evidenced to do and ideas waiting for a human, it runs the oldest idea's
+  first step exactly like a backlog step (same work order, validation and
+  review) on a candidate it never lands, whatever the verdict and whatever
+  `auto_promote` says. The verdict and the size of the change are written
+  on the idea (`/ideas`, `/idea show`, Telegram), and the whole diff goes to
+  `workspace/idea-previews/<n>.patch`. Approval stays the human's (rule 24).
+  `evolution.preview_ideas: false` turns it off. Before this, the mesh sat on
+  generation 1687 for twenty days while ten ideas waited.
 - **`news_fetch` remembers what it showed you.** With `"unseen": true` it
   returns only headlines this agent has never been handed. The memory is
   `.news_seen.json` in the agent's own playground, keyed by a folded title so

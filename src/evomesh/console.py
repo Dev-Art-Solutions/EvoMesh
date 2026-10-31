@@ -1010,6 +1010,8 @@ class ConsoleChannel(OperationsCommands):
         for idea in pending:
             steps = f", {len(idea.item.steps)} step(s)" if idea.item.steps else ""
             lines.append(f"  #{idea.number} {idea.title} (from {idea.source}{steps})")
+            if idea.preview:
+                lines.append(f"      tried: {idea.preview}")
         return "\n".join(lines)
 
     async def _command_idea(self, parts: list[str]) -> str:

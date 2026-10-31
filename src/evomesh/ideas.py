@@ -115,6 +115,10 @@ class Idea:
     source: str
     status: IdeaStatus = "pending"
     note: str = ""
+    # What the Evolver found when it tried the idea's first step on a
+    # candidate it never lands (see EnvironmentEvolver.preview_pick): the
+    # verdict and the size of the change, for the human deciding.
+    preview: str = ""
 
     @property
     def title(self) -> str:
@@ -123,6 +127,8 @@ class Idea:
     def block(self) -> str:
         lines = [f"- [{_MARK_OF[self.status]}] #{self.number} {self.item.title}"]
         lines.append(f"    from: {self.source}")
+        if self.preview:
+            lines.append(f"    preview: {self.preview}")
         if self.note and self.status != "pending":
             lines.append(f"    {self.status}: {self.note}")
         lines += [f"    {line}" for line in self.item.detail.splitlines() if line.strip()]
@@ -137,6 +143,8 @@ class Idea:
         if self.item.steps:
             lines += ["", "Steps:"]
             lines += [f"{step.number}. {step.describe()}" for step in self.item.steps]
+        if self.preview:
+            lines += ["", f"🧪 Tried: {self.preview}"]
         lines += [
             "",
             f"👍 or a reply 'да' moves it to improvements.md, 👎 rejects it "
@@ -153,11 +161,13 @@ def _parse(text: str) -> list[Idea]:
     def close() -> None:
         if header is None:
             return
-        source, note, rest = "", "", []
+        source, note, preview, rest = "", "", "", []
         for line in body:
             bare = line.strip()
             if bare.casefold().startswith("from:") and not source:
                 source = bare[len("from:") :].strip()
+            elif bare.casefold().startswith("preview:") and not preview:
+                preview = bare[len("preview:") :].strip()
             elif bare.casefold().startswith(("approved:", "rejected:")) and not note:
                 note = bare.split(":", 1)[1].strip()
             elif bare:
@@ -171,6 +181,7 @@ def _parse(text: str) -> list[Idea]:
                 source=source or "unknown",
                 status=_MARKS[header.group("mark")],
                 note=note,
+                preview=preview,
             )
         )
 
@@ -232,6 +243,17 @@ class IdeaBook:
             idea = Idea(number=number, item=item, source=source)
             self._write([*ideas, idea])
             return idea
+
+    async def record_preview(self, number: int, text: str) -> bool:
+        """Note what trying the idea showed, on a pending idea only."""
+        async with self._lock:
+            ideas = self.ideas()
+            idea = next((idea for idea in ideas if idea.number == number), None)
+            if idea is None or idea.status != "pending":
+                return False
+            idea.preview = text
+            self._write(ideas)
+            return True
 
     async def approve(self, number: int, actor: str) -> str:
         """Move one pending idea to improvements.md and commit that file

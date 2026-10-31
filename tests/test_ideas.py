@@ -126,6 +126,29 @@ async def test_a_rejected_idea_is_never_proposed_again(tmp_path: Path) -> None:
     assert "rejected: human:console: not worth it" in book.path.read_text(encoding="utf-8")
 
 
+async def test_a_preview_is_kept_on_a_pending_idea_and_shown_to_the_human(
+    tmp_path: Path,
+) -> None:
+    """What trying the idea showed survives a re-read of ideas.md, reads on a
+    phone, and is never written onto an idea a human already decided."""
+    project = await _project(tmp_path)
+    book = IdeaBook(tmp_path / "ideas.md", project)
+    idea = await book.add(TOTAL, "Idea Scout")
+    decided = await book.add(Improvement("Cache the survey", "x" * 90), "human")
+    assert idea is not None and decided is not None
+    await book.reject(decided.number, "human:console")
+
+    filed = await book.record_preview(idea.number, "validated in generation 1690 -- 1 file")
+    refused = await book.record_preview(decided.number, "validated")
+
+    again = IdeaBook(book.path, project).get(idea.number)
+    assert filed and not refused
+    assert again is not None and again.preview == "validated in generation 1690 -- 1 file"
+    assert again.item.steps == idea.item.steps, "the steps survive the extra line"
+    assert "🧪 Tried: validated in generation 1690" in again.chat_text()
+    assert IdeaBook(book.path, project).get(decided.number).preview == ""  # type: ignore[union-attr]
+
+
 # -- the agent, in a running mesh ------------------------------------------------
 
 

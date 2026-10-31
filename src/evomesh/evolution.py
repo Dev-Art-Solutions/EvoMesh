@@ -1380,6 +1380,9 @@ class ValidationRun:
 
 PICK_RUNTIME_FAULT = "runtime-fault"
 PICK_IMPROVEMENT = "improvement"
+# An idea's first step, tried on a candidate that is never landed: what a
+# human deciding the idea gets to see (see EnvironmentEvolver.preview_pick).
+PICK_PREVIEW = "idea-preview"
 PICK_PLAN = "plan-item"
 PICK_SCOUT = "scout"
 # The untested-export backlog: write one test for code that already runs. The
@@ -1400,7 +1403,9 @@ TEST_ONLY_NOTE = (
 # An improvement from the V2 backlog that only runtime events evidence.
 PICK_V2 = "improvement-v2"
 V2_NEEDLE = "Resolve improvement"
-SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT, PICK_V2})
+SOURCE_PICKS = frozenset({PICK_RUNTIME_FAULT, PICK_IMPROVEMENT, PICK_V2, PICK_PREVIEW})
+# The picks whose work is one anchored step of an item.
+STEP_PICKS = frozenset({PICK_IMPROVEMENT, PICK_PREVIEW})
 # The picks that write docs/evolution/improvements.md and nothing else.
 BACKLOG_PICKS = frozenset({PICK_PLAN, PICK_SCOUT})
 # A plan or a scout only reads and then answers: the first ones took 9 to 21
@@ -1555,6 +1560,10 @@ class EnvironmentEvolver:
         # How many ideas wait on a human, so an idle pipeline can say that is
         # what it waits on rather than asking for items nobody has to write.
         self.pending_ideas: Callable[[], int] | None = None
+        # Pending ideas not tried yet, as (number, item), and where a try's
+        # result goes (number, verdict, diff). Both None: no previews.
+        self.preview_source: Callable[[], list[tuple[int, Improvement]]] | None = None
+        self.preview_sink: Callable[[int, str, str], None] | None = None
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""
@@ -1962,6 +1971,46 @@ class EnvironmentEvolver:
             )
         return None
 
+    def preview_pick(self) -> ObjectivePick | None:
+        """The first step of the oldest pending idea nobody has tried yet.
+
+        Found 2026-10-31: the Evolver had been idle for twenty days -- empty
+        backlog, ten ideas waiting -- while the human reviewing them was
+        rejecting more than half by reading the code by hand, some because
+        the idea was plainly wrong once you tried it. Trying is what the
+        pipeline does anyway. A preview runs the step exactly as a backlog
+        step would (work order, validation, review) and is never landed: the
+        verdict and the diff go to the idea, the candidate is discarded, and
+        approving stays the human's alone (rule 24).
+        """
+        if self.preview_source is None:
+            return None
+        recent = self._recent_objectives()
+        for number, item in self.preview_source():
+            step = item.next_step
+            if step is None:
+                continue
+            needle = step_needle(item, step)
+            if sum(text.startswith(needle) for text in recent) >= MAX_TARGET_ATTEMPTS:
+                continue
+            return ObjectivePick(
+                kind=PICK_PREVIEW,
+                objective=step_objective(item, step),
+                needle=needle,
+                key=f"idea:{number}",
+                step=step.number,
+                work={"path": step.path, "symbol": step.symbol},
+            )
+        return None
+
+    async def record_preview(self, generation: Generation, key: str, verdict: str) -> None:
+        """Hand a preview's verdict and diff to whoever files them."""
+        number = int(key.removeprefix("idea:") or 0) if key.startswith("idea:") else 0
+        if not number or self.preview_sink is None:
+            return
+        diff = await self.candidate_diff(generation)
+        self.preview_sink(number, verdict, diff)
+
     def work_order(
         self, generation: Generation, objective: str, pick: str, work: dict[str, Any]
     ) -> str | None:
@@ -1974,7 +2023,7 @@ class EnvironmentEvolver:
         a small model's transcript can hold the task and still do the work.
         """
         root = generation.path
-        if pick == PICK_IMPROVEMENT and work.get("path") and work.get("symbol"):
+        if pick in STEP_PICKS and work.get("path") and work.get("symbol"):
             return step_task(root, objective, str(work["path"]), str(work["symbol"]))
         if pick == PICK_PLAN and work.get("title"):
             return plan_task(root, objective, str(work["title"]))

@@ -236,6 +236,11 @@ class EvolutionSettings(BaseModel):
     # reports IDLE and spends no model call. On, it goes looking: a
     # read-only scout generation, then the dead-module backlog.
     scout_when_idle: bool = False
+    # On by default. With nothing evidenced to do and ideas waiting for a
+    # human, try the oldest idea's first step on a candidate that is never
+    # landed, and file the verdict and diff on the idea (/ideas). Approval
+    # stays the human's alone (rule 24).
+    preview_ideas: bool = True
     objective: str | None = None
 
 

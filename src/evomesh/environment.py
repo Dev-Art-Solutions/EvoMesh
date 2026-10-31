@@ -247,6 +247,11 @@ class Environment:
         )
         self.evolver.idea_sink = self._idea_from_scout
         self.evolver.pending_ideas = lambda: len(self.ideas.pending())
+        if settings.evolution.preview_ideas:
+            self.evolver.preview_source = lambda: [
+                (idea.number, idea.item) for idea in self.ideas.pending() if not idea.preview
+            ]
+            self.evolver.preview_sink = self._idea_preview
         self._idea_tasks: set[asyncio.Task[bool]] = set()
         # Set when a generation has landed in the tree this process is not
         # running. Whoever owns the process -- __main__, a test, a script --
@@ -743,6 +748,30 @@ class Environment:
         self._idea_tasks.add(task)
         task.add_done_callback(self._idea_tasks.discard)
         return True
+
+    def _idea_preview(self, number: int, verdict: str, diff: str) -> None:
+        """File a preview on its idea, keep the whole diff beside the ideas,
+        and tell the human -- scheduled, the stage that calls this is not
+        waiting for it."""
+        stat = diff.split("\n\n", 1)[0].strip().splitlines()
+        size = stat[-1].strip() if stat else ""
+        summary = f"{verdict} -- {size}" if size else verdict
+        patch = self.settings.workspace_path / "idea-previews" / f"{number}.patch"
+
+        async def file() -> bool:
+            try:
+                await asyncio.to_thread(patch.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(patch.write_text, diff, encoding="utf-8")
+            except OSError as exc:
+                logger.warning("could not keep idea #%s's preview diff: %s", number, exc)
+            filed = await self.ideas.record_preview(number, f"{summary} (diff: {patch.name})")
+            if filed:
+                await self.announce(f"🧪 Idea #{number} tried: {summary}. /idea show {number}")
+            return filed
+
+        task = asyncio.get_running_loop().create_task(file())
+        self._idea_tasks.add(task)
+        task.add_done_callback(self._idea_tasks.discard)
 
     def wake_ideas(self) -> None:
         """A human decided an idea: a review slot may have opened."""

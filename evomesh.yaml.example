@@ -81,6 +81,10 @@ evolution:
   # calls no model. On: it explores instead -- a read-only scout generation,
   # then the dead-module "wire or delete" backlog.
   scout_when_idle: false
+  # With nothing evidenced to do and ideas waiting for a human, try the oldest
+  # idea's first step on a candidate that is never landed, and write the
+  # verdict and diff on the idea (/ideas). Approval stays the human's.
+  preview_ideas: true
   # Optional starting objective. Otherwise use: /evolution start <objective>
   objective: null
 

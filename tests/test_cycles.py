@@ -3324,3 +3324,72 @@ async def test_evolution_status_says_when_the_checkout_moved_past_the_active_gen
 
     assert moved.startswith("checkout: ") and "1 commit(s) after" in moved
     assert same == ""
+
+
+# -- previews: an idea tried while it waits for a human ------------------------
+
+
+def _pending_idea() -> list[tuple[int, Any]]:
+    from evomesh.codebase import Improvement as Item
+    from evomesh.codebase import Step
+
+    item = Item(
+        "Double the helper",
+        steps=(Step(1, "src/evomesh/busy.py", "helper", "return value * 2"),),
+    )
+    return [(19, item)]
+
+
+async def test_a_waiting_idea_is_tried_and_never_landed(tmp_path: Path) -> None:
+    """Found 2026-10-31: twenty idle days, an empty backlog and ten ideas
+    waiting, while the human rejected more than half of them by reading the
+    code by hand. The Evolver now tries the oldest one -- the same work order,
+    validation and diff a backlog step gets -- and files the verdict on the
+    idea. It never lands it, auto_promote or not: approval is the human's."""
+    root = tmp_path / "project"
+    _seed_package(root, "# Backlog\n\n- [x] Old item\n")
+    project = await git_project(root)
+    doubled = BUSY_SOURCE.replace("return value", "return value * 2")
+    evolver, context, harness = await evolving(
+        tmp_path,
+        project,
+        [[("src/evomesh/busy.py", doubled)]],
+        ScriptedValidator([passing()]),
+        StubRepairer(),
+    )
+    filed: list[tuple[int, str, str]] = []
+    evolver.preview_source = _pending_idea
+    evolver.preview_sink = lambda number, verdict, diff: filed.append((number, verdict, diff))
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    await behavior.cycle(context)  # plan
+    state = await evolver.pipeline_state()
+    assert state["pick"] == "idea-preview"
+    assert state["pick_key"] == "idea:19"
+    assert state["work"] == {"path": "src/evomesh/busy.py", "symbol": "helper"}
+
+    for _ in range(3):  # propose, validate, report
+        await behavior.cycle(context)
+
+    assert "CURRENT CODE -- src/evomesh/busy.py, `helper`" in harness.objectives[0]
+    assert [(number, verdict.split(" in ")[0]) for number, verdict, _ in filed] == [
+        (19, "validated")
+    ]
+    assert "return value * 2" in filed[0][2]
+    # Never landed: the live tree is untouched and nothing was promoted.
+    assert (project / "src" / "evomesh" / "busy.py").read_text(encoding="utf-8") == BUSY_SOURCE
+    assert evolver.workspace.supervisor.metadata().get("active") != state["generation"]
+    assert (await evolver.pipeline_state()).get("stage", "plan") == "plan"
+
+
+async def test_with_previews_off_an_idle_evolver_still_waits(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    _seed_package(root, "# Backlog\n\n- [x] Old item\n")
+    project = await git_project(root)
+    evolver, context, _ = await evolving(tmp_path, project, [NOTHING], ScriptedValidator([]))
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+
+    assert evolver.preview_pick() is None
+    assert (await evolver.pipeline_state()).get("pick") != "idea-preview"

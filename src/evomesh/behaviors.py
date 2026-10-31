@@ -39,11 +39,13 @@ from evomesh.evolution import (
     MAX_TARGET_ATTEMPTS,
     PICK_IMPROVEMENT,
     PICK_PLAN,
+    PICK_PREVIEW,
     PICK_SCOUT,
     PICK_TEST,
     PLAN_DIR,
     REVIEW_COMMAND,
     SOURCE_PICKS,
+    STEP_PICKS,
     TEST_ONLY_NOTE,
     BaselineResult,
     CandidateValidator,
@@ -838,12 +840,20 @@ class EvolverBehavior(BDIBehavior):
                 pick, tracked = await self._prioritized(
                     self._improvements, evolver, baseline_result, baseline_pick
                 )
+                # Nothing evidenced is left: try a waiting idea before looking
+                # for more of them, so the human deciding it sees what it does.
+                if pick is None:
+                    pick = evolver.preview_pick()
                 if pick is None and self.scout_when_idle:
                     pick = evolver.scout_pick(seed, scout_cap)
             else:
                 pick = baseline_pick or evolver.substantive_objective(
-                    seed, scout_cap=scout_cap, scout=self.scout_when_idle
+                    seed, scout_cap=scout_cap, scout=False
                 )
+                if pick is None:
+                    pick = evolver.preview_pick()
+                if pick is None and self.scout_when_idle:
+                    pick = evolver.scout_pick(seed, scout_cap)
             # Dead-module maintenance is a suspicion, not evidence: it is
             # only ever looked for when a human asked for idle exploration.
             target = (
@@ -1273,7 +1283,7 @@ class EvolverBehavior(BDIBehavior):
                 )
             step_path = str(work.get("path", ""))
             if (
-                pick == PICK_IMPROVEMENT
+                pick in STEP_PICKS
                 and step_path
                 and not any(path.replace("\\", "/").endswith(step_path) for path in touched)
             ):
@@ -1923,6 +1933,8 @@ class EvolverBehavior(BDIBehavior):
         number = int(state["generation"])
         # None means validation never ran, which is not the same as failing it.
         passed = state.get("passed")
+        if state.get("pick") == PICK_PREVIEW:
+            return await self._finish_preview(evolver, number, state)
         await evolver.finish_candidate(number, passed=passed is not False)
         # A policy may only act on a verdict validation actually produced. With
         # no verdict -- validation switched off, or this machine blocking the
@@ -1944,6 +1956,37 @@ class EvolverBehavior(BDIBehavior):
             summary=awaiting,
             fact=f"generation {number} is awaiting a human decision",
             phase=AgentPhase.WAITING_HUMAN,
+            achieved=True,
+        )
+
+    async def _finish_preview(
+        self, evolver: EnvironmentEvolver, number: int, state: dict[str, Any]
+    ) -> StepResult:
+        """File what trying an idea showed, and discard the candidate.
+
+        Never promoted, whatever the verdict and whatever auto_promote says:
+        an idea becomes work only when a human approves it (rule 24). The
+        verdict and the diff are evidence for that decision, nothing more.
+        """
+        passed = state.get("passed")
+        if passed:
+            verdict = f"validated in generation {number}"
+        elif passed is False:
+            reason = state.get("review_failure") or state.get("error") or "validation failed"
+            verdict = f"failed in generation {number}: {excerpt(str(reason), 160)}"
+        else:
+            verdict = f"generation {number} changed nothing that could be validated"
+        generation = evolver.candidate(number)
+        key = str(state.get("pick_key", ""))
+        await evolver.record_preview(generation, key, verdict)
+        await evolver.decide_candidate(
+            number, promote=False, objective=str(state.get("objective", ""))
+        )
+        await evolver.reset_pipeline()
+        return StepResult(
+            summary=f"{key.replace(':', ' #')} tried: {verdict}; discarded, never landed",
+            fact=f"{key} was previewed: {verdict}",
+            phase=AgentPhase.ACTING,
             achieved=True,
         )
 

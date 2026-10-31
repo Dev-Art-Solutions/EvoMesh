@@ -402,6 +402,18 @@ regresses.
     no human answers. A backlog that fills itself is what the steps and the vetting exist
     to prevent, and a proposal nobody reviewed is not a decision.
 
+    **Amended 2026-10-31: a waiting idea is tried, never landed.** The Evolver sat idle for
+    twenty days (empty backlog, ten ideas waiting) while the human rejected more than half of
+    them by reading code by hand, some plainly wrong once tried. With nothing evidenced left,
+    `_open` now asks `EnvironmentEvolver.preview_pick` before scouting: the oldest pending idea
+    not yet tried gets its first step run exactly like a backlog step (`PICK_PREVIEW`, same
+    work order, validation and review). `_report` sends it to `_finish_preview`, which files the
+    verdict and diff on the idea (`preview:` in ideas.md, the full patch in
+    `workspace/idea-previews/<n>.patch`, a 🧪 announcement) and **discards the candidate
+    whatever the verdict and whatever `auto_promote` says**. This does not move the gate: an
+    idea still becomes work only by a human's approval. `evolution.preview_ideas` (on) turns
+    it off.
+
 ## How a generation is authored
 
 **A generation is a harness job in the candidate workspace.** The propose stage builds an objective
