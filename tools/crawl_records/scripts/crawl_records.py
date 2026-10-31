@@ -48,6 +48,9 @@ DEFAULT_PAGES = 20
 # Inside TOOL.md's timeout_seconds (600), with room to write the CSV.
 TIME_BUDGET = 540
 RESULTS = Path("results")
+# r.jina.ai hands back a page as Markdown: the JSON a listing is drawn from
+# does not survive it, so it is no way to read records.
+NOT_DATA = {"reader"}
 # Columns a reader looks for first, when a record has them.
 FIRST = ("id", "name", "title", "url")
 # Where a record keeps its own page, in the order tried.
@@ -262,6 +265,10 @@ def _start_page(url: str, param: str) -> int:
         return 1
 
 
+def urlsplit_host(url: str) -> str:
+    return urllib.parse.urlsplit(url).netloc
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "records"
 
@@ -296,10 +303,36 @@ def collect(request: dict, config: dict, *, budget: float = TIME_BUDGET) -> dict
             result["next"] = number
             break
         target = page_url(source, param, number, extra) if number != 1 or extra else source
+        names = [
+            name
+            for name in strategies or webfetch.order(config, urlsplit_host(target), memory)
+            if name not in NOT_DATA
+        ]
         page = webfetch.fetch(
-            target, config, strategies=strategies, deadline=deadline - 5, memory=memory
+            target, config, strategies=names, deadline=deadline - 5, memory=memory
         )
         items, meta, where, score = records_in(page.raw, path) if page.raw else ([], {}, "", 0)
+        # Found live 2026-11-01: page 1 came through curl, page 2 met
+        # Cloudflare there and the chain's next "ok" was a copy with no data
+        # in it -- and the crawl stopped at 2 of 200 pages. Once a listing
+        # has given records, a page without any is tried the remaining ways
+        # before it counts as the end.
+        while (
+            not items
+            and result["records"]
+            and page.strategy in names
+            and not any(item.verdict == "missing" for item in page.attempts)
+            and time.monotonic() < deadline - 45
+        ):
+            names = names[names.index(page.strategy) + 1 :]
+            if not names:
+                break
+            page = webfetch.fetch(
+                target, config, strategies=names, deadline=deadline - 5, memory=memory
+            )
+            items, meta, where, score = (
+                records_in(page.raw, path) if page.raw else ([], {}, "", 0)
+            )
         if number == start and source == url and not (page.raw and is_data(page.raw)):
             # An HTML page: its JSON twin, when there is one, usually holds
             # the real records, and what the page embeds is often a menu.
@@ -307,7 +340,7 @@ def collect(request: dict, config: dict, *, budget: float = TIME_BUDGET) -> dict
             twin = (
                 webfetch.fetch(
                     page_url(variant, param, number, extra) if number != 1 else variant,
-                    config, strategies=strategies, deadline=deadline - 5, memory=memory,
+                    config, strategies=names, deadline=deadline - 5, memory=memory,
                 )
                 if variant else None
             )

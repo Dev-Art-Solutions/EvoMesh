@@ -1711,3 +1711,33 @@ async def test_a_report_written_as_markdown_blocks_is_rewritten_not_lost(
 
     assert len(announced) == 1
     assert "XAUUSD bearish (medium): Gold tilts lower -- rate-hike bets" in announced[0]
+
+
+async def test_a_paraphrased_plan_step_hands_the_harness_the_goals_own_words(
+    tmp_path: Path,
+) -> None:
+    """Found live 2026-11-01: the plan said "Crawl the Kickstarter discover URL
+    using crawl_records with the specified file name and max_pages parameter"
+    and the harness job, seeing only that, guessed the URL and the file."""
+    from evomesh.bdi import _goal_details
+    from tests.fakes import FakeHarness
+
+    definition = AgentDefinition(name="Crawler", purpose="Crawl", harness_root=str(tmp_path))
+    memory = AgentMemory(tmp_path / "workspace", definition)
+    await memory.ensure()
+    harness = FakeHarness([[]], answer="done")
+    context = CycleContext(
+        definition=definition,
+        provider=MockProvider(["should never be called"]),
+        memory=memory,
+        budget=MemoryBudget(),
+        services={"harness": harness},
+    )
+    goal = 'Collect every project on https://k.test/discover?state=live into "ks.csv", 200 pages'
+    step = PlanStep(description="Crawl the discover URL with the specified file name")
+
+    await BDIBehavior().through_harness(context, step, goal=goal)
+
+    assert harness.objectives[0].startswith(step.description)
+    assert goal in harness.objectives[0]
+    assert _goal_details(goal, goal) == ""  # a step that is the goal, verbatim

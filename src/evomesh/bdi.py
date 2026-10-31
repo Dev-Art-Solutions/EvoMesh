@@ -814,6 +814,29 @@ def _has_goal(mind: MindState, intention: Intention) -> bool:
     return any(goal.id == intention.goal_id for goal in mind.goals)
 
 
+def _goal_description(mind: MindState, intention: Intention) -> str:
+    return next((g.description for g in mind.goals if g.id == intention.goal_id), "")
+
+
+def _goal_details(step: str, goal: str) -> str:
+    """The goal's own words for a harness job whose step paraphrases it.
+
+    Found live 2026-11-01: a human gave the Crawler a goal naming the exact
+    Kickstarter URL (its filters in the query), the CSV file name and 200
+    pages; the plan turned it into "Crawl the Kickstarter discover URL using
+    crawl_records with the specified file name and max_pages parameter", and
+    the harness job -- which saw only that step -- guessed /discover/featured
+    (a 404), then the bare /discover, a file name it found on disk and 20
+    pages. A step that is the goal verbatim (a scheduled goal's) needs nothing."""
+    goal = goal.strip()
+    if not goal or goal in step:
+        return ""
+    return (
+        "\n\nThis step is part of this goal -- take every URL, file name, number "
+        f"and other detail from it exactly as written:\n{goal}"
+    )
+
+
 class BDIBehavior:
     """Base for every agent behavior. Subclasses override the BDI hooks.
 
@@ -878,7 +901,8 @@ class BDIBehavior:
     async def execute(
         self, context: CycleContext, intention: Intention, step: PlanStep
     ) -> StepResult:
-        if (harness_step := await self.through_harness(context, step)) is not None:
+        goal = _goal_description(context.definition.mind, intention)
+        if (harness_step := await self.through_harness(context, step, goal=goal)) is not None:
             return harness_step
         instruction = (
             f"Your current plan is:\n{intention.render()}\n\n"
@@ -905,10 +929,12 @@ class BDIBehavior:
         )
 
     async def through_harness(
-        self, context: CycleContext, step: PlanStep
+        self, context: CycleContext, step: PlanStep, *, goal: str = ""
     ) -> StepResult | None:
         """Take this step with tools, if the agent was granted them and it looks
-        like a step that needs to look at something.
+        like a step that needs to look at something. `goal` is the text of
+        the goal the step belongs to; the job gets it too when the step is a
+        paraphrase of it.
 
         Deliberately decided by a verb rather than by asking the model. That
         would be one extra inference per cycle to answer a question a prefix
@@ -937,7 +963,7 @@ class BDIBehavior:
                 else ""
             )
             job = harness.submit(
-                f"{step.description}\n\n"
+                f"{step.description}{_goal_details(step.description, goal)}\n\n"
                 f"Work inside this directory and report what you found.{learn_hint}",
                 agent_id=context.definition.id,
                 root=Path(root),

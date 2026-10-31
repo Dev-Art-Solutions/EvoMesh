@@ -255,3 +255,52 @@ def test_the_installed_copy_matches_the_template() -> None:
         template = TEMPLATE_TOOLS / "crawl_records" / name
         installed = ROOT / "tools" / "crawl_records" / name
         assert installed.read_bytes() == template.read_bytes(), name
+
+
+def test_a_page_without_records_mid_listing_is_tried_the_remaining_ways(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Found live: page 1 came through curl, page 2 met a wall there and the
+    next "ok" was a text copy with no data -- the crawl stopped at page 2."""
+    monkeypatch.chdir(tmp_path)
+    webfetch = crawl_records.webfetch
+    calls: list[tuple[str, int]] = []
+
+    def listing(page: int) -> str:
+        if page > 3:
+            return ""
+        return json.dumps({"projects": [_project(page * 10 + n) for n in range(4)]})
+
+    def number(url: str) -> int:
+        return int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["page"][0])
+
+    def fast(url: str, timeout: float) -> Any:
+        page = number(url)
+        calls.append(("fast", page))
+        if page == 2:  # walled for this one, this time
+            return webfetch.Raw(body="<html><body>" + "<p>words</p>" * 30 + "</body></html>",
+                                url=url, status=200)
+        if not listing(page):
+            return webfetch.Raw(body="<p>Not found</p>", url=url, status=404)
+        return webfetch.Raw(body=listing(page), url=url, status=200)
+
+    def slow(url: str, timeout: float) -> Any:
+        calls.append(("slow", number(url)))
+        return webfetch.Raw(body=listing(number(url)), url=url, status=200)
+
+    def reader(url: str, timeout: float) -> Any:
+        calls.append(("reader", number(url)))
+        raise AssertionError("a Markdown copy is never a way to read records")
+
+    monkeypatch.setattr(webfetch, "STRATEGIES", {"fast": fast, "reader": reader, "slow": slow})
+    config = _config(strategies=["fast", "reader", "slow"], respect_robots=False)
+
+    result = crawl_records.collect(
+        {"url": "https://list.test/discover?format=json&page=1", "max_pages": 10}, config
+    )
+
+    assert len(result["records"]) == 12
+    # What got page 2 is remembered for the site and tried first from then on.
+    assert calls[:4] == [("fast", 1), ("fast", 2), ("slow", 2), ("slow", 3)]
+    assert not any(name == "reader" for name, _ in calls)
+    assert result["stopped"].startswith("the site has no page 4")
