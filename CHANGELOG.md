@@ -4,6 +4,23 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `sed` works in the harness shell, after a pipe and over a file: `-n`,
+  `-E`, `-e`, addresses (`N`, `$`, `/re/`, ranges, `!`) and `p`, `d`, `q`,
+  `=`, `s///`. It is applied in Python, never run; `-i` and `w` are refused.
+- `test -f x` and `[ -d x ]` answer with an exit code, inside the job root
+  only.
+- A missing file named like one of the job's tools (`recent_reports.json`)
+  says that it is a tool to call.
+
+### Fixed
+
+- A quoted `|` or `&&` (`grep '|'`) was parsed as an operator. The shell
+  now has its own POSIX tokenizer that remembers quoting.
+- `grep` without `-E` read a bare `|` as alternation and matched every
+  line; `| + ? ( ) { }` are literal in a basic regular expression.
+
 ## [0.5.0-alpha.1] - 2026-10-31
 
 Agents that reach further and refuse less. The harness's shell now runs the
