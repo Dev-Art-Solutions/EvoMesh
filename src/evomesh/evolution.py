@@ -1564,6 +1564,10 @@ class EnvironmentEvolver:
         # result goes (number, verdict, diff). Both None: no previews.
         self.preview_source: Callable[[], list[tuple[int, Improvement]]] | None = None
         self.preview_sink: Callable[[int, str, str], None] | None = None
+        # Where a preview's whole patch and its record are kept, so a human
+        # who approves the idea gets exactly the change they saw tried.
+        self.preview_dir: Path | None = None
+        self._preview_items: dict[int, tuple[str, int]] = {}
         # What the last publish attempt did, so the cycle that applied the
         # generation can put it in the sentence a human actually reads.
         self.last_publish: str = ""
@@ -1993,6 +1997,7 @@ class EnvironmentEvolver:
             needle = step_needle(item, step)
             if sum(text.startswith(needle) for text in recent) >= MAX_TARGET_ATTEMPTS:
                 continue
+            self._preview_items[number] = (item.title, step.number)
             return ObjectivePick(
                 kind=PICK_PREVIEW,
                 objective=step_objective(item, step),
@@ -2003,13 +2008,92 @@ class EnvironmentEvolver:
             )
         return None
 
-    async def record_preview(self, generation: Generation, key: str, verdict: str) -> None:
-        """Hand a preview's verdict and diff to whoever files them."""
+    async def record_preview(
+        self, generation: Generation, key: str, verdict: str, *, passed: bool = False
+    ) -> None:
+        """Keep a preview's whole patch and its record, and hand the verdict
+        to whoever files it on the idea."""
         number = int(key.removeprefix("idea:") or 0) if key.startswith("idea:") else 0
-        if not number or self.preview_sink is None:
+        if not number:
             return
-        diff = await self.candidate_diff(generation)
-        self.preview_sink(number, verdict, diff)
+        # Whole, not clipped like a review's evidence: this patch may be the
+        # one that lands (see approved_patch).
+        diff = await self.candidate_diff(generation, limit=1_000_000)
+        title, step = self._preview_items.get(number, ("", 0))
+        if self.preview_dir is not None and title:
+            record = {
+                "idea": number,
+                "title": title,
+                "step": step,
+                "passed": passed,
+                "verdict": verdict,
+                "generation": generation.number,
+            }
+            try:
+                await asyncio.to_thread(self.preview_dir.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(
+                    (self.preview_dir / f"{number}.patch").write_text, diff, encoding="utf-8"
+                )
+                await asyncio.to_thread(
+                    (self.preview_dir / f"{number}.json").write_text,
+                    json.dumps(record),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("could not keep idea #%s's preview: %s", number, exc)
+        if self.preview_sink is not None:
+            self.preview_sink(number, verdict, diff)
+
+    def approved_patch(self, title: str, step: int) -> str | None:
+        """The patch a validated preview of this item's step produced, if any.
+
+        The item reached the backlog because a human approved its idea after
+        seeing this very change tried; landing it again from a fresh harness
+        job would spend minutes of GPU to produce something the human never
+        saw."""
+        if self.preview_dir is None or not self.preview_dir.is_dir():
+            return None
+        for path in sorted(self.preview_dir.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(record, dict)
+                and record.get("passed") is True
+                and str(record.get("title", "")).casefold() == title.casefold()
+                and int(record.get("step", 0) or 0) == step
+            ):
+                patch = path.with_suffix(".patch")
+                try:
+                    return patch.read_text(encoding="utf-8")
+                except OSError:
+                    return None
+        return None
+
+    async def apply_patch(self, generation: Generation, patch: str) -> list[str]:
+        """Apply ``patch`` to the candidate, or change nothing: the files it
+        touched, or ``[]`` when it no longer applies to the tree as it is."""
+        candidate = await self._own_repository(generation)
+        if candidate is None or "diff --git" not in patch:
+            return []
+        body = patch[patch.index("diff --git") :]
+        scratch = generation.path.parent / f".{generation.path.name}.preview.patch"
+        try:
+            await asyncio.to_thread(scratch.write_text, body, encoding="utf-8")
+            await candidate.run("apply", "--check", str(scratch))
+            touched = await candidate.run("apply", "--numstat", str(scratch))
+            await candidate.run("apply", str(scratch))
+        except (GitError, OSError) as exc:
+            logger.info(
+                "generation %s: the approved preview no longer applies: %s",
+                generation.number,
+                exc,
+            )
+            return []
+        finally:
+            await asyncio.to_thread(lambda: scratch.unlink(missing_ok=True))
+        return [line.split("\t")[-1] for line in touched.splitlines() if line.strip()]
 
     def work_order(
         self, generation: Generation, objective: str, pick: str, work: dict[str, Any]

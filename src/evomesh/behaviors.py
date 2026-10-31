@@ -1322,6 +1322,46 @@ class EvolverBehavior(BDIBehavior):
                 return (STAGE_REPORT, {"work_items": []})
             return None
 
+        if (
+            pick == PICK_IMPROVEMENT
+            and "job" not in state
+            and (
+                patch := evolver.approved_patch(
+                    str(state.get("pick_key", "")), int(state.get("pick_step", 0) or 0)
+                )
+            )
+        ):
+            # The human approved this idea after seeing this exact change
+            # tried and validated; landing it from a fresh job would spend
+            # GPU minutes on something they never saw. It is still
+            # validated and reviewed below like any other change.
+            if (touched := await evolver.apply_patch(generation, patch)) and accept(
+                touched
+            ) is None:
+                await evolver.record_harness_changes(
+                    generation,
+                    [{"kind": "edit", "path": path} for path in touched],
+                    objective,
+                    "the change a human approved after seeing it tried (idea preview)",
+                )
+                moved = {key: value for key, value in state.items() if key != "job"}
+                await evolver.set_pipeline_state(
+                    {
+                        **moved,
+                        "stage": STAGE_VALIDATE if self.auto_validate else STAGE_REPORT,
+                        "file": touched[0],
+                        "from_preview": True,
+                    }
+                )
+                return StepResult(
+                    summary=(
+                        f"generation {generation.number} took the change its idea was "
+                        f"approved on, unchanged: {', '.join(touched)}"
+                    ),
+                    fact=f"generation {generation.number} applied an approved preview",
+                    phase=AgentPhase.ACTING,
+                )
+
         return await self._through_harness(
             context,
             evolver,
@@ -1978,7 +2018,7 @@ class EvolverBehavior(BDIBehavior):
             verdict = f"generation {number} changed nothing that could be validated"
         generation = evolver.candidate(number)
         key = str(state.get("pick_key", ""))
-        await evolver.record_preview(generation, key, verdict)
+        await evolver.record_preview(generation, key, verdict, passed=bool(passed))
         await evolver.decide_candidate(
             number, promote=False, objective=str(state.get("objective", ""))
         )

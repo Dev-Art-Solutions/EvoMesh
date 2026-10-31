@@ -412,7 +412,11 @@ regresses.
     `workspace/idea-previews/<n>.patch`, a 🧪 announcement) and **discards the candidate
     whatever the verdict and whatever `auto_promote` says**. This does not move the gate: an
     idea still becomes work only by a human's approval. `evolution.preview_ideas` (on) turns
-    it off.
+    it off. Once approved, the item's step lands **the patch the human saw**: `_propose` asks
+    `approved_patch` (the evolver keeps `<n>.patch` + `<n>.json` in `preview_dir`) and
+    `apply_patch` applies it to the new candidate instead of a harness job -- then it is
+    validated and reviewed on the tree as it now stands like any change. A patch that no
+    longer applies (`git apply --check`) falls back to an ordinary job.
 
 ## How a generation is authored
 

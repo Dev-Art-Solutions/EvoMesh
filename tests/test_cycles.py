@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -3393,3 +3394,73 @@ async def test_with_previews_off_an_idle_evolver_still_waits(tmp_path: Path) -> 
 
     assert evolver.preview_pick() is None
     assert (await evolver.pipeline_state()).get("pick") != "idea-preview"
+
+
+async def test_an_approved_preview_lands_as_it_was_seen(tmp_path: Path) -> None:
+    """Approving an idea whose preview validated lands that very patch -- no
+    second harness job, nothing the human did not see -- and it is validated
+    again on the tree as it now stands before it lands."""
+    root = tmp_path / "project"
+    _seed_package(root, STEPPED_BACKLOG)
+    project = await git_project(root)
+    previews = tmp_path / "previews"
+    previews.mkdir()
+    (previews / "19.patch").write_text(
+        " src/evomesh/busy.py | 2 +-\n\n"
+        "diff --git a/src/evomesh/busy.py b/src/evomesh/busy.py\n"
+        "--- a/src/evomesh/busy.py\n"
+        "+++ b/src/evomesh/busy.py\n"
+        "@@ -4,2 +4,2 @@\n"
+        " def helper(value):\n"
+        "-    return value\n"
+        "+    return value * 2\n",
+        encoding="utf-8",
+    )
+    (previews / "19.json").write_text(
+        json.dumps({"idea": 19, "title": "Double the helper", "step": 1, "passed": True}),
+        encoding="utf-8",
+    )
+    validator = ScriptedValidator([passing()])
+    evolver, context, harness = await evolving(
+        tmp_path, project, [NOTHING], validator, StubRepairer()
+    )
+    evolver.preview_dir = previews
+    behavior = EvolverBehavior(auto_validate=True, max_repairs=2, auto_promote=True)
+
+    for _ in range(4):  # plan, propose (the patch), validate, decide
+        await behavior.cycle(context)
+
+    assert harness.objectives == [], "no harness job: the approved change was applied"
+    assert validator.calls == 1, "and validated again before it landed"
+    busy = (project / "src" / "evomesh" / "busy.py").read_text(encoding="utf-8")
+    assert "return value * 2" in busy
+    backlog = (project / "docs" / "evolution" / "improvements.md").read_text(encoding="utf-8")
+    assert "    1. [x] src/evomesh/busy.py `helper`" in backlog
+
+
+async def test_a_preview_that_no_longer_applies_falls_back_to_a_job(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    _seed_package(root, STEPPED_BACKLOG)
+    project = await git_project(root)
+    previews = tmp_path / "previews"
+    previews.mkdir()
+    (previews / "19.patch").write_text(
+        "diff --git a/src/evomesh/busy.py b/src/evomesh/busy.py\n"
+        "--- a/src/evomesh/busy.py\n+++ b/src/evomesh/busy.py\n"
+        "@@ -4,2 +4,2 @@\n def nothing_like_this(value):\n-    return 0\n+    return 1\n",
+        encoding="utf-8",
+    )
+    (previews / "19.json").write_text(
+        json.dumps({"title": "Double the helper", "step": 1, "passed": True}), encoding="utf-8"
+    )
+    doubled = BUSY_SOURCE.replace("return value", "return value * 2")
+    evolver, context, harness = await evolving(
+        tmp_path, project, [[("src/evomesh/busy.py", doubled)]], ScriptedValidator([passing()])
+    )
+    evolver.preview_dir = previews
+    behavior = EvolverBehavior(auto_validate=True, auto_promote=True)
+
+    await behavior.cycle(context)
+    await behavior.cycle(context)
+
+    assert len(harness.objectives) == 1, "the stale patch was skipped, a job did the step"

@@ -14,7 +14,11 @@ All notable changes to EvoMesh are documented in this file.
   on the idea (`/ideas`, `/idea show`, Telegram), and the whole diff goes to
   `workspace/idea-previews/<n>.patch`. Approval stays the human's (rule 24).
   `evolution.preview_ideas: false` turns it off. Before this, the mesh sat on
-  generation 1687 for twenty days while ten ideas waited.
+  generation 1687 for twenty days while ten ideas waited. Once you approve a
+  previewed idea whose change validated, its step lands **that patch**: no
+  second harness job, nothing you did not see. It is still validated again on
+  the tree as it stands, and a patch that no longer applies falls back to an
+  ordinary job.
 - **`news_fetch` remembers what it showed you.** With `"unseen": true` it
   returns only headlines this agent has never been handed. The memory is
   `.news_seen.json` in the agent's own playground, keyed by a folded title so

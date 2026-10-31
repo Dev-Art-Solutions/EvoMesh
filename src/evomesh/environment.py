@@ -252,6 +252,7 @@ class Environment:
                 (idea.number, idea.item) for idea in self.ideas.pending() if not idea.preview
             ]
             self.evolver.preview_sink = self._idea_preview
+            self.evolver.preview_dir = settings.workspace_path / "idea-previews"
         self._idea_tasks: set[asyncio.Task[bool]] = set()
         # Set when a generation has landed in the tree this process is not
         # running. Whoever owns the process -- __main__, a test, a script --
@@ -750,21 +751,15 @@ class Environment:
         return True
 
     def _idea_preview(self, number: int, verdict: str, diff: str) -> None:
-        """File a preview on its idea, keep the whole diff beside the ideas,
-        and tell the human -- scheduled, the stage that calls this is not
-        waiting for it."""
+        """File a preview on its idea and tell the human -- scheduled, the
+        stage that calls this is not waiting for it. The evolver keeps the
+        patch itself (EnvironmentEvolver.preview_dir)."""
         stat = diff.split("\n\n", 1)[0].strip().splitlines()
         size = stat[-1].strip() if stat else ""
         summary = f"{verdict} -- {size}" if size else verdict
-        patch = self.settings.workspace_path / "idea-previews" / f"{number}.patch"
 
         async def file() -> bool:
-            try:
-                await asyncio.to_thread(patch.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(patch.write_text, diff, encoding="utf-8")
-            except OSError as exc:
-                logger.warning("could not keep idea #%s's preview diff: %s", number, exc)
-            filed = await self.ideas.record_preview(number, f"{summary} (diff: {patch.name})")
+            filed = await self.ideas.record_preview(number, f"{summary} (diff: {number}.patch)")
             if filed:
                 await self.announce(f"🧪 Idea #{number} tried: {summary}. /idea show {number}")
             return filed
