@@ -957,6 +957,10 @@ class CandidateWorkspace:
                 ignored.add(name)
         return set(ignored)
 
+    async def is_own_repository(self) -> bool:
+        """Whether repository_root is a repository of its own (rule 11)."""
+        return await self._repository_root_is_a_real_repository()
+
     async def _repository_root_is_a_real_repository(self) -> bool:
         """Whether `repository_root` is actually the top of its own git
         repository, rather than a plain directory `git -C` would silently
@@ -1072,14 +1076,25 @@ class CandidateWorkspace:
         prunable = [pair for pair in numbered if pair[0] not in protected]
         overflow = min(max(0, len(prunable) - keep), max_per_call)
         removed: list[int] = []
+        # Rule 11, the check create() already makes: `git -C <root>` walks up
+        # to the nearest ancestor .git when <root> has none of its own. Found
+        # 2026-10-31 by tracing the suite: a test's plain `source` folder under
+        # .pytest-tmp sent `git worktree remove --force`, `git branch -D
+        # evomesh/candidate-NNNNNN` and `git worktree prune` to this project's
+        # own repository -- the live mesh's branches have the same names.
+        own = await self._repository_root_is_a_real_repository() if overflow else False
         for number, path in prunable[:overflow]:
-            await self._remove_generation_worktree(number, path)
+            if own:
+                await self._remove_generation_worktree(number, path)
+            else:
+                await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
             removed.append(number)
-        if removed:
+        if removed and own:
             await run_command("git", "-C", str(self.repository_root), "worktree", "prune")
         return removed
 
     async def _remove_generation_worktree(self, number: int, path: Path) -> None:
+        """Only for a repository_root that is its own repository (see prune_stale)."""
         result = await run_command(
             "git", "-C", str(self.repository_root), "worktree", "remove", "--force", str(path)
         )
@@ -1583,7 +1598,15 @@ class EnvironmentEvolver:
     # -- baseline -------------------------------------------------------
 
     async def baseline_key(self) -> str:
-        """HEAD plus a digest of uncommitted tracked changes; "" outside git."""
+        """HEAD plus a digest of uncommitted tracked changes; "" outside git.
+
+        "Outside git" includes a plain folder inside some other repository:
+        without the check, git walked up and keyed the verdict on that
+        repository instead -- found 2026-10-31 tracing the suite, a test's
+        scratch tree running `git status` on this very checkout.
+        """
+        if not await self.workspace.is_own_repository():
+            return ""
         repository = GitRepository(self.workspace.repository_root)
         try:
             head = await repository.current_commit()

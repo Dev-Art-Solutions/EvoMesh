@@ -15,11 +15,13 @@ from evomesh.environment import Environment, HealthState
 from evomesh.evolution import (
     CandidateValidator,
     CandidateWorkspace,
+    EnvironmentEvolver,
     Generation,
     GenerationStatus,
     GenerationSupervisor,
     uv_executable,
 )
+from evomesh.git import GitRepository
 from evomesh.harness_tools import ALL_TOOLS, ToolContext, ToolRegistry
 from evomesh.messaging import MessageBus
 from evomesh.models import (
@@ -32,6 +34,7 @@ from evomesh.models import (
 from evomesh.permissions import FilesystemPolicy, PermissionDeniedError
 from evomesh.storage import SQLiteRepository
 from tests.fakes import wipe_database
+from tests.test_cycles import git_project
 
 
 @pytest.fixture
@@ -937,3 +940,30 @@ async def test_a_failure_that_is_not_a_wipe_still_raises(repository: SQLiteRepos
     """Rebuilding fixes a missing schema and nothing else, so nothing else is swallowed."""
     with pytest.raises(sqlite3.OperationalError, match="no such column"):
         await repository._all("SELECT nope FROM agents")
+
+
+async def test_pruning_a_plain_folder_never_reaches_the_repository_around_it(
+    tmp_path: Path,
+) -> None:
+    """Rule 11 for prune_stale, which create() already obeyed: a plain folder
+    inside some other repository gets its candidate directories deleted,
+    and no git command reaches the outer repository. Found by tracing the
+    suite: `git branch -D evomesh/candidate-NNNNNN` and `git worktree prune`
+    sent to this very checkout from a test's scratch folder."""
+    outer = await git_project(tmp_path / "outer")
+    await GitRepository(outer).run("branch", "evomesh/candidate-000002")
+    source = outer / "source"
+    source.mkdir()
+    (source / "app.py").write_text("ACTIVE = True", encoding="utf-8")
+    workspace = CandidateWorkspace(source, tmp_path / "runtime")
+    for objective in ("first", "second", "third"):
+        generation = await workspace.create(objective)
+        workspace.supervisor.discard(generation.number)
+
+    removed = await workspace.prune_stale(keep=0)
+    branches = await GitRepository(outer).run("branch", "--list", "evomesh/*")
+    key = await EnvironmentEvolver(workspace, SQLiteRepository(tmp_path / "d.db")).baseline_key()
+
+    assert removed, "the candidate directories themselves are still cleaned up"
+    assert "evomesh/candidate-000002" in branches, "the outer repository was not touched"
+    assert key == "", "and no verdict is keyed on somebody else's repository"

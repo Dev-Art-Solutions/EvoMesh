@@ -41,6 +41,16 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **Git commands could reach the repository around a plain folder.** I
+  traced every git call the suite makes (`GIT_TRACE_SETUP`). A scratch folder
+  without its own `.git` sent `git status`, `git worktree remove --force`,
+  `git branch -D evomesh/candidate-NNNNNN` and `git worktree prune` to the
+  real checkout, the one a live mesh may be using. `prune_stale` and
+  `baseline_key` now make the own-repository check `create()` already made
+  (rule 11). The tests set `GIT_CEILING_DIRECTORIES` to their temp root, so
+  git cannot climb out of it at all. Every mesh git call passes
+  `--no-optional-locks`, so polling `git status` never takes
+  `.git/index.lock`. A stale empty lock had blocked commits twice that day.
 - **A candidate was failed for a root file it inherited.** The hygiene
   check ran the live process's `KNOWN_ROOT_FILES`, not the candidate's, so
   when `.mailmap` was committed without a list entry, every candidate failed.

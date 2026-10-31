@@ -104,6 +104,14 @@ class GitRepository:
             f"user.name={self.identity.name}",
             "-c",
             f"user.email={self.identity.email}",
+            # A read (status, diff) never takes .git/index.lock to refresh the
+            # index on the side. The mesh polls `git status` every couple of
+            # minutes (baseline_key); without this, a human's own commit in
+            # the same checkout could collide with it, and a poll killed by a
+            # restart left the empty lock behind that blocked the next commit
+            # (2026-10-10, twice on 2026-10-31). Required locks -- add, commit
+            # -- are unaffected.
+            "--no-optional-locks",
             *arguments,
         )
         if result.exit_code != 0:

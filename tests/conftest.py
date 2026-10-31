@@ -1,8 +1,28 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """No git command a test starts can walk up out of the test temp root.
+
+    Found 2026-10-31 with GIT_TRACE_SETUP over the whole suite: a scratch
+    folder with no .git of its own (under .pytest-tmp, inside this checkout)
+    sent `git status`, `git worktree prune` and `git branch -D` to this
+    project's own repository -- the one a live mesh may be using at that
+    very moment. git stops looking for a repository at a ceiling directory,
+    so a test's own `git init` still works and the checkout is out of reach.
+    """
+    basetemp = config.option.basetemp
+    if basetemp:
+        ceiling = str(Path(basetemp).resolve())
+        current = os.environ.get("GIT_CEILING_DIRECTORIES", "")
+        os.environ["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(
+            part for part in (current, ceiling) if part
+        )
 
 
 @pytest.fixture(autouse=True)
