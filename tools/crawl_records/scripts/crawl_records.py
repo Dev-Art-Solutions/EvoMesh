@@ -354,6 +354,8 @@ def collect(request: dict, config: dict, *, budget: float = TIME_BUDGET) -> dict
                 )
                 if variant else None
             )
+            if twin is not None:
+                result["twin"] = twin
             if twin is not None and twin.raw and is_data(twin.raw):
                 found = records_in(twin.raw, path)
                 if found[3] > score:
@@ -362,6 +364,7 @@ def collect(request: dict, config: dict, *, budget: float = TIME_BUDGET) -> dict
                     result["source"] = variant
         result["trail"] = page.trail()
         if not items:
+            result["empty"] = page
             if any(item.verdict == "missing" for item in page.attempts):
                 # Found live: Kickstarter's discover stops at page 200 and
                 # answers 404 from there on, though it counts 20,300 projects.
@@ -440,6 +443,30 @@ def store(result: dict, request: dict) -> tuple[Path, int, int, int]:
     return target, len(rows), len(rows) - before, len(header)
 
 
+def evidence(result: dict) -> list[str]:
+    """What came back when no records did, kept whole under crawls/ and its
+    start shown: "no records" alone cannot tell a bot wall from a wrapper
+    this tool does not know (found live: Scrapling's browser view of a JSON
+    URL read as no data, and nothing showed what it had saved)."""
+    lines: list[str] = []
+    for label, page in (("page", result.get("empty")), ("JSON twin", result.get("twin"))):
+        if page is None:
+            continue
+        head = " ".join(page.raw[:240].split()) if page.raw else "(nothing)"
+        lines.append(f"{label} {page.url} [{page.trail()}] began: {head}")
+        if page.raw:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            name = f"{stamp}-records-{_slug(label)}-{page.strategy}.raw.html"
+            target = Path.cwd() / "crawls" / name
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(page.raw, encoding="utf-8")
+                lines.append(f"  saved whole: {target.relative_to(Path.cwd()).as_posix()}")
+            except OSError:
+                pass
+    return lines
+
+
 def render(
     result: dict, request: dict, saved: Path | None, total: int, added: int, width: int
 ) -> str:
@@ -449,6 +476,7 @@ def render(
         lines.append(f"No records found at {result['url']}: {result['stopped']}.")
         if result["trail"]:
             lines.append(f"Tried: {result['trail']}")
+        lines += evidence(result)
         lines.append(
             "The page shows no list of records as data. Use crawl_site for its text, "
             "or fetch_page with probe: true if it was blocked."
