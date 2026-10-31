@@ -44,7 +44,7 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `memory.py` | `memory.md` append + compaction, `context.md` rewrite |
 | `evolution.py` | the whole generational pipeline: supervisor metadata, candidates, validation, repair, promotion, publishing, backlog |
 | `codebase.py` | `project_map()` — surveys `src/evomesh/`, resolves the import graph, marks load-bearing vs dead |
-| `harness.py`, `harness_tools.py`, `harness_session.py`, `harness_queue.py` | the tool loop, its tools (`read`/`grep`/`ls`/`edit`/`write`/`shell`/`fetch`), its JSONL record, and the job queue an agent submits work to. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
+| `harness.py`, `harness_tools.py`, `harness_script.py`, `harness_session.py`, `harness_queue.py` | the tool loop, its tools (`read`/`grep`/`ls`/`edit`/`write`/`shell`/`fetch`), the shell's word-only script parser and pipe filters (pure, no I/O), its JSONL record, and the job queue an agent submits work to. **Flat modules on purpose** — `codebase.py` globs `*.py` one level deep, so a subpackage would be invisible to the reachability ratchet and absent from the map the Evolver is given |
 | `git.py` | `GitRepository`, `GitIdentity`, `PublishPolicy` — per-invocation identity, never `git config` |
 | `storage.py` | SQLite behind a repository; nothing else opens the database |
 | `models.py` | Ollama / OpenAI-compatible providers, per-request model, `timeout_seconds` |

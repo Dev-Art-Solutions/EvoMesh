@@ -480,7 +480,22 @@ class AgentTemplateRegistry:
 
 def _merge_new_config_keys(bundled: Path, target: Path) -> list[str]:
     """Top-level keys the template's config.json has and the agent's copy
-    lacks, written into the copy; existing keys keep the agent's values."""
+    lacks, written into the copy; existing keys keep the agent's values.
+
+    No copy at all gets the whole file. Found 2026-10-31: NewsAnalyzer was
+    spawned before instantiate() copied config.json into the playground, so
+    it never had one -- and 499 of its last 501 harness jobs went looking for
+    it (`find / -name config.json`, os.walk over C:), because its skill says
+    the instruments and min_confidence live there. Merging keys into a file
+    that does not exist used to return nothing, every boot."""
+    if not target.exists():
+        if not bundled.is_file() or not target.parent.is_dir():
+            return []
+        try:
+            shutil.copyfile(bundled, target)
+        except OSError:
+            return []
+        return ["config.json"]
     try:
         source = json.loads(bundled.read_text(encoding="utf-8"))
         current = json.loads(target.read_text(encoding="utf-8"))

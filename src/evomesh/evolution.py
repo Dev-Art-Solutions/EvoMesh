@@ -103,8 +103,9 @@ BACKLOG_DIR = Path("docs") / "evolution"
 # writes anything. Said once, up front, in every stage that explores the tree.
 TOOL_USAGE_HINT = (
     "- Use the `ls`, `read` and `grep` tools directly to explore the tree -- "
-    "`shell` only runs `python`, nothing else, so `shell: ls` (or any other "
-    "unix command) is always denied. `docs/evolution/plans` does not exist "
+    "`shell` only runs `python`; `shell: ls` and the like are answered "
+    "through those same tools at best, a step spent for nothing. "
+    "`docs/evolution/plans` does not exist "
     "until you write the first file into it, so `ls`/`read` against it "
     "report 'does not exist', not a permissions problem -- that is expected, "
     "not a reason to retry the same call.\n"

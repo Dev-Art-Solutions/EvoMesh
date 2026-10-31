@@ -6,6 +6,37 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **The harness's shell takes the commands models actually write.** Lessons
+  from OpenAI's Codex CLI, measured against the last 501 harness sessions,
+  where 36% of all tool calls were refused:
+  - A script of plain commands joined by `&&`, `||`, `;` and `|` runs as that
+    sequence (Codex's "word-only command sequence"). Each command still goes
+    through `harness.shell_allow` or the read-only translation on its own, and
+    `head`, `tail`, `grep`, `wc`, `sort`, `uniq` and `cat` after a pipe are
+    applied to the text, never run. `2>&1`, `2>/dev/null` and `>/dev/null`
+    are accepted; a redirect into a file is still refused. Replayed, 87% of
+    the 1,962 refused shell calls would now run.
+  - `python3 - <<'EOF' ... EOF` runs as `python -c`.
+  - `find` understands `-type`, `-path`, `-not`/`!`, `-o`, `-maxdepth` and the
+    `-prune` idiom. `find /` searches the job root and says so.
+  - A program no longer inherits stdin: one that reads it gets end-of-file
+    instead of hanging until the timeout.
+  - A command that times out returns what it printed before it was stopped.
+  - Long command output keeps its start and its end (one third and two
+    thirds), so a test run's verdict on its last line reaches the model.
+  - `edit` lands an anchor that misses only by trailing whitespace, a
+    consistent indentation shift (with `new` shifted the same way),
+    typographic quotes and dashes, or copied `NNNNN| ` prefixes. It does so
+    only when exactly one place matches (Codex `apply_patch`'s
+    `seek_sequence`).
+  - `write` replaces a file this job has already read without
+    `"overwrite": true`.
+- Fixed: an agent spawned from a template before `config.json` was copied
+  into playgrounds never got one, and the merge of new keys skipped a missing
+  file. NewsAnalyzer spent most of its jobs hunting for it. A missing copy is
+  now restored whole at startup.
+- Fixed: `.mailmap` is a known root file, so CI is green again.
+
 - **The Crawler finds another way in.** Give it a URL and it no longer stops
   at the first fetcher that fails. Every page goes through a fallback chain:
   Scrapling, plain HTTP, curl, a headless browser, the stealth browser, the

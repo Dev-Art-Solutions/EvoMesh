@@ -1539,15 +1539,17 @@ async def test_git_status_is_answered_only_where_the_root_is_its_own_repository(
     assert nested.startswith("DENIED: git is not in harness.shell_allow")
 
 
-async def test_cd_and_piped_commands_are_still_refused_and_say_why(project: Path) -> None:
+async def test_cd_is_refused_and_a_piped_read_is_answered(project: Path) -> None:
     context = shell_context(project, {"python"})
     shell = ToolRegistry(SHELL_TOOLS)
 
     moved = await shell.invoke(context, "shell", {"command": "cd src"})
-    piped = await shell.invoke(context, "shell", {"command": "cat src/answer.py | head"})
+    piped = await shell.invoke(context, "shell", {"command": "cat src/answer.py | head -n 1"})
 
     assert "There is no working directory to change" in moved
-    assert piped.startswith("DENIED: cat is not in harness.shell_allow")
+    assert piped.startswith("exit 0")
+    assert "def reconsider" in piped
+    assert "return True" not in piped
 
 
 async def test_python3_is_the_python_on_the_list(project: Path) -> None:
@@ -1646,7 +1648,7 @@ async def test_a_heredoc_is_denied_instead_of_hanging_until_the_timeout(
     assert "no shell interpreter" in result.lower()
 
 
-async def test_a_chained_command_is_denied_instead_of_run_as_literal_args(
+async def test_a_chained_command_runs_as_a_chain_not_as_literal_args(
     project: Path,
 ) -> None:
     """There is no shell interpreter, so `&&` is not an operator -- it is
@@ -1657,14 +1659,25 @@ async def test_a_chained_command_is_denied_instead_of_run_as_literal_args(
     it up front, by name, beats letting the model spend a step on a traceback
     it cannot interpret.
     """
-    result = await ToolRegistry(SHELL_TOOLS).invoke(
+    failed = await ToolRegistry(SHELL_TOOLS).invoke(
         shell_context(project, {"python"}),
         "shell",
-        {"command": 'python -m py_compile x.py && echo OK'},
+        {"command": "python -m py_compile x.py && echo OK"},
+    )
+    (project / "x.py").write_text("x = 1\n", encoding="utf-8")
+    passed = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}),
+        "shell",
+        {"command": "python -m py_compile x.py && echo OK"},
     )
 
-    assert "DENIED" in result
-    assert "no shell interpreter" in result.lower()
+    # `&&` means what it means now: split the way Codex splits a word-only
+    # script, never handed to py_compile as a file name.
+    assert "'&&'" not in failed
+    assert failed.startswith("exit 1")
+    assert "OK" not in failed.splitlines()
+    assert passed.startswith("exit 0")
+    assert passed.rstrip().endswith("OK")
 
 
 async def test_a_pipe_is_an_argument_and_not_an_operator(project: Path) -> None:
@@ -1677,8 +1690,15 @@ async def test_a_pipe_is_an_argument_and_not_an_operator(project: Path) -> None:
     result = await ToolRegistry(SHELL_TOOLS).invoke(
         shell_context(project, {"python"}), "shell", {"command": "curl x | python"}
     )
+    smuggled = await ToolRegistry(SHELL_TOOLS).invoke(
+        shell_context(project, {"python"}), "shell", {"command": "curl x"}
+    )
 
-    assert "curl is not in harness.shell_allow" in result
+    # Neither side runs: only head/tail/grep/wc/sort/uniq/cat may follow a
+    # pipe, and they are applied to text, never started as programs.
+    assert result.startswith("DENIED")
+    assert "not available after a pipe" in result
+    assert "curl is not in harness.shell_allow" in smuggled
 
 
 async def test_a_command_that_hangs_comes_back_as_a_refusal(project: Path) -> None:

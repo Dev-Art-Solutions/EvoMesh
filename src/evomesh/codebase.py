@@ -284,6 +284,8 @@ KNOWN_ROOT_FILES = frozenset(
     (
         ".editorconfig",
         ".gitignore",
+        # Maps the commits once authored "Test" back to the mesh (4d16bac).
+        ".mailmap",
         ".python-version",
         "AGENTS.md",
         "CHANGELOG.md",

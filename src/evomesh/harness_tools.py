@@ -21,11 +21,13 @@ import os
 import re
 import shlex
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from evomesh import harness_script
 from evomesh._agent_ids import AgentIdValidator
 from evomesh.harness_session import HarnessSession
 from evomesh.humanize import humanize_size
@@ -170,6 +172,9 @@ class ToolContext:
     skills_root: Path | None = None
     session: HarnessSession | None = None
     tally: ToolTally = field(default_factory=ToolTally)
+    # Files this job has read or written, so `write` may replace one it has
+    # actually seen without the overwrite flag (see tool_write).
+    seen: set[Path] = field(default_factory=set)
 
 
 @dataclass
@@ -362,6 +367,7 @@ async def tool_read(context: ToolContext, args: dict[str, Any]) -> str:
     if not target.is_file():
         raise _missing(context, target)
     context.tally.reads += 1
+    context.seen.add(target)
     offset = max(1, int(args.get("offset", 1) or 1))
     limit = int(args.get("limit", 0) or 0)
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -702,6 +708,129 @@ def _neighbourhoods(content: str, at: list[int], *, context_lines: int = 2) -> s
     return "\n".join(blocks)
 
 
+# A read's display prefix (`  412| `), copied into an anchor along with the code.
+_READ_PREFIX = re.compile(r"^\s*\d+\| ?")
+# Codex's apply_patch (seek_sequence.rs) folds these to ASCII before its last,
+# most lenient pass: a model writes the plain character for a typographic one.
+_TYPOGRAPHIC = str.maketrans(
+    {
+        **dict.fromkeys("‐‑‒–—―−", "-"),
+        **dict.fromkeys("‘’‚‛", "'"),
+        **dict.fromkeys("“”„‟", '"'),
+        **dict.fromkeys(
+            "            　",
+            " ",
+        ),
+    }
+)
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _shift(have: str, want: str) -> tuple[str, str] | None:
+    """How ``want``'s indentation becomes ``have``'s: ("+", text) to add,
+    ("-", text) to remove, None when the two are not one prefix apart."""
+    have_indent, want_indent = _indent(have), _indent(want)
+    if have_indent.endswith(want_indent):
+        return ("+", have_indent[: len(have_indent) - len(want_indent)])
+    if want_indent.endswith(have_indent):
+        return ("-", want_indent[: len(want_indent) - len(have_indent)])
+    return None
+
+
+def _lenient_edit(content: str, old: str, new: str) -> tuple[str, str] | None:
+    """Apply an edit whose ``old`` misses only on whitespace or punctuation.
+
+    Codex's apply_patch never refuses a hunk for that: it seeks its context
+    lines exact, then ignoring trailing whitespace, then trimmed, then with
+    typographic punctuation folded to ASCII (``seek_sequence.rs``). This
+    harness refused instead and spent the model's next step on a hint --
+    `_whitespace_miss` was written after a plan job lost two edits to copying
+    the space after `NNNNN|`. Here the same leniency, kept safe for Python:
+    a miss in *leading* whitespace only applies when every line of ``old`` is
+    off by the same prefix, and ``new`` is shifted by that same prefix, so the
+    block's own nesting is never changed. Every pass must find exactly one
+    place; two or more is the ambiguity the strict refusal exists for, so it
+    returns None and the caller refuses as before.
+    """
+    how: list[str] = []
+    old_lines = old.split("\n")
+    if all(_READ_PREFIX.match(line) for line in old_lines if line.strip()):
+        old = "\n".join(_READ_PREFIX.sub("", line, count=1) for line in old_lines)
+        new = "\n".join(_READ_PREFIX.sub("", line, count=1) for line in new.split("\n"))
+        how.append("with the read's line-number prefixes removed")
+        if len(_match_lines(content, old)) == 1:
+            return content.replace(old, new, 1), how[0]
+    whole_lines = old.endswith("\n")
+    pattern = (old[:-1] if whole_lines else old).split("\n")
+    replacement = (new[:-1] if whole_lines and new.endswith("\n") else new).split("\n")
+    if not any(line.strip() for line in pattern):
+        return None
+    lines = content.split("\n")
+    span = len(pattern)
+
+    def fold(line: str) -> str:
+        return line.rstrip().translate(_TYPOGRAPHIC)
+
+    def adjusted(at: int) -> tuple[list[str], str] | None:
+        """``replacement`` shifted to fit the block at ``at``, or None."""
+        block = lines[at : at + span]
+        shifts = {
+            _shift(have, want)
+            for have, want in zip(block, pattern, strict=True)
+            if want.strip()
+        }
+        only = shifts.pop() if len(shifts) == 1 else None
+        if only is None:
+            return None
+        direction, prefix = only
+        if not prefix:
+            return list(replacement), "ignoring trailing whitespace"
+        shifted: list[str] = []
+        for line in replacement:
+            if not line.strip():
+                shifted.append(line)
+            elif direction == "+":
+                shifted.append(prefix + line)
+            elif line.startswith(prefix):
+                shifted.append(line[len(prefix) :])
+            else:
+                return None
+        size = len(prefix.expandtabs(4))
+        said = "more" if direction == "+" else "less"
+        return shifted, f"re-indented: the file is {size} columns {said} indented than yours"
+
+    passes = (
+        (lambda have, want: have.rstrip() == want.rstrip(), False),
+        (lambda have, want: have.strip() == want.strip(), False),
+        (lambda have, want: fold(have).strip() == fold(want).strip(), True),
+    )
+    for same, folded in passes:
+        hits = [
+            at
+            for at in range(len(lines) - span + 1)
+            if all(
+                same(have, want)
+                for have, want in zip(lines[at : at + span], pattern, strict=True)
+            )
+        ]
+        if not hits:
+            continue
+        if len(hits) > 1:
+            return None
+        fitted = adjusted(hits[0])
+        if fitted is None:
+            return None
+        body, note = fitted
+        if folded:
+            note = "after folding typographic quotes, dashes and spaces to ASCII"
+        lines[hits[0] : hits[0] + span] = [] if whole_lines and not new else body
+        return "\n".join(lines), "; ".join([*how, note])
+    return None
+
+
 async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     """Replace an exact string, and refuse when it is not unique.
 
@@ -725,6 +854,13 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     content = target.read_text(encoding="utf-8")
     found = _match_lines(content, old)
     where = "/".join(_inside(context.root, target))
+    if not found and (lenient := _lenient_edit(content, old, new)) is not None:
+        updated, how = lenient
+        diff = _announce(context, target, content, updated, kind="edit")
+        target.write_text(updated, encoding="utf-8")
+        context.tally.edits += 1
+        context.seen.add(target)
+        return f"edited {where} ({how})\n{diff}" if diff else f"edited {where} ({how})"
     if not found:
         raise ToolDenied(
             f"DENIED: that text is not in {where}. It may have changed since you last "
@@ -747,6 +883,7 @@ async def tool_edit(context: ToolContext, args: dict[str, Any]) -> str:
     diff = _announce(context, target, content, updated, kind="edit")
     target.write_text(updated, encoding="utf-8")
     context.tally.edits += 1
+    context.seen.add(target)
     return f"edited {where}\n{diff}" if diff else f"edited {where}"
 
 
@@ -766,7 +903,11 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
     if target.exists():
         if target.is_dir():
             raise ToolDenied(f"DENIED: {where} is a directory")
-        if not overwrite:
+        # A file this job has read (or wrote itself) is not replaced blind, so
+        # the flag adds nothing there -- the rule Codex and Claude Code both
+        # use. Found 2026-10-31: 126 of 463 writes were this refusal, almost
+        # all a job rewriting a state file it had just read.
+        if not overwrite and target not in context.seen:
             raise ToolDenied(
                 f"DENIED: {where} already exists. Use edit to change part of it, or "
                 'pass "overwrite": true to replace the whole file.'
@@ -794,6 +935,7 @@ async def tool_write(context: ToolContext, args: dict[str, Any]) -> str:
         ) from exc
     target.write_text(content, encoding="utf-8")
     context.tally.writes += 1
+    context.seen.add(target)
     verb = "replaced" if before else "created"
     return f"{verb} {where} ({humanize_size(len(content))})\n{diff}" if diff else f"{verb} {where}"
 
@@ -886,23 +1028,6 @@ _PYTHON_ESCAPE_NEEDLES = (
     ".unlink(",
 )
 
-# There is no shell interpreter here (see the docstring below), so these
-# never act as operators -- they land as literal arguments to whatever ran
-# first, which almost always fails in a way that means nothing to the model.
-# Found live: `python -m py_compile environment.py && echo "OK"` handed
-# py_compile a nonexistent file named literally `&&` to compile next, and
-# came back as `[Errno 2] No such file or directory: '&&'` -- a step spent on
-# a self-check the model had no way to interpret, right after it had finally
-# started landing closer edits post-fabrication-nudge. `<<'EOF'` (piping a
-# heredoc script into `python -`) is the same class of mistake but worse: it
-# doesn't fail fast, it hangs for the full shell_seconds timeout, because
-# nothing here reads stdin for it -- found live burning 60 of a job's ~240
-# spent seconds on exactly that. Checked as a prefix, not exact membership:
-# shlex glues `<<'EOF'` into one token, `<<EOF`, not two.
-_SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
-_SHELL_REDIRECT_PREFIXES = ("<<", ">>", "<", ">")
-
-
 def _flag_value(parts: list[str], flag: str) -> str | None:
     """The value after ``flag`` (``-n 20``) or glued to it (``-n20``), if any."""
     for index, part in enumerate(parts):
@@ -925,6 +1050,156 @@ def _operands(parts: list[str], *, valued: tuple[str, ...] = ()) -> list[str]:
         elif not part.startswith("-") or part == "-":
             operands.append(part)
     return operands
+
+
+@dataclass
+class _FindTest:
+    kind: str  # name, iname, path, ipath, type
+    value: str
+    negated: bool = False
+
+    def holds(self, name: str, shown: str, is_dir: bool) -> bool:
+        if self.kind == "type":
+            result = is_dir if self.value == "d" else not is_dir
+        elif self.kind in ("name", "iname"):
+            fold = self.kind == "iname"
+            result = fnmatch.fnmatchcase(
+                name.lower() if fold else name, self.value.lower() if fold else self.value
+            )
+        else:
+            fold = self.kind == "ipath"
+            pattern = self.value.lower() if fold else self.value
+            result = any(
+                fnmatch.fnmatchcase(candidate.lower() if fold else candidate, pattern)
+                for candidate in (shown, f"./{shown}", f"/{shown}")
+            )
+        return result != self.negated
+
+
+_FIND_VALUED = {
+    "-name": "name",
+    "-iname": "iname",
+    "-path": "path",
+    "-ipath": "ipath",
+    "-wholename": "path",
+    "-type": "type",
+}
+
+
+async def _find(context: ToolContext, rest: list[str]) -> tuple[str, str] | None:
+    """`find` as a walk of the job root: -name/-iname/-path/-type/-maxdepth,
+    each optionally negated with -not or !, alternatives joined by -o, and the
+    `-path X -prune -o ...` idiom (an alternative ending in -prune is skipped,
+    and not descended into). Anything else (-exec, -delete, -newer, parens
+    ...) is None, so the call is refused rather than half-done.
+
+    A root outside the job (`find / -name config.json`, 851 calls in the 501
+    sessions read on 2026-10-31, most of them hunting for one file) searches
+    the job root instead and says so: nothing outside it exists for this job,
+    and "not here either" is the answer that ends the hunt.
+    """
+    roots: list[str] = []
+    tests: list[_FindTest] = []
+    groups: list[list[_FindTest]] = [tests]
+    pruned: list[list[_FindTest]] = []
+    max_depth: int | None = None
+    negate = False
+    index = 0
+    while index < len(rest) and not rest[index].startswith("-") and rest[index] != "!":
+        roots.append(rest[index])
+        index += 1
+    while index < len(rest):
+        word = rest[index]
+        value = rest[index + 1] if index + 1 < len(rest) else None
+        if word in ("-not", "!"):
+            negate = not negate
+            index += 1
+            continue
+        if word in _FIND_VALUED and value is not None:
+            if word == "-type" and value not in ("f", "d"):
+                return None
+            tests.append(_FindTest(_FIND_VALUED[word], value, negate))
+        elif word in ("-maxdepth", "-mindepth") and value is not None and value.isdigit():
+            if word == "-maxdepth":
+                max_depth = int(value)
+        elif word in ("-print", "-a", "-and"):
+            index += 1
+            continue
+        elif word in ("-o", "-or"):
+            if tests:
+                tests = []
+                groups.append(tests)
+            index += 1
+            continue
+        elif word == "-prune" and tests and not negate:
+            pruned.append(groups.pop())
+            tests = []
+            groups.append(tests)
+            index += 1
+            continue
+        else:
+            return None
+        negate = False
+        index += 2
+    notes: list[str] = []
+    bases: list[Path] = []
+    for root in roots or ["."]:
+        try:
+            base = _resolve_readable(context, root)
+        except ToolDenied:
+            notes.append(
+                f"[{root} is outside this job: nothing outside the job root exists for "
+                "it, so the job root was searched instead]"
+            )
+            base = context.root
+        if not base.exists():
+            raise _missing(context, base)
+        if base not in bases:
+            bases.append(base)
+
+    if not groups[-1] and len(groups) > 1:
+        # `-o` with nothing after it, or a trailing `-prune -o`: nothing to match.
+        groups.pop()
+    live = groups or [[]]
+
+    def matches(alternatives: list[list[_FindTest]], name: str, shown: str, is_dir: bool) -> bool:
+        return any(all(test.holds(name, shown, is_dir) for test in group) for group in alternatives)
+
+    def shown_of(path: Path) -> str:
+        return "/".join(_inside(context.root, path))
+
+    def walk() -> list[str]:
+        found: list[str] = []
+        for base in bases:
+            for directory, dirnames, filenames in os.walk(base):
+                here = Path(directory)
+                dirnames[:] = sorted(
+                    name
+                    for name in dirnames
+                    if name not in WALK_SKIP
+                    and not matches(pruned, name, shown_of(here / name), True)
+                )
+                depth = len(here.relative_to(base).parts)
+                entries = [(name, True) for name in dirnames] + [
+                    (name, False) for name in sorted(filenames)
+                ]
+                for name, is_dir in entries:
+                    if max_depth is not None and depth + 1 > max_depth:
+                        continue
+                    shown = shown_of(here / name)
+                    if matches(live, name, shown, is_dir):
+                        found.append(f"{shown}/" if is_dir else shown)
+                if max_depth is not None and depth + 1 >= max_depth:
+                    dirnames[:] = []
+        return found
+
+    hits = await asyncio.to_thread(walk)
+    cap = context.limits.result_lines
+    listing = "\n".join(hits[:cap]) or "no match"
+    if len(hits) > cap:
+        listing += f"\n[... {len(hits) - cap} more, narrow the search ...]"
+    described = " ".join(rest) or "."
+    return f"ls/grep (find {described})", "\n".join([*notes, listing])
 
 
 async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, str] | None:
@@ -985,19 +1260,7 @@ async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, s
         count = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
         return "read (line count)", f"{count} {_shown(context, target)}"
     if program == "find":
-        name = _flag_value(rest, "-name") or _flag_value(rest, "-iname")
-        roots = [part for part in _operands(rest, valued=("-name", "-iname", "-type")) if part]
-        if name:
-            base = _resolve_readable(context, roots[0] if roots else ".")
-            hits = sorted(
-                "/".join(_inside(context.root, path))
-                for path in walk_files(base, name)
-                if not SKIP_DIRECTORIES & set(_inside(context.root, path))
-            )
-            listing = "\n".join(hits[:40]) or f"no file named {name}"
-            if len(hits) > 40:
-                listing += f"\n[... {len(hits) - 40} more, narrow the name ...]"
-            return f"ls/grep (find -name {name})", listing
+        return await _find(context, rest)
     # Only where the root is its own repository (a candidate's worktree): git
     # walks up to the nearest ancestor .git otherwise (rule 11), and an agent's
     # playground under workspace/ would be shown the whole mesh's checkout.
@@ -1013,14 +1276,19 @@ async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, s
 
 
 async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
-    """Run one allowed program in the job root. The only tool that can do harm.
+    """Run allowed programs in the job root. The only tool that can do harm.
 
     Sixth of six, and off unless a human lists the programs it may run. No shell
     interpreter is involved: the command is split with shlex and executed
-    directly, so ``&&``, ``|`` and ``$(...)`` are arguments rather than
-    operators -- every allow-list that has been defeated was defeated through a
-    pipe. The first argument is matched *after* parsing, because matching the
-    raw string would let `python;curl` through wherever it is re-split later.
+    directly, so ``$(...)`` is an argument rather than an operator -- every
+    allow-list that has been defeated was defeated through a pipe. The first
+    argument is matched *after* parsing, because matching the raw string would
+    let `python;curl` through wherever it is re-split later.
+
+    A script of plain commands joined by ``&&``, ``||``, ``;`` and ``|`` is
+    split by harness_script (see its docstring for the numbers) and each
+    command goes through exactly this allow-list on its own; what follows a
+    pipe is applied to the text in Python, never run.
     """
     raw = str(args.get("command") or "").strip()
     if not raw:
@@ -1030,6 +1298,9 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
             "DENIED: no command may be run. List the programs you trust in "
             "harness.shell_allow in evomesh.yaml."
         )
+    heredoc = harness_script.heredoc_command(raw)
+    if heredoc is not None:
+        return await _single_command(context, heredoc, raw)
     try:
         # POSIX rules even on Windows, deliberately. In non-POSIX mode shlex
         # keeps the quotes, so `python -c "print(1)"` reaches python as a string
@@ -1042,22 +1313,59 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied(f"DENIED: {raw} could not be parsed as a command: {exc}") from exc
     if not parts:
         raise ToolDenied("DENIED: shell needs a command")
-    program = Path(parts[0]).name.lower()
-    program = program[:-4] if program.endswith(".exe") else program
+    if not harness_script.needs_script(parts):
+        return await _single_command(context, parts, raw)
+    try:
+        commands = harness_script.parse(raw)
+    except harness_script.ScriptRefused as exc:
+        raise ToolDenied(f"DENIED: there is no shell interpreter here, so {exc}") from exc
+    except ValueError as exc:
+        raise ToolDenied(f"DENIED: {raw} could not be parsed as a command: {exc}") from exc
+    only = commands[0].stages[0] if len(commands) == 1 else None
+    if only is not None and len(commands[0].stages) == 1 and not only.discard_output:
+        # `python x.py 2>&1` is one command once its redirect is gone.
+        return await _single_command(context, only.words, raw)
+    return await _run_script(context, commands)
+
+
+@dataclass
+class _Ran:
+    exit_code: int
+    output: str
+    # The read-only tool that answered instead of a program, if one did.
+    tool: str = ""
+    timed_out: bool = False
+
+
+def _builtin(program: str, parts: list[str]) -> str | None:
+    """What `echo`, `true` and `date` print. Harmless, and asked for often:
+    `echo ---` is how a model separates the parts of a script's output."""
+    if program == "echo":
+        words = [part for part in parts[1:] if part not in ("-n", "-e", "-E")]
+        return " ".join(words)
+    if program in ("true", ":"):
+        return ""
+    if program == "date" and len(parts) == 1:
+        return time.strftime("%a %b %d %H:%M:%S %Z %Y")
+    return None
+
+
+async def _command(context: ToolContext, parts: list[str], seconds: float) -> _Ran:
+    """One command: an allowed program, a builtin, or a read-only translation.
+
+    Raises ToolDenied for anything the single-command tool always refused.
+    """
+    program = harness_script.program_name(parts[0])
     if program in ("python3", "py") and "python" in context.shell_allow:
         # The same interpreter under the name a model trained on Linux reaches for.
         program, parts = "python", ["python", *parts[1:]]
-    operators = _SHELL_OPERATOR_TOKENS & set(parts[1:]) or any(
-        token.startswith(_SHELL_REDIRECT_PREFIXES) for token in parts[1:]
-    )
     if program not in context.shell_allow:
-        translated = None if operators else await _shell_as_tool(context, parts)
+        if (echoed := _builtin(program, parts)) is not None:
+            return _Ran(0, echoed)
+        translated = await _shell_as_tool(context, parts)
         if translated is not None:
             tool, body = translated
-            return (
-                f"[there is no unix shell here: `{raw}` was answered as {tool} -- "
-                f"call that tool directly next time]\n{body}"
-            )
+            return _Ran(0, body, tool=tool)
         allowed = ", ".join(sorted(context.shell_allow))
         where = (
             " There is no working directory to change: every tool takes a path "
@@ -1068,34 +1376,132 @@ async def tool_shell(context: ToolContext, args: dict[str, Any]) -> str:
         raise ToolDenied(
             f"DENIED: {program} is not in harness.shell_allow (allowed: {allowed}).{where}"
         )
-    if program == "python" and any(needle in raw for needle in _PYTHON_ESCAPE_NEEDLES):
+    if program == "python" and any(
+        needle in " ".join(parts[1:]) for needle in _PYTHON_ESCAPE_NEEDLES
+    ):
         raise ToolDenied(PYTHON_ESCAPE_HINT)
-    if operators:
-        raise ToolDenied(
-            "DENIED: there is no shell interpreter here, so `&&`, `||`, `;`, "
-            "`|`, `&`, `<`, `<<`, `>` and `>>` are not operators -- they "
-            "would reach the program as literal arguments (or, for `<`/`<<`, "
-            "just hang until the timeout, since nothing reads that input). "
-            "Run one plain command per `shell` call, with no redirection."
-        )
     try:
         result = await run_command(
-            parts[0], *parts[1:], cwd=context.root, timeout_seconds=context.shell_seconds
+            parts[0], *parts[1:], cwd=context.root, timeout_seconds=seconds
         )
     except OSError as exc:
         raise ToolDenied(f"DENIED: {program} could not be started: {exc}") from exc
-    if result.timed_out:
-        # A result, not an exception: a command that ran too long is something
-        # the model can work around, and a tool that can hang is a worker that
-        # never comes back and a queue that never drains. The process itself
-        # is already dead -- run_command's own timeout killed it -- so this
-        # is just reporting that, not still waiting on anything.
-        raise ToolDenied(
-            f"DENIED: {program} did not finish within {context.shell_seconds:.0f}s"
-        )
     context.tally.reads += 1
-    body = _clip(result.output.rstrip(), context.limits, unit="lines")
-    return f"exit {result.exit_code}\n{body}" if body else f"exit {result.exit_code}"
+    return _Ran(result.exit_code, result.output.rstrip(), timed_out=result.timed_out)
+
+
+def _timed_out(context: ToolContext, program: str, seconds: float, output: str) -> str:
+    """A stopped command, with what it printed before it was stopped.
+
+    It used to be a bare refusal, so a walk of `/` that had already printed
+    the three files it was looking for came back as nothing at all. Codex
+    returns the partial output of a timed-out command too.
+    """
+    text = (
+        f"DENIED: {program} did not finish within {seconds:.0f}s and was stopped. "
+        "The usual causes: walking / or a whole drive (this job only sees its own "
+        "root), a network call, or a script waiting for input (nothing feeds it any)."
+    )
+    if output:
+        clipped = harness_script.clip_middle(
+            output, context.limits.result_lines // 2, context.limits.result_chars // 2
+        )
+        text += f"\nWhat it printed before it was stopped:\n{clipped}"
+    return text
+
+
+async def _single_command(context: ToolContext, parts: list[str], raw: str) -> str:
+    ran = await _command(context, parts, context.shell_seconds)
+    if ran.tool:
+        return (
+            f"[there is no unix shell here: `{raw}` was answered as {ran.tool} -- "
+            f"call that tool directly next time]\n{ran.output}"
+        )
+    if ran.timed_out:
+        program = harness_script.program_name(parts[0])
+        raise ToolDenied(_timed_out(context, program, context.shell_seconds, ran.output))
+    body = harness_script.clip_middle(
+        ran.output, context.limits.result_lines, context.limits.result_chars
+    )
+    return f"exit {ran.exit_code}\n{body}" if body else f"exit {ran.exit_code}"
+
+
+async def _pipeline(
+    context: ToolContext, command: harness_script.Command, seconds: float
+) -> tuple[_Ran, str]:
+    first, *filters = command.stages
+    ran = await _command(context, first.words, seconds)
+    if ran.timed_out:
+        program = harness_script.program_name(first.words[0])
+        return ran, _timed_out(context, program, seconds, ran.output)
+    text = "" if first.discard_output else ran.output
+    for stage in filters:
+        try:
+            text, matched = harness_script.apply_filter(stage.words, text)
+        except harness_script.ScriptRefused as exc:
+            raise ToolDenied(f"DENIED: {exc}") from exc
+        if not matched:
+            ran.exit_code = 1
+    return ran, text
+
+
+async def _run_script(context: ToolContext, commands: list[harness_script.Command]) -> str:
+    """Run the commands in order, with `&&`/`||`/`;` meaning what they mean.
+
+    A refused command is a failed one (exit 1, its refusal as its output), so
+    `cat config.json || echo none` still reaches its `echo`. Only when every
+    command that ran was refused is the whole call a refusal. All of them
+    share one shell_seconds budget.
+    """
+    deadline = time.monotonic() + context.shell_seconds
+    sections: list[tuple[str, str]] = []
+    tools: list[str] = []
+    refusals: list[str] = []
+    status = 0
+    for command in commands:
+        if (command.connector == "&&" and status != 0) or (
+            command.connector == "||" and status == 0
+        ):
+            continue
+        if len(sections) >= harness_script.MAX_COMMANDS:
+            sections.append(
+                ("", f"[... stopped after {harness_script.MAX_COMMANDS} commands; "
+                 "run the rest in another call ...]")
+            )
+            break
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            sections.append(("", "[... the shell time budget ran out before this command ...]"))
+            status = 124
+            break
+        try:
+            ran, body = await _pipeline(context, command, remaining)
+        except ToolDenied as exc:
+            refusals.append(str(exc))
+            status, body = 1, str(exc)
+        else:
+            status = 124 if ran.timed_out else ran.exit_code
+            if ran.tool:
+                tools.append(ran.tool.split(" ", 1)[0])
+        sections.append((command.shown(), body))
+    ran_commands = [shown for shown, _ in sections if shown]
+    if refusals and len(refusals) == len(ran_commands):
+        raise ToolDenied("\n".join(refusals) if len(refusals) > 1 else refusals[0])
+    if len(sections) == 1:
+        body = sections[0][1]
+    else:
+        body = "\n".join(f"$ {shown}\n{text}" if shown else text for shown, text in sections)
+    body = harness_script.clip_middle(
+        body, context.limits.result_lines, context.limits.result_chars
+    )
+    note = ""
+    if tools:
+        names = ", ".join(sorted(set(tools)))
+        note = (
+            f"\n[no unix shell here: the file commands were answered by the harness's "
+            f"own {names} -- calling those tools directly is cheaper]"
+        )
+    return f"exit {status}{note}\n{body}" if body else f"exit {status}{note}"
 
 
 def custom_tool_program(definition: ToolDefinition) -> str:
@@ -1502,10 +1908,11 @@ SHELL_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="shell",
         description=(
-            "Run one allowed program in the job root and return its exit code "
-            "and output. No shell interpreter: pipes, redirects and && are "
-            "arguments, not operators, and only allowed programs run. Quote any "
-            "path containing backslashes, or write it with forward slashes."
+            "Run allowed programs in the job root and return the exit code and "
+            "output. Commands may be joined with && || ; and piped into head, "
+            "tail, grep, wc, sort or uniq; 2>&1 is fine. No $(...), no "
+            "subshells, no redirect into a file -- use write for files. Quote "
+            "any path containing backslashes, or write it with forward slashes."
         ),
         parameters={
             "type": "object",

@@ -75,6 +75,12 @@ async def run_command(
         with subprocess.Popen(  # noqa: S603 - the caller supplies the program
             [program, *arguments],
             cwd=str(cwd) if cwd else None,
+            # Nothing ever writes to a child's stdin here, so it gets none: a
+            # program that reads it (bare `python`, `python -`, a prompt) sees
+            # end-of-file at once instead of waiting out its whole timeout on
+            # whatever stdin this process happened to inherit. Codex spawns
+            # every command the same way (core/src/spawn.rs, Stdio::null()).
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
