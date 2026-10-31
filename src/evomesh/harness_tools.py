@@ -1242,6 +1242,22 @@ async def _shell_as_tool(context: ToolContext, parts: list[str]) -> tuple[str, s
             first, last = int(span.group(1)), int(span.group(2))
             call = {"path": rest[2], "offset": first, "limit": max(1, last - first + 1)}
             return f"read {json.dumps(call)}", await tool_read(context, call)
+    if program == "sed":
+        # Any other sed over one file: the file is read the way `read` reads
+        # it (same root, same permission), and the script applied in Python.
+        try:
+            _, files = harness_script.sed(rest, None)
+        except harness_script.ScriptRefused as exc:
+            raise ToolDenied(f"DENIED: {exc}") from exc
+        if len(files) == 1:
+            target = _resolve_readable(context, files[0])
+            await _permit(context, target, "read")
+            if not target.is_file():
+                raise _missing(context, target)
+            context.tally.reads += 1
+            text = target.read_text(encoding="utf-8", errors="replace")
+            edited, _ = harness_script.sed(rest, text)
+            return "read + sed", _clip(edited, context.limits, unit="lines")
     if program == "grep" and (found := _operands(rest, valued=("-e", "-m", "-A", "-B", "-C"))):
         pattern = _flag_value(rest, "-e") or found.pop(0)
         if "-i" in rest or any(part.startswith("-") and "i" in part[1:3] for part in rest):
@@ -1944,7 +1960,7 @@ SHELL_TOOLS: tuple[Tool, ...] = (
         description=(
             "Run allowed programs in the job root and return the exit code and "
             "output. Commands may be joined with && || ; and piped into head, "
-            "tail, grep, wc, sort or uniq; 2>&1 is fine. No $(...), no "
+            "tail, grep, sed, wc, sort or uniq; 2>&1 is fine. No $(...), no "
             "subshells, no redirect into a file -- use write for files. Quote "
             "any path containing backslashes, or write it with forward slashes."
         ),

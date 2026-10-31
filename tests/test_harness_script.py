@@ -173,6 +173,52 @@ def test_a_pipe_stage_is_applied_to_the_text(words: list[str], expected: str) ->
     assert apply_filter(words, LINES)[0] == expected
 
 
+SECTIONS = "head\n===== NEW (not yet assessed)\nA | x [1]\nB | y [2]\n===== OLD\nC | z"
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        # The three shapes found live in the first hours on the script parser.
+        (["sed", "-n", "/===== NEW/,$p"], "\n".join(SECTIONS.splitlines()[1:])),
+        (
+            ["sed", "s/.*| //; s/\\[.*//"],
+            "head\n===== NEW (not yet assessed)\nx \ny \n===== OLD\nz",
+        ),
+        (["sed", "-n", "="], "1\n2\n3\n4\n5\n6"),
+        (["sed", "-n", "/NEW/,/OLD/p"], "\n".join(SECTIONS.splitlines()[1:5])),
+        (["sed", "-n", "2,3p"], "===== NEW (not yet assessed)\nA | x [1]"),
+        (["sed", "/=====/d"], "head\nA | x [1]\nB | y [2]\nC | z"),
+        (
+            ["sed", "-E", "s/([A-C]) \\|/<\\1>/g"],
+            "head\n===== NEW (not yet assessed)\n<A> x [1]\n<B> y [2]\n===== OLD\n<C> z",
+        ),
+        (["sed", "3q"], "head\n===== NEW (not yet assessed)\nA | x [1]"),
+        (["sed", "-n", "/NEW/!p"], "head\nA | x [1]\nB | y [2]\n===== OLD\nC | z"),
+        (
+            ["sed", "s/x/[&]/"],
+            "head\n===== NEW (not yet assessed)\nA | [x] [1]\nB | y [2]\n===== OLD\nC | z",
+        ),
+    ],
+)
+def test_sed_after_a_pipe(words: list[str], expected: str) -> None:
+    assert apply_filter(words, SECTIONS)[0] == expected
+
+
+def test_sed_that_would_change_a_file_is_refused() -> None:
+    with pytest.raises(ScriptRefused, match="edit"):
+        harness_script.sed(["-i", "s/a/b/", "f.txt"], None)
+    with pytest.raises(ScriptRefused, match="not available"):
+        apply_filter(["sed", "w out.txt"], SECTIONS)
+
+
+async def test_sed_over_a_file_reads_it_through_the_job(project: Path) -> None:
+    result = await run(shell(project), "sed -n 's/return //p' src/answer.py")
+
+    assert "True" in result and "False" in result
+    assert "return" not in result.split("]\n", 1)[1]
+
+
 def test_grep_matching_nothing_fails_like_grep_does() -> None:
     assert apply_filter(["grep", "missing"], LINES) == ("", False)
 

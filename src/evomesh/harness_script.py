@@ -33,10 +33,12 @@ from dataclasses import dataclass, field
 
 CONNECTORS = ("&&", "||", ";")
 # What a pipe may lead into. Everything here is applied to text in Python;
-# anything else after a pipe (awk, sed, xargs, tee, python ...) is refused,
+# anything else after a pipe (awk, xargs, tee, python ...) is refused,
 # never run -- a filter that silently passed text through would be a wrong
 # answer that looks like a right one.
-FILTERS = frozenset({"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cat"})
+FILTERS = frozenset(
+    {"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cat", "sed"}
+)
 # At most this many commands per call: a model that writes twenty `echo`s in
 # one script is not helped by the harness running all of them.
 MAX_COMMANDS = 8
@@ -536,6 +538,229 @@ def _uniq(args: list[str], text: str) -> str:
     return "\n".join(line for line, _ in groups)
 
 
+@dataclass
+class _SedAddress:
+    line: int | None = None  # 0 means `$`
+    regex: re.Pattern[str] | None = None
+
+    def holds(self, number: int, last: int, line: str) -> bool:
+        if self.regex is not None:
+            return self.regex.search(line) is not None
+        return number == (last if self.line == 0 else self.line)
+
+
+@dataclass
+class _SedCommand:
+    first: _SedAddress | None
+    second: _SedAddress | None
+    negated: bool
+    name: str
+    pattern: re.Pattern[str] | None = None
+    replacement: str = ""
+    count: int = 1  # 0 = every match
+    print_after: bool = False
+    active: bool = False
+
+    def selects(self, number: int, last: int, line: str) -> bool:
+        """Whether this line is addressed. A range opens on its first address
+        and closes on the line its second address matches (a regex is only
+        tried from the next line on, a line number already passed closes it
+        at once) -- sed's own rules."""
+        if self.first is None:
+            chosen = True
+        elif self.second is None:
+            chosen = self.first.holds(number, last, line)
+        elif self.active:
+            chosen = True
+            if self.second.regex is not None:
+                self.active = self.second.regex.search(line) is None
+            else:
+                self.active = number < (last if self.second.line == 0 else self.second.line or 0)
+        else:
+            chosen = self.first.holds(number, last, line)
+            if chosen and self.second.regex is not None:
+                self.active = True
+            elif chosen:
+                self.active = number < (last if self.second.line == 0 else self.second.line or 0)
+        return chosen != self.negated
+
+
+def _sed_regex(source: str, extended: bool, ignore_case: bool = False) -> re.Pattern[str]:
+    try:
+        return re.compile(
+            source if extended else _basic_to_python(source),
+            re.IGNORECASE if ignore_case else 0,
+        )
+    except re.error as exc:
+        raise ScriptRefused(f"sed could not read the expression {source!r}: {exc}") from exc
+
+
+def _sed_replacement(text: str) -> str:
+    """sed's replacement syntax (``&``, ``\\1``) in re.sub's."""
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if character == "\\" and following:
+            out.append(
+                f"\\{following}" if following.isdigit() else "\n" if following == "n"
+                else following.replace("\\", "\\\\")
+            )
+            index += 2
+            continue
+        out.append("\\g<0>" if character == "&" else character.replace("\\", "\\\\"))
+        index += 1
+    return "".join(out)
+
+
+def _sed_parse(script: str, extended: bool) -> list[_SedCommand]:
+    commands: list[_SedCommand] = []
+    index = 0
+
+    def delimited(delimiter: str) -> str:
+        nonlocal index
+        collected: list[str] = []
+        while index < len(script) and script[index] != delimiter:
+            if script[index] == "\\" and index + 1 < len(script):
+                if script[index + 1] == delimiter:
+                    collected.append(delimiter)
+                else:
+                    collected.append(script[index : index + 2])
+                index += 2
+                continue
+            collected.append(script[index])
+            index += 1
+        if index >= len(script):
+            raise ScriptRefused(f"sed: unterminated {delimiter}...{delimiter} in {script!r}")
+        index += 1
+        return "".join(collected)
+
+    def address() -> _SedAddress | None:
+        nonlocal index
+        if index < len(script) and script[index] == "$":
+            index += 1
+            return _SedAddress(line=0)
+        digits = re.match(r"\d+", script[index:])
+        if digits:
+            index += len(digits.group())
+            return _SedAddress(line=int(digits.group()))
+        if index < len(script) and script[index] == "/":
+            index += 1
+            return _SedAddress(regex=_sed_regex(delimited("/"), extended))
+        return None
+
+    while index < len(script):
+        if script[index] in " \t\n;":
+            index += 1
+            continue
+        first = address()
+        second = None
+        if first is not None and index < len(script) and script[index] == ",":
+            index += 1
+            second = address()
+            if second is None:
+                raise ScriptRefused(f"sed: a range with no end in {script!r}")
+        while index < len(script) and script[index] == " ":
+            index += 1
+        negated = index < len(script) and script[index] == "!"
+        index += 1 if negated else 0
+        if index >= len(script):
+            raise ScriptRefused(f"sed: an address with no command in {script!r}")
+        name = script[index]
+        index += 1
+        command = _SedCommand(first, second, negated, name)
+        if name == "s":
+            if index >= len(script):
+                raise ScriptRefused("sed: s with no expression")
+            delimiter = script[index]
+            index += 1
+            source = delimited(delimiter)
+            command.replacement = _sed_replacement(delimited(delimiter))
+            flags = re.match(r"[gGpiI0-9]*", script[index:])
+            letters = flags.group() if flags else ""
+            index += len(letters)
+            if any(letter.isdigit() for letter in letters):
+                raise ScriptRefused("sed: s///N (the Nth match only) is not available; use g")
+            command.count = 0 if "g" in letters.lower() else 1
+            command.print_after = "p" in letters
+            command.pattern = _sed_regex(source, extended, "i" in letters.lower())
+        elif name not in "pdq=":
+            raise ScriptRefused(
+                f"sed's `{name}` command is not available here: only p, d, q, = and s/// are"
+            )
+        commands.append(command)
+    return commands
+
+
+def sed(args: list[str], text: str | None) -> tuple[str, list[str]]:
+    """A small sed: -n, -E, -e, addresses (N, $, /re/, ranges, !) and the
+    p, d, q, = and s/// commands, applied to ``text``.
+
+    Returns the output and the file operands. With ``text`` None nothing is
+    applied, so a caller can learn which file to read first. Refuses -i: a
+    file changes only through edit/write, which record what changed.
+    """
+    quiet = extended = False
+    scripts: list[str] = []
+    operands: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-n", "--quiet", "--silent"):
+            quiet = True
+        elif arg in ("-E", "-r", "--regexp-extended"):
+            extended = True
+        elif arg == "-e" and index + 1 < len(args):
+            scripts.append(args[index + 1])
+            index += 1
+        elif arg.startswith("-i") or arg == "--in-place":
+            raise ScriptRefused("sed -i changes a file behind edit's back; use edit instead")
+        elif arg.startswith("-") and len(arg) > 1 and set(arg[1:]) <= {"n", "E", "r"}:
+            quiet = quiet or "n" in arg
+            extended = extended or bool(set(arg[1:]) & {"E", "r"})
+        elif not scripts and not operands and arg:
+            scripts.append(arg)
+        else:
+            operands.append(arg)
+        index += 1
+    if not scripts:
+        raise ScriptRefused("sed needs a script")
+    commands = _sed_parse("\n".join(scripts), extended)
+    if text is None:
+        return "", operands
+    lines = text.splitlines()
+    output: list[str] = []
+    for number, line in enumerate(lines, 1):
+        space = line
+        deleted = stop = False
+        for command in commands:
+            if not command.selects(number, len(lines), space):
+                continue
+            if command.name == "p":
+                output.append(space)
+            elif command.name == "=":
+                output.append(str(number))
+            elif command.name == "d":
+                deleted = True
+                break
+            elif command.name == "q":
+                stop = True
+                break
+            elif command.pattern is not None:
+                replaced, made = command.pattern.subn(
+                    command.replacement, space, count=command.count
+                )
+                space = replaced
+                if made and command.print_after:
+                    output.append(space)
+        if not deleted and not quiet:
+            output.append(space)
+        if stop:
+            break
+    return "\n".join(output), operands
+
+
 def apply_filter(words: list[str], text: str) -> tuple[str, bool]:
     """One pipeline stage after the first, applied to ``text``.
 
@@ -559,6 +784,11 @@ def apply_filter(words: list[str], text: str) -> tuple[str, bool]:
         if any(not arg.startswith("-") for arg in args):
             raise ScriptRefused(_NO_FILE.format(name="cat"))
         return text, True
+    if name == "sed":
+        edited, operands = sed(args, text)
+        if operands:
+            raise ScriptRefused(_NO_FILE.format(name="sed"))
+        return edited, True
     raise ScriptRefused(f"`| {words[0]}` is not available after a pipe")
 
 
