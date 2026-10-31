@@ -75,3 +75,32 @@ async def test_a_candidate_that_is_not_its_own_repository_is_not_judged_by_its_p
     nested.mkdir(parents=True)
 
     assert await CandidateValidator._protected_failure(nested) is None  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_root_file_the_candidate_inherited_is_not_its_litter(tmp_path: Path) -> None:
+    """Found 2026-10-31: `.mailmap` was committed without a KNOWN_ROOT_FILES
+    entry, and every candidate failed the hygiene check for it -- generation
+    1689 too, after it fixed the list in its own codebase.py, because the check
+    ran the live process's list. Its repair then deleted `.mailmap`."""
+    root = tmp_path / "candidate"
+    (root / "src" / "evomesh").mkdir(parents=True)
+    (root / "src" / "evomesh" / "__init__.py").write_text('"""P."""\n', encoding="utf-8")
+    (root / ".mailmap").write_text("Mesh <m@x> Test <t@x>\n", encoding="utf-8")
+    candidate = await git_project(root)
+    inherited = await CandidateValidator._committed_root_files(candidate)  # pyright: ignore[reportPrivateUsage]
+
+    clean = CandidateValidator._hygiene_failure(candidate, inherited)  # pyright: ignore[reportPrivateUsage]
+    (candidate / "scratch.txt").write_text("debugging\n", encoding="utf-8")
+    littered = CandidateValidator._hygiene_failure(candidate, inherited)  # pyright: ignore[reportPrivateUsage]
+
+    assert ".mailmap" in inherited
+    assert clean is None
+    assert littered is not None
+    assert "scratch.txt" in str(littered["output"]) and ".mailmap" not in str(littered["output"])
+
+
+async def test_outside_its_own_repository_nothing_is_inherited(tmp_path: Path) -> None:
+    loose = tmp_path / "loose"
+    loose.mkdir()
+
+    assert await CandidateValidator._committed_root_files(loose) == frozenset()  # pyright: ignore[reportPrivateUsage]

@@ -1140,7 +1140,33 @@ class CandidateValidator:
     )
 
     @staticmethod
-    def _hygiene_failure(path: Path) -> dict[str, object] | None:
+    async def _committed_root_files(path: Path) -> frozenset[str]:
+        """The files at the root of the commit the candidate was copied from.
+
+        Only the candidate's own repository is asked (rule 11); anything else
+        answers with nothing, which keeps the hygiene check absolute there.
+        A candidate's changes are not committed until it lands, so HEAD is
+        its parent."""
+        try:
+            top = await run_command("git", "rev-parse", "--show-toplevel", cwd=path)
+            if top.exit_code != 0:
+                return frozenset()
+            own = await asyncio.to_thread(
+                lambda: Path(top.output.strip()).resolve() == path.resolve()
+            )
+            if not own:
+                return frozenset()
+            listed = await run_command("git", "ls-tree", "--name-only", "HEAD", cwd=path)
+        except (OSError, FileNotFoundError):
+            return frozenset()
+        if listed.exit_code != 0:
+            return frozenset()
+        return frozenset(line.strip() for line in listed.output.splitlines() if line.strip())
+
+    @staticmethod
+    def _hygiene_failure(
+        path: Path, inherited: frozenset[str] = frozenset()
+    ) -> dict[str, object] | None:
         """Dead code the model shipped, caught before any subprocess runs.
 
         ``new_orphans``/``stray_root_files`` used to be advisory only: their
@@ -1151,6 +1177,16 @@ class CandidateValidator:
         against the tree on disk rather than a subprocess, so that kind of
         no-op generation fails fast instead of spending a full validation run
         (and a repair attempt) to land nothing of value.
+
+        A root file the candidate *inherited* (``inherited``: committed in its
+        parent) is not this candidate's litter. Found 2026-10-31: a human
+        committed `.mailmap` without listing it in KNOWN_ROOT_FILES, and every
+        candidate since failed here -- including generation 1689, which made
+        exactly the right fix in its own codebase.py, because this check runs
+        the *live* process's list, not the candidate's. Its repair job then
+        did what the message said and deleted `.mailmap`. A file already in the
+        tree is the baseline's business (the root-file test runs in the
+        candidate's own pytest, with the candidate's own list).
         """
         problems: list[str] = []
         if orphans := new_orphans(path):
@@ -1158,7 +1194,7 @@ class CandidateValidator:
                 "new dead module(s) nothing imports: "
                 + ", ".join(f"{module.name}.py" for module in orphans)
             )
-        if stray := stray_root_files(path):
+        if stray := [name for name in stray_root_files(path) if name not in inherited]:
             problems.append("stray file(s) in the repository root: " + ", ".join(stray))
         if not problems:
             return None
@@ -1214,7 +1250,8 @@ class CandidateValidator:
 
     async def validate(self, generation: Generation) -> ValidationResult:
         outcomes: list[dict[str, object]] = []
-        if hygiene := self._hygiene_failure(generation.path):
+        inherited = await self._committed_root_files(generation.path)
+        if hygiene := self._hygiene_failure(generation.path, inherited):
             return self._write(generation, ValidationResult(passed=False, commands=[hygiene]))
         if protected := await self._protected_failure(generation.path):
             return self._write(generation, ValidationResult(passed=False, commands=[protected]))

@@ -28,6 +28,14 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **A candidate was failed for a root file it inherited.** The hygiene
+  check ran the live process's `KNOWN_ROOT_FILES`, not the candidate's, so
+  when `.mailmap` was committed without a list entry, every candidate failed.
+  Generation 1689 made the correct fix in its own `codebase.py` and still
+  failed, and its repair job then deleted `.mailmap` as the message told it
+  to. The check now flags only root files that are not in the candidate's
+  parent commit. A file already in the tree is the baseline's business, and
+  the root-file test runs in the candidate's own pytest with its own list.
 - A quoted `|` or `&&` (`grep '|'`) was parsed as an operator. The shell
   now has its own POSIX tokenizer that remembers quoting.
 - `grep` without `-E` read a bare `|` as alternation and matched every
