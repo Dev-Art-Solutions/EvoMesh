@@ -450,20 +450,24 @@ class AgentTemplateRegistry:
         Crawler spawned from it a week earlier could not have used it -- its
         tool list is a copy taken at spawn time."""
         prefix = "template:"
-        if not definition.created_by.startswith(prefix) or definition.tools is None:
+        if not definition.created_by.startswith(prefix):
             return []
         template = self._templates.get(definition.created_by.removeprefix(prefix))
         if template is None:
             return []
         bundle_root = self.root / template.path.parent
         added: list[str] = []
-        for tool_name in template.tools:
-            if tool_name in definition.tools:
+        # tools=None is the legacy "every tool" grant: nothing to add to it.
+        # The config below still applies -- NewsAnalyzer is such an agent, and
+        # returning early here is why its missing config.json was never restored.
+        listed = definition.tools if definition.tools is not None else []
+        for tool_name in template.tools if definition.tools is not None else ():
+            if tool_name in listed:
                 continue
             bundled = bundle_root / "tools" / tool_name
             if await asyncio.to_thread(bundled.is_dir):
                 await environment.tools.install_directory(bundled, created_by="agent-template")
-            definition.tools.append(tool_name)
+            listed.append(tool_name)
             if f"tool.{tool_name}" not in definition.capabilities:
                 definition.capabilities.append(f"tool.{tool_name}")
             added.append(f"tool {tool_name}")

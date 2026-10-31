@@ -4,7 +4,27 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0-alpha.1] - 2026-10-31
+
+Agents that reach further and refuse less. The harness's shell now runs the
+commands a model actually writes, after a study of OpenAI's Codex CLI measured
+against 501 real sessions. The Crawler falls back through eight ways to fetch a
+page. Agents keep a knowledge wiki and a report journal, can send email and can
+use MCP servers. EvoMesh itself is an MCP server.
+
 ### Added
+
+- **A knowledge wiki, a report journal, email and MCP.** Each ordinary agent
+  keeps a wiki after Karpathy's "LLM wiki": `raw/` holds what memory
+  compaction folds away, `pages/` plus an index hold what it learned, and
+  lint is code. It is reached through `wiki_search`, `wiki_read` and
+  `wiki_write`, and relevant index lines ride in the prompt inside the memory
+  budget. Every report a recurring goal announces lands in `reports.md`
+  (`/reports <agent> [n]`, `recent_reports` tool). `send_email` is offered
+  only to agents granted a named SMTP account, with an allow-list, an hourly
+  limit and an audit file. MCP servers are tool sources with per-agent access
+  and per-server tool allow-lists, and `mcp_server.py` exposes EvoMesh itself
+  over the control port.
 
 - **The harness's shell takes the commands models actually write.** Lessons
   from OpenAI's Codex CLI, measured against the last 501 harness sessions,

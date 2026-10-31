@@ -365,3 +365,27 @@ async def test_a_crawler_spawned_earlier_gains_the_tools_its_template_added(
     assert config["strategies"][0] == "scrapling" and config["max_pages"] == 3
     assert "fetch_page" in {tool.name for tool in environment.custom_tools_for(crawler)}
     await environment.stop()
+
+
+async def test_an_agent_with_every_tool_still_gets_its_missing_config(tmp_path: Path) -> None:
+    """tools=None (the legacy every-tool grant) used to end bring_up_to_date
+    before the config step -- found live: NewsAnalyzer never got its
+    config.json and spent its jobs searching the disk for it."""
+    from evomesh.config import HarnessSettings
+
+    settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")
+    settings.harness = HarnessSettings(enabled=True, shell_allow=["python"])
+    environment = Environment(settings, {"ollama": MockProvider()})
+    await environment.start()
+    await environment.agent_templates.install_directory(TEMPLATE)
+    crawler = await environment.agent_templates.instantiate(environment, "web-crawler")
+    crawler.tools = None
+    config_path = Path(crawler.harness_root) / "config.json"
+    config_path.unlink()
+
+    added = await environment.agent_templates.bring_up_to_date(environment, crawler)
+
+    assert added == ["config.json"]
+    assert json.loads(config_path.read_text(encoding="utf-8"))["strategies"]
+    assert crawler.tools is None
+    await environment.stop()
