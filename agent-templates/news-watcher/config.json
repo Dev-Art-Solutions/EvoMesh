@@ -1,6 +1,6 @@
 {
   "feeds": [
-    "https://finance.yahoo.com/news/rssindex",
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC,%5ENDX,%5EDJI,GC=F,SI=F,CL=F,BTC-USD,ETH-USD,EURUSD=X&region=US&lang=en-US",
     "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
     "https://www.marketwatch.com/rss/topstories"
   ],
