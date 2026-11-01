@@ -61,26 +61,26 @@ The **[Crawler](agent-templates/web-crawler/AGENT.md)** takes a URL and what you
 - **[`crawl_records`](tools/crawl_records/TOOL.md)** turns a listing (products, projects, jobs) into a CSV: one row per record with its link in `url`, one column per field. Nested fields become dotted columns, and Unix times get a readable `_utc` twin. It reads the data the listing is drawn from: the JSON itself, a browser's view of it, JSON the page embeds, or the same URL with `format=json`. It follows `?page=N` until the listing ends. A long listing takes several calls into the same file, and each record is kept once, by id.
 - robots.txt is honoured, requests are paced, an answer from an archived copy says so, and a private or localhost URL never goes to a remote copy (`"allow_remote": false` turns those off altogether).
 
-### Example: a whole Kickstarter listing into one CSV
+### Example: any listing into one CSV
 
-Give the Crawler a goal from the Control Center, the console or Telegram. The commands are the same in all three.
+Give the Crawler a goal from the Control Center, the console or Telegram. The commands are the same in all three. Swap in your own listing URL with its filters, a file name and a page limit:
 
 ```
-/goal add Crawler "Collect every project on https://www.kickstarter.com/discover?sort=magic&state%5B%5D=upcoming&state%5B%5D=live&state%5B%5D=late_pledge into a CSV with all their information and links. Call crawl_records with url https://www.kickstarter.com/discover?sort=magic&state%5B%5D=upcoming&state%5B%5D=live&state%5B%5D=late_pledge (exactly this, with its filters), file kickstarter and max_pages 200. While its answer says MORE PAGES LEFT, call crawl_records again with exactly the request it printed. Then report the CSV path, rows, columns and why it stopped." 8
+/goal add Crawler "Collect every product on https://shop.example.com/catalog?category=lamps&sort=newest into a CSV with all their information and links. Call crawl_records with url https://shop.example.com/catalog?category=lamps&sort=newest (exactly this, with its filters), file lamps and max_pages 200. While its answer says MORE PAGES LEFT, call crawl_records again with exactly the request it printed. Then report the CSV path, rows, columns and why it stopped." 8
 ```
 
-`Crawler` is the agent. The quoted text is the task. `8` is its priority (1–10). A trailing interval or cron expression makes the task recurring: `... " 5 86400` runs it daily, `... " 5 "0 9 * * *"` every morning at 9.
+`Crawler` is the agent. The quoted text is the task. `8` is its priority (1–10). A trailing interval or cron expression makes the task recurring: `... " 5 86400` runs it daily, `... " 5 "0 9 * * *"` every morning at 9. Each run adds only the records it has not seen.
 
-The result lands in `workspace/agents/crawler/playground/results/kickstarter.csv`, next to `kickstarter.jsonl`, the store a later call adds to. One run on 2026-11-01 produced 2,398 projects × 121 columns, every row with its project link, through two `crawl_records` calls (pages 1–114, then 115–201).
+The result lands in `workspace/agents/crawler/playground/results/lamps.csv`, next to `lamps.jsonl`, the store a later call adds to. On its first real run, against a large public listing, it read 201 pages in two calls and wrote 2,398 records × 121 columns, every row with its link.
 
-What made it work, worth repeating for any site:
+What decides whether it works:
 
 - **No double quotes inside the task text.** `/goal add` takes the task as one quoted argument, so a JSON request written inside it loses its quotes. Write `url …, file …, max_pages 200` in words.
-- **Name the tool and give the full URL.** A small local model otherwise guesses: an earlier wording made it try `/discover/featured`, a 404. Plan steps now carry the goal's own text into the harness job, but an exact goal is still the surest.
-- **Say what to do on `MORE PAGES LEFT`.** One call reads as many pages as fit in its time budget (about 110 here), then prints the request that continues.
-- **Know the site's cap.** Kickstarter's discover listing stops at page 200 (12 projects a page) and answers 404 after that, however many projects it counts. Its "magic" order puts live projects first, so upcoming and late-pledge ones never made it into those 2,400. To get everything, give one goal per state (and per category where a state alone holds more than 2,400), all into the same `file`. Duplicates are dropped by id.
+- **Name the tool and give the full URL.** A small local model otherwise guesses. An earlier wording made the plan say "crawl the listing URL with the specified file name", and the job tried another page, a file name it found on disk and a tenth of the pages. Plan steps now carry the goal's own text into the harness job, but an exact goal is still the surest.
+- **Say what to do on `MORE PAGES LEFT`.** One call reads as many pages as fit in its time budget (about 110 on that run), then prints the request that continues.
+- **Know the site's cap.** Many listings stop after a fixed number of pages and answer 404 after that, however many results they count. When yours does, split the goal by a filter the site offers (state, category, region), one goal per value, all into the same `file`. Duplicates are dropped by id.
 
-Kickstarter answers plain requests with a Cloudflare challenge. The rows came through the chain's headless browser. Whether to crawl a site that challenges automated clients is your call against that site's terms.
+Some sites answer plain requests with a bot challenge. The chain's headless browser often gets through. Whether to crawl a site that challenges automated clients is your call against that site's terms.
 
 Follow and steer the task:
 
