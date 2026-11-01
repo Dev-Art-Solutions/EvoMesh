@@ -6,6 +6,22 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- **The Crawler turns a listing into a CSV (`crawl_records`).** One row per
+  record with its link in `url`, one column per field. Nested fields become
+  dotted columns, and Unix times get a readable `_utc` twin. It reads the
+  data the listing is drawn from: the JSON itself, a browser's view of it,
+  JSON the page embeds, or the same URL with `format=json`. The records are
+  the list with the most items × fields², so a tag menu or a category
+  aggregation never wins over the real records. It follows `?page=N` with
+  a randomized order's seed pinned, and stops inside its time budget with
+  the request that continues into the same file (records kept once, by id,
+  in `results/<file>.jsonl`). Found on Kickstarter's discover page: as text
+  it gave 12 of 20,300 projects and no links. The first live run collected
+  2,398 projects × 121 columns. README has the worked example.
+- **A harness step gets its goal's own words.** When the plan paraphrases a
+  goal, the job now also carries the goal text. Before this, "Crawl the
+  Kickstarter discover URL with the specified file name" made the job guess
+  the URL, the file and the page count.
 - **The Evolver tries a waiting idea instead of idling.** With nothing
   evidenced to do and ideas waiting for a human, it runs the oldest idea's
   first step exactly like a backlog step (same work order, validation and

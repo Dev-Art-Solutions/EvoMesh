@@ -58,7 +58,40 @@ The **[Crawler](agent-templates/web-crawler/AGENT.md)** takes a URL and what you
 
 - **[`crawl_site`](tools/crawl_site/TOOL.md)** fetches each page through a fallback chain — Scrapling, plain HTTP, curl, a headless browser, the stealth browser, the local Chrome/Edge, then the Wayback Machine's copy or r.jina.ai's — until one returns real text. A 403, a bot wall (Cloudflare, DataDome, …) or an empty JavaScript shell counts as a failure, not as the page. Each page says how it was got, what worked is remembered per site, and a start page with no links is crawled through its sitemap or feed.
 - **[`fetch_page`](tools/fetch_page/TOOL.md)** reads one page a chosen way, or probes every way and reports which works, so the agent can crawl again with that one.
+- **[`crawl_records`](tools/crawl_records/TOOL.md)** turns a listing (products, projects, jobs) into a CSV: one row per record with its link in `url`, one column per field. Nested fields become dotted columns, and Unix times get a readable `_utc` twin. It reads the data the listing is drawn from: the JSON itself, a browser's view of it, JSON the page embeds, or the same URL with `format=json`. It follows `?page=N` until the listing ends. A long listing takes several calls into the same file, and each record is kept once, by id.
 - robots.txt is honoured, requests are paced, an answer from an archived copy says so, and a private or localhost URL never goes to a remote copy (`"allow_remote": false` turns those off altogether).
+
+### Example: a whole Kickstarter listing into one CSV
+
+Give the Crawler a goal from the Control Center, the console or Telegram. The commands are the same in all three.
+
+```
+/goal add Crawler "Collect every project on https://www.kickstarter.com/discover?sort=magic&state%5B%5D=upcoming&state%5B%5D=live&state%5B%5D=late_pledge into a CSV with all their information and links. Call crawl_records with url https://www.kickstarter.com/discover?sort=magic&state%5B%5D=upcoming&state%5B%5D=live&state%5B%5D=late_pledge (exactly this, with its filters), file kickstarter and max_pages 200. While its answer says MORE PAGES LEFT, call crawl_records again with exactly the request it printed. Then report the CSV path, rows, columns and why it stopped." 8
+```
+
+`Crawler` is the agent. The quoted text is the task. `8` is its priority (1–10). A trailing interval or cron expression makes the task recurring: `... " 5 86400` runs it daily, `... " 5 "0 9 * * *"` every morning at 9.
+
+The result lands in `workspace/agents/crawler/playground/results/kickstarter.csv`, next to `kickstarter.jsonl`, the store a later call adds to. One run on 2026-11-01 produced 2,398 projects × 121 columns, every row with its project link, through two `crawl_records` calls (pages 1–114, then 115–201).
+
+What made it work, worth repeating for any site:
+
+- **No double quotes inside the task text.** `/goal add` takes the task as one quoted argument, so a JSON request written inside it loses its quotes. Write `url …, file …, max_pages 200` in words.
+- **Name the tool and give the full URL.** A small local model otherwise guesses: an earlier wording made it try `/discover/featured`, a 404. Plan steps now carry the goal's own text into the harness job, but an exact goal is still the surest.
+- **Say what to do on `MORE PAGES LEFT`.** One call reads as many pages as fit in its time budget (about 110 here), then prints the request that continues.
+- **Know the site's cap.** Kickstarter's discover listing stops at page 200 (12 projects a page) and answers 404 after that, however many projects it counts. Its "magic" order puts live projects first, so upcoming and late-pledge ones never made it into those 2,400. To get everything, give one goal per state (and per category where a state alone holds more than 2,400), all into the same `file`. Duplicates are dropped by id.
+
+Kickstarter answers plain requests with a Cloudflare challenge. The rows came through the chain's headless browser. Whether to crawl a site that challenges automated clients is your call against that site's terms.
+
+Follow and steer the task:
+
+```
+/goals Crawler                    its tasks and their state (runnable, active, done)
+/goal notify Crawler <id> on      announce progress and the finish (Telegram too)
+/goal pause Crawler <id>          hold it; /goal resume Crawler <id> puts it back
+/goal drop Crawler <id>           cancel it
+```
+
+For a one-off question instead of a task, `/chat Crawler` selects the agent and a plain message goes to it. A long listing does better as a goal, because a goal carries on across the agent's cycles. Sending commands from a Git Bash script to the control port (127.0.0.1:8765)? `export MSYS_NO_PATHCONV=1` first, or MSYS turns `/goals` into a Windows path.
 
 ## Why it exists
 
