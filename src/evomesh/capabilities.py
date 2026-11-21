@@ -302,6 +302,7 @@ class Grant:
     effective: tuple[str, ...]
     # Named in an explicit list, but no longer installed or configured.
     stale: tuple[str, ...] = ()
+    system: bool = False
 
 
 def grant_report(
@@ -316,7 +317,7 @@ def grant_report(
         ):
             if granted is None:
                 effective = () if system else tuple(sorted(available))
-                rows.append(Grant(agent.name, kind, True, effective))
+                rows.append(Grant(agent.name, kind, True, effective, system=system))
             else:
                 stale = tuple(name for name in granted if name not in available)
                 rows.append(Grant(agent.name, kind, False, tuple(granted), stale))
@@ -328,7 +329,7 @@ def render_grants(rows: list[Grant]) -> str:
     broad: list[str] = []
     quiet: list[str] = []
     for row in rows:
-        if row.legacy and not row.effective:
+        if row.legacy and row.system:
             # A system agent on the default: nothing, which is the point.
             if row.agent not in quiet:
                 quiet.append(row.agent)
@@ -341,7 +342,7 @@ def render_grants(rows: list[Grant]) -> str:
         if row.legacy and row.agent not in broad:
             broad.append(row.agent)
     if quiet:
-        lines.append(f"On a default that grants nothing: {', '.join(quiet)}")
+        lines.append(f"System agents, none by default: {', '.join(quiet)}")
     if broad:
         lines += [
             "",

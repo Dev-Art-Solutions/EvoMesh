@@ -485,7 +485,7 @@ Analyst tools: check-site, chrome-browser, ..., mt5_signal, news_fetch, send_res
 Analyst mcp: files, fixture (legacy default: grows with every mesh-wide server)
 Trader tools: mt5_query, mt5_signal
 Trader mcp: none
-On a default that grants nothing: Agent Architect, Environment Evolver, Evaluator, Guardian, Idea Scout
+System agents, none by default: Agent Architect, Environment Evolver, Evaluator, Guardian, Idea Scout
 ```
 
 The migration keeps access exactly as it is today and only stops it from growing:

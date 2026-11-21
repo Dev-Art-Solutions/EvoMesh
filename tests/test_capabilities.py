@@ -450,6 +450,18 @@ def test_grant_report_flags_legacy_defaults_and_stale_names() -> None:
     assert legacy[("Pinned", "tools")].stale == ("gone",)
     assert "Broad legacy defaults: Legacy." in text
     assert "/capabilities pin" in text
+    assert "System agents, none by default: Evolver" in text
+
+
+def test_an_ordinary_agent_on_the_default_is_never_listed_as_granted_nothing() -> None:
+    """Found on the live mesh: with no MCP servers configured, NewsAnalyzer's
+    empty mcp default put it beside the system agents, under "grants
+    nothing" -- the opposite of what its tools line said one row up."""
+    rows = grant_report([AgentDefinition(name="NewsAnalyzer", purpose="p")], ["ping"], [])
+    text = render_grants(rows)
+
+    assert "NewsAnalyzer mcp: none (legacy default: grows with every mesh-wide server)" in text
+    assert "System agents" not in text
 
 
 # -- end to end through the console ---------------------------------------
