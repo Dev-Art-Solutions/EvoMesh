@@ -20,6 +20,7 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **Starting the Control Center again showed "already running" and nothing else**, while the running one sat hidden in the tray (closing its window only hides it). A second start now brings the running window back and exits.
 - **Saving the Control Center's Settings tab erased configuration it had no control for.** It rewrote `evomesh.yaml` from the fields it knew: the live file's `harness:` block had 43 lines and the writer knew 13, and `scraping:`, `browser:`, `email:`, a provider's `kind:` and `max_output_tokens:` were all dropped. Every key it has no field for is now kept and written back where it was. The desktop self-test round-trips a file with such keys at every level.
 - **Idea Scout's cycle failed every time** with `OverflowError` once its recurring goal had stalled more than about 1024 times: the stall cooldown doubled without a bound. The doubling is now capped, and the cooldown stays at its one-hour ceiling.
 - **`/browser stop` could not find EvoMesh's Chrome** when the checkout's path had a space in it, as on the machine it was built on. Windows quotes the whole `"--user-data-dir=..."` argument, and the old pattern read the path only up to the space. Nothing else was stopped by mistake. The lifecycle test now also runs on a spaced path.

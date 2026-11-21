@@ -31,9 +31,17 @@ internal static class Program
         var uv = args.Length > 1 ? args[1] : "uv";
         if (!TryAcquireSingleInstance(root))
         {
+            // The running one is usually hidden in the tray (closing the
+            // window only hides it), so a message saying "it is already
+            // running" pointed at a window nobody could find. Ask it to show
+            // itself instead; the message is only the fallback.
+            if (ShowRunningInstance(root))
+            {
+                return 0;
+            }
             MessageBox.Show(
-                "EvoMesh Control Center is already running for this checkout. Switch to "
-                    + "the existing window instead of opening a second one.",
+                "EvoMesh Control Center is already running for this checkout. Look for its "
+                    + "icon in the system tray (the ^ arrow next to the clock).",
                 "EvoMesh",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -41,7 +49,9 @@ internal static class Program
         }
         InstallCrashLogging(root);
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm(root, uv));
+        var form = new MainForm(root, uv);
+        ListenForShowRequests(root, form);
+        Application.Run(form);
         return 0;
     }
 
@@ -55,6 +65,50 @@ internal static class Program
     // two different checkouts remain a legitimate, separate setup -- only
     // a second one against the *same* checkout is refused.
     private static Mutex? _singleInstanceMutex;
+
+    private static string ShowEventName(string root) =>
+        @"Local\EvoMesh.Desktop.Show." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root.ToLowerInvariant())));
+
+    private static bool ShowRunningInstance(string root)
+    {
+        try
+        {
+            using var show = EventWaitHandle.OpenExisting(ShowEventName(root));
+            return show.Set();
+        }
+        catch (Exception exception) when (exception is WaitHandleCannotBeOpenedException or UnauthorizedAccessException)
+        {
+            return false; // an older Control Center that does not listen
+        }
+    }
+
+    private static void ListenForShowRequests(string root, MainForm form)
+    {
+        var show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName(root));
+        var listener = new Thread(() =>
+        {
+            while (show.WaitOne())
+            {
+                if (form.IsDisposed)
+                {
+                    return;
+                }
+                try
+                {
+                    form.BeginInvoke(form.RestoreFromTray);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The window handle is not created yet, or already gone.
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "show-requests",
+        };
+        listener.Start();
+    }
 
     private static bool TryAcquireSingleInstance(string root)
     {

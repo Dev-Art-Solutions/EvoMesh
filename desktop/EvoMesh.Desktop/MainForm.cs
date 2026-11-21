@@ -166,11 +166,12 @@ internal sealed class MainForm : Form
         return menu;
     }
 
-    private void RestoreFromTray()
+    internal void RestoreFromTray()
     {
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
+        BringToFront();
         _trayIcon.Visible = false;
     }
 
