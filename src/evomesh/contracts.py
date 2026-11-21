@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -495,6 +495,25 @@ class McpServerConfig(BaseModel):
     timeout_seconds: float = 120
 
 
+class BrowserGrant(BaseModel):
+    """What one agent may do in Chrome through the ``browser`` tool (see
+    browser.py). Only a console command writes it -- nothing a harness job
+    can call changes an AgentDefinition, so no agent can grant itself more.
+
+    ``read``: tabs, page text, snapshots, screenshots. ``interact``: also
+    navigation, clicks, typing, forms, tab management and starting the
+    automation Chrome. Sensitive actions (payments, sending, publishing,
+    deleting, credentials) need a human's ``/browser approve`` either way.
+
+    ``session``: ``automation`` is EvoMesh's own Chrome profile; ``user``
+    attaches to the human's own Chrome, signed-in sessions and all, and is
+    only ever set explicitly.
+    """
+
+    level: Literal["read", "interact"] = "read"
+    session: Literal["automation", "user"] = "automation"
+
+
 class MindState(BaseModel):
     beliefs: list[Belief] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
@@ -796,6 +815,10 @@ class AgentDefinition(BaseModel):
     # send_email tool. Empty (the default) means none, and no tool at all --
     # mailing out is always an explicit grant. `/email grant|revoke`.
     email_accounts: list[str] = Field(default_factory=list)
+    # The browser tool. None (the default) means no browser at all -- a
+    # signed-in browser is a capability granted per agent, like email.
+    # `/browser grant <agent> read|interact [user]`.
+    browser: BrowserGrant | None = None
     # The knowledge wiki tools (knowledge.py). None: on for an ordinary
     # agent, off for a system agent, whose knowledge is the codebase itself.
     knowledge: bool | None = None

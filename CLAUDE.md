@@ -55,6 +55,8 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `mailer.py` | SMTP accounts → `send_email`, only for agents granted an account; rate limit, allow-list, audit file |
 | `mcp_client.py` | MCP servers as tool sources; per-agent access mirrors `tools` (system agents: none by default). Connections are keyed by the whole config (`config_fingerprint`), never the name alone |
 | `bundles.py` | staged, reversible replacement of a `tools/<name>` or `skills/<name>` directory: copy to `.runtime/capabilities/staging`, validate, swap by rename, keep the replaced one in `previous/`. Every install goes through it; never `rmtree` an installed bundle |
+| `browser.py` | the `browser` tool and EvoMesh's own Chrome: discovery, the owned-process lifecycle (found and stopped by its `--user-data-dir`, never by name), bridge discovery by token, grants, the sensitive-action confirmation. **The boundary lives here, in the mesh process** -- never move a check into the extension or a subprocess |
+| `browser_bridge.py` | the native-messaging host Chrome starts; loopback, free port, per-start token, registered with the Chrome pid that spawned it. `browser-extension/page_agent.js` is the closed set of page operations -- add an action there and in `browser.py`'s sets, never an "evaluate" |
 | `capabilities.py` | `/capabilities`: a read-only view over the three registries (state, missing dependencies, legacy grants). **Not a registry** — never cache or install anything here |
 | `ops_commands.py` | `/reports`, `/wiki`, `/email`, `/mcp` — a ConsoleChannel mixin, so console.py stays readable |
 

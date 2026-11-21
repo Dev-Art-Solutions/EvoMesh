@@ -99,7 +99,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.6.0-alpha.1 makes capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.7.0-alpha.1 gives agents a browser they can drive: EvoMesh's own Chrome on a dedicated profile, structured actions over deterministic element targeting, compact snapshots and screenshots, behind per-agent grants and a human confirmation for anything sensitive. Before that, 0.6.0-alpha.1 made capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -430,7 +430,7 @@ On a fresh clone that has not run `scripts/install-docs-env.ps1`, with one half-
 ```text
 > /capabilities tools
 tools: 11 available, 1 invalid, 1 missing-dependency
-  available: check-site, chrome-browser, crawl_records, crawl_schedule, crawl_site, ...
+  available: check-site, crawl_records, crawl_schedule, crawl_site, ...
   half-copied [invalid] tools/half-copied
       no TOOL.md
   document_read [missing-dependency] tools/document_read
@@ -481,7 +481,7 @@ Per-agent grants are unchanged and still enforced. An agent's `tools:` list and 
 
 ```text
 > /capabilities grants
-Analyst tools: check-site, chrome-browser, ..., mt5_signal, news_fetch, send_results (legacy default: grows with every install)
+Analyst tools: check-site, crawl_records, ..., mt5_signal, news_fetch, send_results (legacy default: grows with every install)
 Analyst mcp: files, fixture (legacy default: grows with every mesh-wide server)
 Trader tools: mt5_query, mt5_signal
 Trader mcp: none
@@ -499,6 +499,43 @@ The migration keeps access exactly as it is today and only stops it from growing
 ```bash
 claude mcp add evomesh -- "D:/Projects/Dev-art solutions/EvoMesh/.venv/Scripts/python.exe" -m evomesh.mcp_server
 ```
+
+## Browser automation
+
+Agents can drive Chrome through the `browser` tool: navigate, inspect, click, type, fill forms, manage tabs and take screenshots, one structured JSON request per call. It runs in **EvoMesh's own Chrome**, a separate process on a dedicated profile in `data/browser/profile`, ignored by git and never inside a generation directory. Your own Chrome is used only with an explicit grant.
+
+```text
+/browser status                          Chrome found? automation Chrome running? extension connected? host registered?
+/browser start [url]  |  /browser stop   EvoMesh's own Chrome; stop never touches yours
+/browser grant <agent> read|interact     the browser tool, in the automation Chrome
+/browser grant <agent> interact user     ...in YOUR Chrome, with your logins
+/browser revoke <agent>
+/browser pending  |  /browser approve <n>  |  /browser deny <n>
+```
+
+Setup on Windows takes three steps: run `scripts\install-chrome-bridge.ps1`, run `/browser start`, then load `browser-extension/` unpacked in that window once. Branded Chrome 137+ ignores `--load-extension`, and EvoMesh does not install extensions on its own. [browser-extension/README.md](browser-extension/README.md) has the setup, every action, and the error codes.
+
+A job works through observable steps. A `snapshot` returns the URL, a window of visible text, numbered elements with refs, links, forms, alerts and any CAPTCHA. Actions target an element by ref, or by `{"role": "button", "name": "Search"}`, label, placeholder, text or CSS. An ambiguous, hidden, disabled, covered or stale target is an error, never a guess. Waits are bounded. Every result says `success` or gives an error code.
+
+```json
+{"action": "navigate", "url": "https://search.example/"}
+{"action": "snapshot"}
+{"action": "fill", "target": {"ref": "<the search box's ref from the snapshot>"}, "value": "Python programming tutorials"}
+{"action": "press_key", "target": {"ref": "<same ref>"}, "key": "Enter"}
+{"action": "get_links", "contains": "python", "limit": 10}
+{"action": "new_tab", "url": "https://docs.python.org/3/tutorial/"}
+```
+
+**The boundary is in the mesh process, not in the prompt.**
+- A `read` grant gets read actions only. Navigation, clicks, typing, forms and tabs need `interact`. Only a console command sets a grant, so no agent can grant itself.
+- Payments, sending or publishing, deleting, account changes, submitting a password, typing into password or card fields, and installing software stop with `confirmation_required`, whatever the grant. The check runs on what the page says the element is. You are told, and `/browser approve <n>` lets that one exact action through once.
+- There is no "run this JavaScript" action, and `navigate` takes only http(s) URLs.
+- Page text is marked untrusted, and instruction-override phrases in it are flagged.
+- Password, hidden and card field values are never returned.
+- Screenshots are files in the agent's playground, never sent to a model.
+- The bridge listens on loopback only. Each bridge has a random token, and a request without it is refused.
+
+The old `chrome-browser` custom tool connected to the bridge directly, with no grant at all. It is retired.
 
 ## Email
 

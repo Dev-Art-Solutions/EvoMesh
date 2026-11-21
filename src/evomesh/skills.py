@@ -136,10 +136,14 @@ def scan_skill_content(text: str) -> list[str]:
         for pattern, label in _SECRET_PATTERNS
         if pattern.search(text)
     ]
-    findings += [
-        f"contains {label}" for pattern, label in _INJECTION_PATTERNS if pattern.search(text)
-    ]
+    findings += injection_findings(text)
     return findings
+
+
+def injection_findings(text: str) -> list[str]:
+    """The instruction-override phrases in ``text`` -- also used to flag a web
+    page's text before an agent reads it (browser.py)."""
+    return [f"contains {label}" for pattern, label in _INJECTION_PATTERNS if pattern.search(text)]
 
 
 def parse_skill(path: Path, text: str, *, created_by: str = "system") -> SkillDefinition:

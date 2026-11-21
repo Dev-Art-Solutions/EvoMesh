@@ -3,20 +3,20 @@
 # has something to launch. Per-user (HKCU), no elevation needed -- unlike
 # install-services.ps1, this changes nothing system-wide.
 #
-# Order matters: load browser-extension/ unpacked in Chrome FIRST
-# (chrome://extensions -> Developer mode -> Load unpacked), copy the
-# extension id Chrome shows you, then run this with it:
+#   .\scripts\install-chrome-bridge.ps1
 #
-#   .\scripts\install-chrome-bridge.ps1 -ExtensionId <the id>
-#
-# The id has to come first because Chrome only assigns one once the
-# extension is actually loaded, and the native-messaging manifest this
-# writes has to name it in allowed_origins -- a native host with no
-# extension id allowed cannot be connected to by anything.
+# The native-messaging manifest this writes has to name the extension in
+# allowed_origins -- a host with no extension allowed cannot be connected to
+# by anything. The extension's manifest carries a fixed public key, so its id
+# is the same in every profile and on every machine:
+# fgefcelipaiabacacgjcdkgachkdchcm. -ExtensionId is only needed for a copy
+# whose key was changed. The registration is per user, so it serves
+# EvoMesh's automation profile (/browser start) and your own Chrome alike;
+# the extension still has to be loaded unpacked in each profile once
+# (chrome://extensions -> Developer mode -> Load unpacked -> browser-extension).
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string] $ExtensionId
+    [string] $ExtensionId = 'fgefcelipaiabacacgjcdkgachkdchcm'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +36,7 @@ $ManifestPath = Join-Path $PSScriptRoot "$HostName.json"
 
 $Manifest = [ordered]@{
     name            = $HostName
-    description     = 'EvoMesh browser bridge -- lets agents read and navigate tabs in your own Chrome.'
+    description     = 'EvoMesh browser bridge -- lets granted agents read and drive Chrome tabs.'
     path            = $LauncherPath
     type            = 'stdio'
     allowed_origins = @("chrome-extension://$ExtensionId/")
@@ -52,4 +52,5 @@ Write-Output "[install-chrome-bridge] registered $RegistryKey -> $ManifestPath"
 Write-Output ''
 Write-Output '[install-chrome-bridge] Done. Reload the extension (chrome://extensions -> the'
 Write-Output 'reload icon on EvoMesh Browser Bridge) so it picks up a fresh connectNative call.'
-Write-Output 'Add "python" and "chrome-browser" tools to an agent template to let it use this.'
+Write-Output 'Then give an agent the browser tool: /browser grant <agent> read|interact'
+Write-Output 'and start EvoMesh''s own Chrome with /browser start (load the extension there once).'

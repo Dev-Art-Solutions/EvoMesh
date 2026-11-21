@@ -87,7 +87,7 @@ def render_probe(url: str, page: webfetch.Fetched) -> str:
     else:
         lines.append(
             "Nothing got the page. Tell the human what was tried; a page behind a login "
-            "needs their own browser (the chrome-browser tool), if they set it up."
+            "needs a browser (the browser tool, granted with /browser grant), if they set it up."
         )
     return "\n".join(lines)
 

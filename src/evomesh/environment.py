@@ -18,6 +18,7 @@ from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import BDIBehavior, ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
 from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
+from evomesh.browser import BrowserService, PendingAction, build_browser_tool
 from evomesh.cognition import AgentBehavior, CycleOutcome
 from evomesh.cognitive_services import (
     CognitiveModelService,
@@ -152,6 +153,10 @@ class Environment:
             settings.email.accounts,
             audit_path=settings.data_path.parent / "email-audit.jsonl",
         )
+        # The browser tool and EvoMesh's own automation Chrome (browser.py).
+        self.browser = BrowserService(settings.browser, self.project_root)
+        self.browser.on_pending = self._browser_waits
+        self._browser_tasks: set[asyncio.Task[None]] = set()
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
         # non-durability the harness queue's own jobs already accept.
@@ -768,6 +773,19 @@ class Environment:
         self._idea_tasks.add(task)
         task.add_done_callback(self._idea_tasks.discard)
 
+    def _browser_waits(self, pending: PendingAction) -> None:
+        """An agent's browser action waits on a human: say so, unprompted --
+        scheduled, the tool call that found it is not waiting for this."""
+        task = asyncio.get_running_loop().create_task(
+            self.announce(
+                f"🛑 {pending.agent} wants to {pending.summary} in the browser "
+                f"({pending.reason}). /browser approve {pending.number} or "
+                f"/browser deny {pending.number}"
+            )
+        )
+        self._browser_tasks.add(task)
+        task.add_done_callback(self._browser_tasks.discard)
+
     def wake_ideas(self) -> None:
         """A human decided an idea: a review slot may have opened."""
         runtime = self.runtimes.get(IDEAS_AGENT_ID)
@@ -1356,6 +1374,11 @@ class Environment:
         mail = build_send_email_tool(self.mailer, definition.email_accounts, definition.name)
         if mail is not None:
             tools.append(mail)
+        browser = build_browser_tool(
+            self.browser, definition, self.memory_for(definition).playground_path
+        )
+        if browser is not None:
+            tools.append(browser)
         knowledge = (
             definition.knowledge
             if definition.knowledge is not None

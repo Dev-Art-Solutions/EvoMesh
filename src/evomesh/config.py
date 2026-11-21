@@ -392,6 +392,31 @@ class HarnessSettings(BaseModel):
         )
 
 
+class BrowserSettings(BaseModel):
+    """The ``browser`` tool and EvoMesh's own automation Chrome (browser.py)."""
+
+    # Empty: found on PATH, in the registry, or the standard install folders.
+    chrome_path: str = ""
+    # Bridge registrations, the automation profile and its session file.
+    # Relative to the project root; data/ is ignored by git and is never
+    # inside a disposable generation directory.
+    state_dir: str = "data/browser"
+    # Added to the automation Chrome's command line.
+    extra_args: list[str] = Field(default_factory=list)
+    # One action's ceiling, waits included.
+    action_timeout_seconds: float = 30.0
+    # What a snapshot returns by default -- sized for a 4000-character tool
+    # result, which is what harness.tool_result_chars gives a small model.
+    snapshot_elements: int = 25
+    snapshot_text_chars: int = 1200
+    snapshot_links: int = 10
+    # Screenshots land in the agent's own playground under screenshots/.
+    screenshot_max_bytes: int = 5_000_000
+    screenshot_keep: int = 20
+    # How long a human's /browser approve stays valid.
+    confirmation_minutes: float = 15.0
+
+
 class ScrapingSettings(BaseModel):
     """The Web.Fetch skill: an agent asks for a URL, gets back readable text.
 
@@ -488,6 +513,7 @@ class Settings(BaseModel):
     procedures: ProcedureSettings = Field(default_factory=ProcedureSettings)
     ideas: IdeaSettings = Field(default_factory=IdeaSettings)
     scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
+    browser: BrowserSettings = Field(default_factory=BrowserSettings)
     git: GitSettings = Field(default_factory=GitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     # Mesh-wide default MCP servers, merged with each agent's own

@@ -365,6 +365,21 @@ mcp_servers: []
 #  - name: remote
 #    url: "https://example.com/mcp"
 
+# The browser tool (browser.py, browser-extension/README.md). No agent has it
+# until `/browser grant <agent> read|interact`. EvoMesh's own Chrome runs on a
+# dedicated profile under state_dir; your own Chrome is never started or stopped.
+# browser:
+#   chrome_path: ""              # empty: PATH, the registry, the usual folders
+#   state_dir: data/browser      # profile, session file, bridge registrations
+#   extra_args: []
+#   action_timeout_seconds: 30
+#   snapshot_elements: 25        # sized for a 4000-character tool result
+#   snapshot_text_chars: 1200
+#   snapshot_links: 10
+#   screenshot_max_bytes: 5000000
+#   screenshot_keep: 20          # per agent, in its playground's screenshots/
+#   confirmation_minutes: 15     # how long /browser approve stays valid
+
 # SMTP accounts agents can send email from (send_email tool). An agent may use
 # none of them until granted by name: `/email grant <agent> <account>`, or
 # `email: [alerts]` in its AGENT.md. Passwords go in evomesh.secrets.yaml.

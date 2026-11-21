@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture shop</title>
+  <meta name="description" content="A local page for EvoMesh browser tests.">
+  <link rel="canonical" href="https://fixture.invalid/shop">
+  <style>
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; }
+    #modal.open { display: block; }
+    #feed { height: 200px; overflow: auto; }
+    .row { height: 60px; }
+  </style>
+</head>
+<body>
+  <header><nav aria-label="Main"><a href="#home">Home</a> <a href="https://example.org/about">About</a></nav></header>
+  <main>
+    <h1>Search the catalog</h1>
+    <form id="search" action="/search" method="get" role="search">
+      <label for="q">Search</label>
+      <input id="q" name="q" placeholder="Type a product">
+      <button type="submit">Go</button>
+    </form>
+    <form id="login" action="/login" method="post">
+      <label>User <input name="user" value="ada"></label>
+      <label>Password <input type="password" name="pw" value="hunter2"></label>
+      <input type="hidden" name="csrf" value="tok-123">
+      <button>Sign in</button>
+    </form>
+    <section aria-label="Products">
+      <h2>Products</h2>
+      <div class="card">Lamp <button>Add</button></div>
+      <div class="card">Chair <button>Add</button></div>
+      <button disabled>Sold out</button>
+      <button style="display:none">Secret action</button>
+      <a href="https://example.org/lamp">Read more</a>
+      <label><input type="checkbox" id="gift"> Gift wrap</label>
+      <label>Receipt <input type="file" id="receipt"></label>
+      <label for="size">Size</label>
+      <select id="size"><option value="s">Small</option><option value="m">Medium</option><option value="l" disabled>Large</option></select>
+    </section>
+    <div id="later"></div>
+    <div id="feed" aria-label="Feed"></div>
+    <div id="route">home</div>
+    <button id="open-modal">Open dialog</button>
+    <button id="under">Under the overlay</button>
+    <div id="modal" role="dialog" aria-label="Promo"><button id="close">Close promo</button></div>
+    <div role="alert" id="alert"></div>
+  </main>
+  <script src="../../../browser-extension/page_agent.js"></script>
+  <script src="agent_runner.js"></script>
+</body>
+</html>

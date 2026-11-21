@@ -13,6 +13,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from evomesh.browser import BrowserError
 from evomesh.capabilities import (
     Capability,
     deep_check,
@@ -21,7 +22,7 @@ from evomesh.capabilities import (
     render_grants,
     render_inventory,
 )
-from evomesh.contracts import AgentDefinition, McpServerConfig
+from evomesh.contracts import AgentDefinition, BrowserGrant, McpServerConfig
 from evomesh.knowledge import render_reports
 from evomesh.mailer import EmailRefused
 from evomesh.mcp_client import MESH_WIDE, McpServerStatus, config_fingerprint
@@ -52,6 +53,12 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /capabilities refresh         Rescan tools/ and skills/, drop MCP connections -- no restart
   /capabilities grants          Each agent's effective tools/MCP access, legacy defaults flagged
   /capabilities pin <agent>     Write its current (legacy) access out as an explicit list
+  /browser status               Chrome, the automation profile, the extension, the bridge
+  /browser start [url] | stop   EvoMesh's own Chrome (dedicated profile); never yours
+  /browser grant <agent> read|interact [user]  The browser tool; 'user' = your own Chrome
+  /browser revoke <agent>       Take the browser tool away
+  /browser pending              Sensitive browser actions waiting for you
+  /browser approve|deny <n>     Let one through once, or refuse it
 """
 
 
@@ -412,6 +419,108 @@ class OperationsCommands:
                 + ". New tools and servers now need a grant."
             )
         return usage
+
+
+    # -- browser ------------------------------------------------------------
+
+    async def _command_browser(self, parts: list[str]) -> str:
+        usage = (
+            "Usage: /browser status  |  /browser start [url]  |  /browser stop  |  "
+            "/browser grant <agent> read|interact [user]  |  /browser revoke <agent>  |  "
+            "/browser pending  |  /browser approve|deny <n>"
+        )
+        environment = self.environment
+        browser = environment.browser
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        if action == "status":
+            return _render_browser_status(await browser.status())
+        if action == "start":
+            try:
+                result = await browser.chrome.start(parts[2] if len(parts) > 2 else "about:blank")
+            except BrowserError as exc:
+                return f"Could not start Chrome: {exc.message}"
+            if not result.get("started"):
+                return f"The automation Chrome is already running (pid {result['pid']})."
+            return (
+                f"Started the automation Chrome (pid {result['pid']}) on {result['profile']}. "
+                "First time on this profile: load browser-extension/ unpacked there "
+                "(chrome://extensions, Developer mode, Load unpacked)."
+            )
+        if action == "stop":
+            result = await browser.chrome.stop()
+            if not result.get("stopped"):
+                return "The automation Chrome is not running."
+            forced = " (it had to be forced)" if result.get("forced") else ""
+            return (
+                f"Stopped the automation Chrome, pid {result['pid']}{forced}. "
+                "Your own Chrome was not touched."
+            )
+        if action == "grant" and len(parts) in (4, 5) and parts[3] in ("read", "interact"):
+            if len(parts) == 5 and parts[4] != "user":
+                return usage
+            agent = environment.registry.get(parts[2])
+            session = "user" if len(parts) == 5 else "automation"
+            agent.browser = BrowserGrant(level=parts[3], session=session)  # type: ignore[arg-type]
+            await environment.repository.save_agent(agent)
+            where = (
+                "YOUR OWN Chrome, with whatever you are signed into"
+                if session == "user"
+                else "EvoMesh's own automation Chrome"
+            )
+            return f"{agent.name} may now {parts[3]} in {where} (the browser tool)."
+        if action == "revoke" and len(parts) == 3:
+            agent = environment.registry.get(parts[2])
+            agent.browser = None
+            await environment.repository.save_agent(agent)
+            return f"{agent.name} no longer has the browser tool."
+        if action == "pending":
+            if not browser.pending:
+                return "No browser action is waiting for you."
+            return "\n".join(
+                f"#{item.number} {item.agent}: {item.summary} ({item.reason})"
+                + (" -- approved, not yet used" if item.approved else "")
+                for item in sorted(browser.pending.values(), key=lambda item: item.number)
+            )
+        if action in ("approve", "deny") and len(parts) == 3 and parts[2].isdigit():
+            try:
+                item = (browser.approve if action == "approve" else browser.deny)(int(parts[2]))
+            except KeyError:
+                return f"No pending browser action #{parts[2]} (it may have expired)."
+            if action == "approve":
+                return (
+                    f"Approved #{item.number} once: {item.agent} may now {item.summary}. "
+                    "It has to repeat the exact request to use it."
+                )
+            return f"Refused #{item.number}: {item.agent} will be told not to retry."
+        return usage
+
+
+def _render_browser_status(status: dict[str, object]) -> str:
+    automation = status["automation"]
+    assert isinstance(automation, dict)
+    host = status["native_host"]
+    assert isinstance(host, dict)
+    lines = [
+        f"chrome: {status['chrome'] or 'NOT FOUND (install Chrome or set browser.chrome_path)'}",
+        "automation Chrome: "
+        + (f"running, pid {automation['pid']}" if automation["running"] else "not running")
+        + f" -- profile {automation['profile']}",
+    ]
+    installed = automation["extension_installed"]
+    lines.append(
+        "  extension in that profile: "
+        + {True: "installed", False: "NOT installed (load browser-extension/ unpacked there)",
+           None: "unknown (the profile has not been started yet)"}[installed]  # type: ignore[index]
+    )
+    lines.append(f"  extension connected: {'yes' if automation['extension_connected'] else 'no'}")
+    lines.append(f"your own Chrome sessions with the extension: {status['user_sessions']}")
+    registered = host.get("registered")
+    lines.append(
+        "native host: "
+        + ("registered" if registered else "NOT registered" if registered is False else "unknown")
+        + (f" -- {host['detail']}" if host.get("detail") else "")
+    )
+    return "\n".join(lines)
 
 
 def _render_server(status: McpServerStatus, users: list[str]) -> str:

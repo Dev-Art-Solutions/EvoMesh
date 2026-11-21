@@ -51,8 +51,8 @@ and says `[via ...]` for each page. Read its header lines:
    if it did not, crawl a section URL you saw in the text instead.
 6. **Nothing works** -- tell the human exactly what was tried and how each
    failed (bot wall, 403, needs a login, does not exist). If it needs a
-   login, they can open it in their own browser for the `chrome-browser`
-   tool. Never make up what the page "probably" says.
+   login, a human can grant you the `browser` tool on their own Chrome
+   (`/browser grant <you> read user`). Never make up what the page "probably" says.
 
 Try at most three rounds of this per request; then report.
 

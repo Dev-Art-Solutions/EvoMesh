@@ -4,6 +4,82 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0-alpha.1] - 2026-11-21
+
+A browser agents can drive, behind a boundary they cannot reach around.
+EvoMesh starts its own Chrome on a dedicated profile, and an agent with a
+grant navigates, inspects, clicks, types and fills forms through structured
+actions. Payments, sending, deleting and logins stop for a human. Before
+this, the bridge could only list, read and navigate tabs. It did so in the
+human's own signed-in Chrome, for any agent offered the tool, over an
+unauthenticated port.
+
+### Added
+
+- **The `browser` tool**, one JSON request per call, offered only to an
+  agent with `/browser grant <agent> read|interact`.
+  - Read: `snapshot`, `read_page`, `get_links`, `get_elements`,
+    `get_page_structure`, `get_page_metadata`, `get_element_attributes`,
+    `list_tabs`, `get_active_tab`, `screenshot`, `element_screenshot`,
+    `wait_for_element`, `wait_for_navigation`.
+  - Act: `navigate`, `back`, `forward`, `reload`, `new_tab`, `switch_tab`,
+    `close_tab`, `click`, `double_click`, `fill`, `type_text`, `clear`,
+    `press_key`, `scroll`, `select_option`, `check`, `uncheck`,
+    `start_browser`, `stop_browser`.
+  - Every result says `success` or gives an error code.
+- **Element targeting without guessing** (`browser-extension/page_agent.js`).
+  - Targets: a snapshot ref, role and accessible name, label, placeholder,
+    visible text or CSS.
+  - Ambiguous, hidden, disabled and covered targets are errors that list the
+    candidates. A ref from before a navigation, or of an element that left
+    the DOM, is `stale_ref`. Waits are bounded.
+  - Typing goes through the native value setter and `input` events, so React
+    and Vue see it. Enter in a form calls `requestSubmit()`. A scroll waits,
+    within its bound, for infinite-scroll content.
+- **Compact snapshots for small models.** URL, a window of visible text,
+  numbered elements, links, forms, alerts, dialogs, and `human_required` for
+  a CAPTCHA or bot check, paged with offsets. Password, hidden and card
+  values are never returned.
+- **Screenshots as files.** The visible tab, or one element cropped, saved to
+  the agent's playground under `screenshots/`. Size-capped, the newest 20
+  kept, never sent to a model. Replies over native messaging's 1 MB limit go
+  in pieces.
+- **EvoMesh's own Chrome.**
+  - Commands: `/browser start|stop|status`.
+  - A dedicated profile in `data/browser/profile`. It is found again after a
+    mesh restart by its `--user-data-dir`, and stopped only as that process
+    tree. Your Chrome is never touched.
+  - `/browser status` reports Chrome, the profile, whether the extension is
+    installed and connected, and the native-host registration.
+- **Human confirmation at the execution boundary.** It covers payments,
+  sending or publishing, deleting and account changes, submitting a
+  password, typing into password or card fields, and installing software.
+  It is judged on what the page says the element is, in the mesh process.
+  The human is told and runs `/browser approve|deny <n>`. An approval is
+  good for that agent, that exact action, once.
+
+### Changed
+
+- **The bridge authenticates and no longer shares a port.**
+  - Each bridge listens on a free loopback port with a random token, and
+    registers both, plus the Chrome process that started it, in
+    `data/browser/bridges/`.
+  - A request without the token is refused, and so is a request line over
+    64 KB or one that never arrives.
+  - The registration is how the automation session is told from the human's.
+    An agent reaches your Chrome only with `/browser grant <agent> ... user`.
+- **The extension has a fixed id** (`fgefcelipaiabacacgjcdkgachkdchcm`, from a
+  public key in its manifest), so `install-chrome-bridge.ps1` needs no
+  argument. It also declares the `alarms` permission its reconnect timer
+  always used.
+
+### Removed
+
+- **The `chrome-browser` custom tool.** It connected to the bridge directly,
+  with no grant at all, from any agent offered it. Agents that listed it see
+  it under `/capabilities grants` as not installed; give them
+  `/browser grant` instead.
+
 ## [0.6.0-alpha.1] - 2026-11-21
 
 Capabilities you can see, refresh and roll back. Tools, skills and MCP servers
