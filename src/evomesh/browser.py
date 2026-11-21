@@ -310,7 +310,12 @@ def pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # A process that exited but was not reaped still answers kill(0).
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat[stat.rindex(")") + 2 :].split()[0] not in ("Z", "X")
 
 
 def list_processes() -> list[ProcessInfo]:
@@ -384,6 +389,8 @@ class ChromeManager:
         # Tests run a stand-in for chrome.exe; nothing else sets this.
         self._launch_prefix = launch_prefix
         self._processes = processes
+        # The Chrome this manager started, kept so its exit is reaped.
+        self._process: subprocess.Popen[bytes] | None = None
 
     @property
     def profile_dir(self) -> Path:
@@ -480,6 +487,7 @@ class ChromeManager:
                 f"Chrome exited at once with code {process.returncode}",
                 command=command[0],
             )
+        self._process = process
         self._record(process.pid)
         return {"started": True, "pid": process.pid, "profile": str(self.profile_dir)}
 
@@ -493,14 +501,25 @@ class ChromeManager:
         await asyncio.to_thread(_terminate_tree, pid, False)
         deadline = time.monotonic() + grace_seconds
         # Another process, not a task of ours: there is no event to await.
-        while pid_alive(pid) and time.monotonic() < deadline:  # noqa: ASYNC110
+        while self._alive(pid) and time.monotonic() < deadline:  # noqa: ASYNC110
             await asyncio.sleep(0.25)
         forced = False
-        if pid_alive(pid):
+        if self._alive(pid):
             forced = True
             await asyncio.to_thread(_terminate_tree, pid, True)
+            deadline = time.monotonic() + grace_seconds
+            while self._alive(pid) and time.monotonic() < deadline:  # noqa: ASYNC110
+                await asyncio.sleep(0.25)
         self.session_file.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "forced": forced}
+
+
+    def _alive(self, pid: int) -> bool:
+        if self._process is not None and self._process.pid == pid:
+            if self._process.poll() is not None:
+                self._process = None
+                return False
+        return pid_alive(pid)
 
 
 def _terminate_tree(pid: int, force: bool) -> None:
