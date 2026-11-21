@@ -116,6 +116,80 @@ internal static class DesktopSelfTest
             if (File.Exists(temporary)) File.Delete(temporary);
         }
 
+        // Keys this tab has no control for, at every level Save() writes, must
+        // come back unchanged -- and autostart, which it does have a control for.
+        var extras = Path.Combine(Path.GetTempPath(), $"evomesh-desktop-extras-{Guid.NewGuid():N}.yaml");
+        try
+        {
+            File.WriteAllLines(extras,
+            [
+                "environment_name: 'local'",
+                "harness:",
+                "  enabled: true",
+                "  plan_max_steps: 12",
+                "  skill_catalog_chars: 2400",
+                "scraping:",
+                "  enabled: true",
+                "  executable: '.runtime/scrapling/bin/scrapling'",
+                "browser:",
+                "  extra_args:",
+                "    - '--headless=new'",
+                "system_agents:",
+                "  guardian:",
+                "    provider: 'ollama'",
+                "    model: 'qwen3'",
+                "    knowledge: false",
+                "models:",
+                "  default_provider: 'ollama'",
+                "  providers:",
+                "    ollama:",
+                "      base_url: 'http://127.0.0.1:11434'",
+                "      model: 'qwen3'",
+                "      autostart: false",
+                "      kind: ollama",
+                "    claude:",
+                "      base_url: 'https://api.anthropic.com/v1'",
+                "      model: 'claude-x'",
+                "      kind: anthropic",
+                "      max_output_tokens: 4096",
+            ]);
+            var first = EvoMeshYamlSettings.Load(extras);
+            if (first.Providers["ollama"].Autostart)
+            {
+                throw new InvalidOperationException("autostart: false was not read.");
+            }
+            first.Save(extras);
+            var text = File.ReadAllText(extras);
+            foreach (var expected in new[]
+            {
+                "  plan_max_steps: 12", "  skill_catalog_chars: 2400", "scraping:",
+                "  executable: '.runtime/scrapling/bin/scrapling'", "browser:", "    - '--headless=new'",
+                "    knowledge: false", "      autostart: false", "      kind: ollama",
+                "      kind: anthropic", "      max_output_tokens: 4096",
+            })
+            {
+                if (!text.Contains(expected + Environment.NewLine) && !text.EndsWith(expected))
+                {
+                    throw new InvalidOperationException($"Save dropped a line it has no control for: {expected.Trim()}");
+                }
+            }
+            var again = EvoMeshYamlSettings.Load(extras);
+            if (again.Providers["ollama"].Autostart || !again.Harness.Enabled ||
+                again.Providers["claude"].Model != "claude-x")
+            {
+                throw new InvalidOperationException("A second load of the saved file read different values.");
+            }
+            again.Save(extras);
+            if (File.ReadAllText(extras) != text)
+            {
+                throw new InvalidOperationException("Saving twice changed the file: extras are duplicated or moved.");
+            }
+        }
+        finally
+        {
+            if (File.Exists(extras)) File.Delete(extras);
+        }
+
         var temporarySecrets = Path.Combine(Path.GetTempPath(), $"evomesh-desktop-secrets-{Guid.NewGuid():N}.yaml");
         try
         {

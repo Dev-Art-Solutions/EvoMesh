@@ -11,7 +11,10 @@ internal sealed record ProviderEditorSettings(
     // api_key_ref. Wins over ApiKey when both are somehow set (Save() below
     // only ever writes one of the two per provider, matching the Python
     // loader's own precedence).
-    string ApiKeyRef = "")
+    string ApiKeyRef = "",
+    // Ollama on a local base_url only: the mesh starts `ollama serve` when
+    // nothing answers there (ollama_keeper.py). Off leaves Ollama to you.
+    bool Autostart = true)
 {
     /// <summary>Per-model override, keyed by model tag. Not itself part of the
     /// record's equality/`with` shape since it is mutated in place rather than
@@ -102,6 +105,127 @@ internal sealed class EvoMeshYamlSettings
     public Dictionary<string, AgentModelEditorSettings> SystemAgents { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HarnessEditorSettings Harness { get; } = new();
 
+    /// <summary>
+    /// Every line this class has no field for, kept verbatim and written back
+    /// in place by <see cref="Save"/>. Keyed by where it was found: "" for the
+    /// top level, a section name, "provider:&lt;name&gt;" or "agent:&lt;id&gt;".
+    /// Found 2026-11-22: the live file's harness block had 43 lines and this
+    /// writer knew 13, and scraping:, a provider's kind: and autostart: were
+    /// all erased by the first save from the Settings tab.
+    /// </summary>
+    public Dictionary<string, List<string>> Extras { get; } = new(StringComparer.Ordinal);
+
+    // The keys Save() writes itself, per place in the file.
+    private static readonly Dictionary<string, HashSet<string>> KnownKeys = new(StringComparer.Ordinal)
+    {
+        [""] = ["environment_name", "data_path", "generation_path", "workspace_path", "log_level",
+                "runtime", "evolution", "harness", "git", "telegram", "system_agents", "models"],
+        ["runtime"] = ["cycle_seconds", "stagger_seconds", "prompt_chars", "memory_chars",
+                       "context_chars", "inbox_chars", "beliefs_chars"],
+        ["evolution"] = ["autonomous", "cycle_seconds", "auto_validate", "max_repairs", "auto_promote",
+                         "auto_restart", "restart_delay_seconds", "objective"],
+        ["harness"] = ["enabled", "allow_write", "max_steps", "max_seconds", "transcript_chars",
+                       "shell_allow", "shell_seconds", "tool_result_chars", "tool_result_lines",
+                       "grep_matches", "session_path", "workers", "max_queue"],
+        ["git"] = ["author_name", "author_email", "auto_push", "remote", "branch"],
+        ["telegram"] = ["enabled", "token", "allowed_chat_ids", "adopt_first_chat",
+                        "poll_timeout_seconds", "announcements"],
+        ["models"] = ["default_provider", "providers"],
+        ["provider"] = ["base_url", "model", "api_key", "api_key_ref", "timeout_seconds", "num_ctx",
+                        "model_num_ctx", "autostart"],
+        ["agent"] = ["provider", "model", "num_ctx"],
+    };
+
+    private void CollectExtras(string[] lines)
+    {
+        string section = "";
+        bool inProviders = false;
+        string? owner = null; // the provider or system agent the next deeper keys belong to
+        List<string>? capture = null;
+        var captureIndent = 0;
+        foreach (var rawLine in lines)
+        {
+            var trimmed = rawLine.Trim();
+            var indent = rawLine.TakeWhile(char.IsWhiteSpace).Count();
+            if (capture is not null)
+            {
+                if (trimmed.Length == 0 || trimmed.StartsWith('#') || indent > captureIndent)
+                {
+                    capture.Add(rawLine);
+                    continue;
+                }
+                capture = null;
+            }
+            if (trimmed.Length == 0 || trimmed.StartsWith('#') || trimmed.StartsWith('-') || !trimmed.Contains(':'))
+            {
+                continue;
+            }
+            var key = trimmed[..trimmed.IndexOf(':')].Trim();
+            string? place = null;
+            string? bucket = null;
+            if (indent == 0)
+            {
+                section = key;
+                inProviders = false;
+                owner = null;
+                (place, bucket) = ("", "");
+            }
+            else if (indent == 2 && KnownKeys.ContainsKey(section) && section is not "" and not "models")
+            {
+                (place, bucket) = (section, section);
+            }
+            else if (indent == 2 && section == "models")
+            {
+                inProviders = key == "providers";
+                (place, bucket) = ("models", "models");
+            }
+            else if (indent == 2 && section == "system_agents")
+            {
+                owner = key;
+            }
+            else if (indent == 4 && section == "system_agents" && owner is not null)
+            {
+                (place, bucket) = ("agent", $"agent:{owner}");
+            }
+            else if (indent == 4 && section == "models" && inProviders)
+            {
+                owner = key;
+            }
+            else if (indent == 6 && section == "models" && inProviders && owner is not null)
+            {
+                (place, bucket) = ("provider", $"provider:{owner}");
+            }
+            if (place is null || bucket is null || KnownKeys[place].Contains(key))
+            {
+                continue;
+            }
+            if (!Extras.TryGetValue(bucket, out capture))
+            {
+                capture = [];
+                Extras[bucket] = capture;
+            }
+            capture.Add(rawLine);
+            captureIndent = indent;
+        }
+    }
+
+    private void WriteExtras(TextWriter writer, string bucket)
+    {
+        if (!Extras.TryGetValue(bucket, out var lines))
+        {
+            return;
+        }
+        var last = lines.Count;
+        while (last > 0 && lines[last - 1].Trim().Length == 0)
+        {
+            last--;
+        }
+        for (var i = 0; i < last; i++)
+        {
+            writer.WriteLine(lines[i]);
+        }
+    }
+
     public static EvoMeshYamlSettings Load(string path)
     {
         var result = new EvoMeshYamlSettings();
@@ -109,6 +233,7 @@ internal sealed class EvoMeshYamlSettings
         {
             return result;
         }
+        result.CollectExtras(File.ReadAllLines(path));
 
         string? section = null;
         string? modelSection = null;
@@ -270,6 +395,7 @@ internal sealed class EvoMeshYamlSettings
                     "api_key_ref" => current with { ApiKeyRef = value },
                     "timeout_seconds" => current with { TimeoutSeconds = ParseDouble(value, current.TimeoutSeconds) },
                     "num_ctx" => current with { NumCtx = ParseInt(value, current.NumCtx) },
+                    "autostart" => current with { Autostart = ParseBool(value, true) },
                     _ => current,
                 };
             }
@@ -312,6 +438,7 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  context_chars: {Runtime.ContextChars}");
         writer.WriteLine($"  inbox_chars: {Runtime.InboxChars}");
         writer.WriteLine($"  beliefs_chars: {Runtime.BeliefsChars}");
+        WriteExtras(writer, "runtime");
         writer.WriteLine("evolution:");
         writer.WriteLine($"  autonomous: {(Evolution.Autonomous ? "true" : "false")}");
         writer.WriteLine($"  cycle_seconds: {Evolution.CycleSeconds}");
@@ -321,6 +448,7 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  auto_restart: {(Evolution.AutoRestart ? "true" : "false")}");
         writer.WriteLine($"  restart_delay_seconds: {Number(Evolution.RestartDelaySeconds)}");
         writer.WriteLine($"  objective: {(string.IsNullOrWhiteSpace(Evolution.Objective) ? "null" : Quote(Evolution.Objective))}");
+        WriteExtras(writer, "evolution");
         // Round-tripped even though this tab has no controls for it: a save
         // that only knows the fields it shows would otherwise erase whatever
         // enabled the harness, which the Evolver's propose stage cannot run
@@ -339,12 +467,14 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  session_path: {Quote(Harness.SessionPath)}");
         writer.WriteLine($"  workers: {Harness.Workers}");
         writer.WriteLine($"  max_queue: {Harness.MaxQueue}");
+        WriteExtras(writer, "harness");
         writer.WriteLine("git:");
         writer.WriteLine($"  author_name: {Quote(Git.AuthorName)}");
         writer.WriteLine($"  author_email: {Quote(Git.AuthorEmail)}");
         writer.WriteLine($"  auto_push: {(Git.AutoPush ? "true" : "false")}");
         writer.WriteLine($"  remote: {Quote(Git.Remote)}");
         writer.WriteLine($"  branch: {Quote(Git.Branch)}");
+        WriteExtras(writer, "git");
         writer.WriteLine("telegram:");
         writer.WriteLine($"  enabled: {(Telegram.Enabled ? "true" : "false")}");
         writer.WriteLine($"  token: {Quote(Telegram.Token)}");
@@ -352,6 +482,7 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  adopt_first_chat: {(Telegram.AdoptFirstChat ? "true" : "false")}");
         writer.WriteLine($"  poll_timeout_seconds: {Telegram.PollTimeoutSeconds}");
         writer.WriteLine($"  announcements: {(Telegram.Announcements ? "true" : "false")}");
+        WriteExtras(writer, "telegram");
         writer.WriteLine("system_agents:");
         foreach (var (agentId, agent) in SystemAgents)
         {
@@ -362,6 +493,7 @@ internal sealed class EvoMeshYamlSettings
             {
                 writer.WriteLine($"    num_ctx: {agentNumCtx}");
             }
+            WriteExtras(writer, $"agent:{agentId}");
         }
         writer.WriteLine("models:");
         writer.WriteLine($"  default_provider: {Quote(DefaultProvider)}");
@@ -392,7 +524,14 @@ internal sealed class EvoMeshYamlSettings
             {
                 writer.WriteLine($"      api_key: {Quote(provider.ApiKey)}");
             }
+            if (!provider.Autostart)
+            {
+                writer.WriteLine("      autostart: false");
+            }
+            WriteExtras(writer, $"provider:{name}");
         }
+        WriteExtras(writer, "models");
+        WriteExtras(writer, "");
     }
 
     /// <summary>

@@ -72,6 +72,7 @@ internal sealed class MainForm : Form
     private TextBox _evolutionCycleSeconds = null!;
     private CheckBox _autoPromote = null!;
     private CheckBox _autoRestart = null!;
+    private CheckBox _ollamaAutostart = null!;
     private TextBox _gitAuthorName = null!;
     private TextBox _gitAuthorEmail = null!;
     private CheckBox _gitAutoPush = null!;
@@ -1062,6 +1063,21 @@ internal sealed class MainForm : Form
                 row);
             _providers[name] = (url, model, key, numCtx, keyRef);
             row++;
+            if (name == "ollama")
+            {
+                _ollamaAutostart = AddCheck(grid, "Start Ollama if it is not running", 0, row);
+                grid.Controls.Add(
+                    new Label
+                    {
+                        Text = "Off: EvoMesh only uses an Ollama you started yourself.",
+                        AutoSize = true,
+                        ForeColor = Color.DimGray,
+                        Margin = new Padding(3, 8, 8, 8),
+                    },
+                    2,
+                    row);
+                row++;
+            }
         }
 
         AddHeading(grid, "RUNTIME", ref row);
@@ -1393,6 +1409,10 @@ internal sealed class MainForm : Form
                     controls.KeyRef.Text = provider.ApiKeyRef;
                     controls.NumCtx.Text = provider.NumCtx.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
+                if (name == "ollama")
+                {
+                    _ollamaAutostart.Checked = provider?.Autostart ?? true;
+                }
             }
             _runtimeCycleSeconds.Text = settings.Runtime.CycleSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _evolutionCycleSeconds.Text = settings.Evolution.CycleSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -1510,7 +1530,8 @@ internal sealed class MainForm : Form
                 int.TryParse(controls.NumCtx.Text.Trim(), out var numCtx) && numCtx > 0
                     ? numCtx
                     : existing?.NumCtx ?? 65536,
-                keyRef);
+                keyRef,
+                name == "ollama" ? _ollamaAutostart.Checked : existing?.Autostart ?? true);
             // The record's constructor gives ModelNumCtx a fresh, empty dictionary;
             // a per-model entry a human hand-edited into the file has no editor
             // control at all, so it is copied across rather than dropped here.
