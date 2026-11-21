@@ -11,6 +11,8 @@ All notable changes to EvoMesh are documented in this file.
 - **Screenshot questions.** `{"action": "screenshot", "question": "..."}` sends that one image to the agent's own provider and model, in a call of its own, and returns the answer as `visual_analysis`. The job's transcript stays text.
   - On Ollama, only a model whose `/api/show` capabilities list `vision` is sent the image. A text-only model would answer from the question alone.
   - The answer is page content: marked untrusted, checked for injection phrases, bounded by `browser.vision_answer_chars`, with a reasoning model's thinking removed.
+  - Bounded. The image is shrunk by the extension so neither side exceeds `browser.vision_max_side` (1024). A full-resolution capture of one Wikipedia page was 3636 image tokens and minutes of GPU on the live machine. The output is capped by `browser.vision_max_tokens`, and an Ollama model that lists `thinking` is told not to think.
+  - The extension is 2.0.1 (the shrinking); reload it.
   - A failed or slow answer never loses the saved screenshot. `browser.vision: false` refuses questions.
   - `look()` on the Ollama, OpenAI-compatible and Anthropic providers, each in its own image shape.
 

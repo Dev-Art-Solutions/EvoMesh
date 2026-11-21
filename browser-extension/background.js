@@ -400,8 +400,15 @@ async function screenshot(message, element) {
       dpr = meta.viewport.device_pixel_ratio || 1;
     }
   }
+  // max_side: the longest side, in pixels, of the image sent back. The mesh
+  // asks for it when a model will look at the image: a full-resolution
+  // capture is thousands of image tokens to a vision model.
+  const maxSide = Number(message.max_side) > 0 ? Math.round(Number(message.max_side)) : 0;
   let dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format, quality: 80 });
-  if (element) dataUrl = await crop(dataUrl, rect, dpr, format);
+  let size = null;
+  if (element || maxSide) {
+    ({ dataUrl, size } = await reshape(dataUrl, element ? rect : null, dpr, format, maxSide));
+  }
   return {
     success: true,
     action: element ? "element_screenshot" : "screenshot",
@@ -410,24 +417,41 @@ async function screenshot(message, element) {
     viewport,
     device_pixel_ratio: dpr,
     element: described,
+    image_size: size,
     data_url: dataUrl,
   };
 }
 
-async function crop(dataUrl, rect, dpr, format) {
+// Crop to rect (CSS pixels) and/or shrink so neither side exceeds maxSide.
+async function reshape(dataUrl, rect, dpr, format, maxSide) {
   const blob = await (await fetch(dataUrl)).blob();
   const bitmap = await createImageBitmap(blob);
-  const x = Math.round(rect.x * dpr);
-  const y = Math.round(rect.y * dpr);
-  const width = Math.max(1, Math.min(Math.round(rect.width * dpr), bitmap.width - x));
-  const height = Math.max(1, Math.min(Math.round(rect.height * dpr), bitmap.height - y));
-  const canvas = new OffscreenCanvas(width, height);
-  canvas.getContext("2d").drawImage(bitmap, x, y, width, height, 0, 0, width, height);
+  let x = 0;
+  let y = 0;
+  let width = bitmap.width;
+  let height = bitmap.height;
+  if (rect) {
+    x = Math.round(rect.x * dpr);
+    y = Math.round(rect.y * dpr);
+    width = Math.max(1, Math.min(Math.round(rect.width * dpr), bitmap.width - x));
+    height = Math.max(1, Math.min(Math.round(rect.height * dpr), bitmap.height - y));
+  }
+  const scale = maxSide ? Math.min(1, maxSide / Math.max(width, height)) : 1;
+  const outWidth = Math.max(1, Math.round(width * scale));
+  const outHeight = Math.max(1, Math.round(height * scale));
+  if (!rect && scale === 1) {
+    return { dataUrl, size: { width, height } };
+  }
+  const canvas = new OffscreenCanvas(outWidth, outHeight);
+  canvas.getContext("2d").drawImage(bitmap, x, y, width, height, 0, 0, outWidth, outHeight);
   const out = await canvas.convertToBlob({ type: `image/${format}`, quality: 0.8 });
   const bytes = new Uint8Array(await out.arrayBuffer());
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
-  return `data:image/${format};base64,${btoa(binary)}`;
+  return {
+    dataUrl: `data:image/${format};base64,${btoa(binary)}`,
+    size: { width: outWidth, height: outHeight },
+  };
 }

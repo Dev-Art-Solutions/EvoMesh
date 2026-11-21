@@ -94,6 +94,7 @@ The values of password, hidden and payment fields are never returned.
 
 - The image goes to the agent's own provider and model, in one call of its own, outside the job's transcript. Nothing else is sent anywhere.
 - On Ollama, the model must list `vision` in `/api/show`. A text-only model is never sent the image, so it cannot describe a page it did not see. The reply says `vision_unsupported`.
+- The image is shrunk so neither side exceeds `browser.vision_max_side` (1024), and the model's output is capped by `browser.vision_max_tokens`. A thinking model is told not to think.
 - The answer is page content: it is marked untrusted, checked for instruction-like phrases, cut to `browser.vision_answer_chars`, and a reasoning model's thinking is removed.
 - A failed or slow answer costs the answer, never the saved file. `browser.vision: false` refuses questions.
 

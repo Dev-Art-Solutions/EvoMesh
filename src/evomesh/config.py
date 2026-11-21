@@ -418,6 +418,12 @@ class BrowserSettings(BaseModel):
     # untrusted page content). Off: questions are refused, files still saved.
     vision: bool = True
     vision_answer_chars: int = 1500
+    # The model's output cap for that call; a thinking model is told not to
+    # think, or it can hold the GPU for minutes on one busy page.
+    vision_max_tokens: int = 1024
+    # The image the model is sent is shrunk so neither side exceeds this
+    # (the saved file is that same image).
+    vision_max_side: int = 1024
     vision_timeout_seconds: float = 180.0
     # How long a human's /browser approve stays valid.
     confirmation_minutes: float = 15.0

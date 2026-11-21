@@ -813,7 +813,12 @@ class Environment:
                 "capability); the screenshot is saved for a human",
             )
         answer = await look(
-            image, question, system=VISION_SYSTEM, model=definition.model_name, mime=mime
+            image,
+            question,
+            system=VISION_SYSTEM,
+            model=definition.model_name,
+            mime=mime,
+            max_tokens=self.settings.browser.vision_max_tokens,
         )
         return str(answer)
 

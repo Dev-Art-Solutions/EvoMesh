@@ -380,6 +380,8 @@ mcp_servers: []
 #   screenshot_keep: 20          # per agent, in its playground's screenshots/
 #   vision: true                 # a screenshot "question" goes to the agent's own model
 #   vision_answer_chars: 1500
+#   vision_max_side: 1024        # the image the model sees is shrunk to this
+#   vision_max_tokens: 1024      # output cap; a thinking model is told not to think
 #   vision_timeout_seconds: 180
 #   confirmation_minutes: 15     # how long /browser approve stays valid
 

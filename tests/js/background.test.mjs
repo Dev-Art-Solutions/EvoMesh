@@ -110,7 +110,23 @@ const chrome = {
   },
 };
 
-vm.runInNewContext(source, { chrome, console, setTimeout, clearTimeout, fetch, URL, Promise, Date, JSON, Math, Number, String, Array, Set, Map, Object, Error, Uint8Array, btoa });
+// A capture the size of the live one (1510x1570 CSS px at DPR 1.25).
+const drawn = [];
+const createImageBitmap = async () => ({ width: 1888, height: 1963 });
+class OffscreenCanvas {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+  }
+  getContext() {
+    return { drawImage: (...args) => drawn.push({ canvas: [this.width, this.height], args: args.slice(1) }) };
+  }
+  async convertToBlob() {
+    return { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+  }
+}
+
+vm.runInNewContext(source, { chrome, console, setTimeout, clearTimeout, fetch, URL, Promise, Date, JSON, Math, Number, String, Array, Set, Map, Object, Error, Uint8Array, btoa, createImageBitmap, OffscreenCanvas });
 
 let counter = 0;
 async function ask(request) {
@@ -144,6 +160,9 @@ results.page = await ask({ action: "snapshot", tab_id: 1 });
 results.click = await ask({ action: "click", tab_id: 1, target: { ref: "x:e1" }, wait_after_ms: 50 });
 results.inactive_shot = await ask({ action: "screenshot", tab_id: 2 });
 results.shot = await ask({ action: "screenshot", tab_id: 1 });
+results.drawn_full = drawn.length;
+results.small_shot = await ask({ action: "screenshot", tab_id: 1, max_side: 1024 });
+results.drawn = drawn;
 results.unknown = await ask({ action: "evaluate", code: "1" });
 results.wait_nav = await ask({ action: "wait_for_navigation", tab_id: 1, url_contains: "never", timeout_seconds: 0.2 });
 results.listeners_left = { updated: onUpdated.size, errors: onError.size };

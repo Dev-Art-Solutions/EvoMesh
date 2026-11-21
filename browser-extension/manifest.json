@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EvoMesh Browser Bridge",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Lets EvoMesh agents read and drive Chrome tabs through a local native-messaging host you run yourself. Nothing leaves your machine.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyyJFI/BuiGoto+zAweTJH8DBHa23oKV4JlS3buEsCex/NbpvZ5/8ht+gcsMkIDHA+qmjCwvZcXNCREUc6FJpc6+nFGTf42hruAIgZDBWfy7x2/He/eFmZJlJKLj8h1UhZxeTWSCL5bTy7PW1VAlNCBzKoc2ZoSeTThw/U5eTn5k0lMNW65rYLT0MR71reV3KMa6I5Gs3j3xAt5PDOUEX2+R/m18VvkUgWp+RBYEVclq79b5sMDErJpryuiCCA0gqVqJ9dPJ8caQEGcJylVqWgVvfzksrhWxqTQnY6PbYsA5JgNd4pTc0WwyvHoz4DlNXQBLtcqQkRjMpVU9am36yfQIDAQAB",
   "permissions": ["nativeMessaging", "tabs", "scripting", "alarms", "storage", "webNavigation"],

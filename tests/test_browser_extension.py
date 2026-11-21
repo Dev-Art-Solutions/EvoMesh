@@ -158,6 +158,12 @@ def test_the_background_worker_against_a_mocked_chrome() -> None:
     assert result["back"]["url"].endswith("/previous")
     assert result["inactive_shot"]["error"]["code"] == "tab_not_active"
     assert result["shot"]["chunks"] > 1, "a large screenshot is sent in pieces"
+    assert result["drawn_full"] == 0, "without max_side the capture is sent as taken"
+    # max_side shrinks the whole capture, aspect kept, onto one canvas.
+    assert result["small_shot"]["image_size"] == {"width": 985, "height": 1024}
+    assert result["drawn"] == [
+        {"canvas": [985, 1024], "args": [0, 0, 1888, 1963, 0, 0, 985, 1024]}
+    ]
     assert result["max_message"] < 1024 * 1024, "every native message stays under Chrome's 1 MB"
     assert result["unknown"]["error"]["code"] == "invalid_request"
     assert result["wait_nav"]["error"]["code"] == "navigation_timeout"

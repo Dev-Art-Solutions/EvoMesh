@@ -111,7 +111,26 @@ async def test_ollama_look_sends_the_image_and_probes_vision_once(monkeypatch):
     body = json.loads(seen[1].content)
     assert body["images"] == [base64.b64encode(IMAGE).decode()]
     assert body["prompt"] == "what?" and body["system"] == "sys"
-    assert body["options"] == {"num_ctx": 8192}
+    assert body["options"] == {"num_ctx": 8192, "num_predict": 1024}, "output is bounded"
+    assert "think" not in body, "only a thinking model is told not to think"
+
+
+async def test_ollama_look_tells_a_thinking_model_not_to_think(monkeypatch):
+    import json
+
+    from evomesh.models import OllamaProvider
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"capabilities": ["completion", "vision", "thinking"]})
+        return httpx.Response(200, json={"response": "Python (programming language)"})
+
+    seen = _serve(monkeypatch, answer)
+    provider = OllamaProvider("http://ollama.invalid", "ornith")
+    await provider.look(IMAGE, "title?", max_tokens=256)
+    body = json.loads(seen[-1].content)
+    assert body["think"] is False
+    assert body["options"] == {"num_predict": 256}
 
 
 async def test_ollama_says_a_text_model_cannot_see_and_does_not_guess_when_unsure(monkeypatch):
@@ -148,6 +167,8 @@ async def test_openai_and_anthropic_look_use_their_own_image_shapes(monkeypatch)
     anthropic = AnthropicProvider("http://an.invalid/v1", "claude", "k")
     assert await anthropic.look(IMAGE, "what?", system="sys") == "claude"
 
+    assert json.loads(seen[0].content)["max_tokens"] == 1024
+    assert json.loads(seen[1].content)["max_tokens"] == 1024
     parts = json.loads(seen[0].content)["messages"][1]["content"]
     assert parts[0] == {"type": "text", "text": "what?"}
     assert parts[1]["image_url"]["url"] == f"data:image/jpeg;base64,{encoded}"

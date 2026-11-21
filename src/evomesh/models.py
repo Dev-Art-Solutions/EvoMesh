@@ -226,8 +226,8 @@ class OllamaProvider:
         # sees it. Configuring this is what makes the project's own budgets the
         # thing that trims, per the load-bearing rule in CLAUDE.md.
         self.num_ctx = num_ctx
-        # supports_vision() answers, per model name, once Ollama has given one.
-        self._vision: dict[str, bool] = {}
+        # /api/show capabilities, per model name, once Ollama has given them.
+        self._vision: dict[str, list[str]] = {}
 
     def _options(self, num_ctx: int | None) -> dict[str, Any] | None:
         effective = num_ctx if num_ctx is not None else self.num_ctx
@@ -298,7 +298,10 @@ class OllamaProvider:
         Asked before look(): a text-only model is sent the image anyway and
         answers the question from the prompt alone, a description of a page
         it never saw."""
-        name = model or self.model
+        capabilities = await self._capabilities(model or self.model)
+        return None if capabilities is None else "vision" in capabilities
+
+    async def _capabilities(self, name: str) -> list[str] | None:
         if name in self._vision:
             return self._vision[name]
         try:
@@ -310,7 +313,7 @@ class OllamaProvider:
             return None
         if not isinstance(capabilities, list):
             return None
-        self._vision[name] = "vision" in capabilities
+        self._vision[name] = [str(item) for item in capabilities]
         return self._vision[name]
 
     async def look(
@@ -321,18 +324,27 @@ class OllamaProvider:
         system: str = "",
         model: str | None = None,
         mime: str = "image/png",
+        max_tokens: int = 1024,
     ) -> str:
-        """One question about one image, outside any transcript."""
+        """One question about one image, outside any transcript.
+
+        Bounded: found live, ornith-1.5 asked about a busy Wikipedia
+        screenshot reasoned for over ten minutes with no cap on its output,
+        holding the GPU every other agent waits on. A thinking model is told
+        not to think, and the answer is capped at ``max_tokens``."""
         del mime  # Ollama takes the raw bytes and works the format out itself
+        name = model or self.model
         body: dict[str, Any] = {
-            "model": model or self.model,
+            "model": name,
             "prompt": question,
             "system": system,
             "images": [base64.b64encode(image).decode("ascii")],
             "stream": False,
+            "options": {**(self._options(None) or {}), "num_predict": max_tokens},
         }
-        if options := self._options(None):
-            body["options"] = options
+        capabilities = await self._capabilities(name)
+        if capabilities is not None and "thinking" in capabilities:
+            body["think"] = False
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await _post_with_retry(
@@ -480,6 +492,7 @@ class OpenAICompatibleProvider:
         system: str = "",
         model: str | None = None,
         mime: str = "image/png",
+        max_tokens: int = 1024,
     ) -> str:
         """One question about one image, as a chat-completions image part."""
         url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
@@ -499,7 +512,11 @@ class OpenAICompatibleProvider:
                     client,
                     f"{self.base_url}/chat/completions",
                     headers=self._headers,
-                    json={"model": model or self.model, "messages": messages},
+                    json={
+                        "model": model or self.model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                    },
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -659,6 +676,7 @@ class AnthropicProvider:
         system: str = "",
         model: str | None = None,
         mime: str = "image/png",
+        max_tokens: int = 1024,
     ) -> str:
         """One question about one image, as a base64 image block."""
         content = [
@@ -674,7 +692,7 @@ class AnthropicProvider:
         ]
         body: dict[str, Any] = {
             "model": model or self.model,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": min(max_tokens, self.max_output_tokens),
             "messages": [{"role": "user", "content": content}],
         }
         if system:
@@ -852,9 +870,17 @@ class MockProvider:
         system: str = "",
         model: str | None = None,
         mime: str = "image/png",
+        max_tokens: int = 1024,
     ) -> str:
         self.looks.append(
-            {"image": image, "question": question, "system": system, "model": model, "mime": mime}
+            {
+                "image": image,
+                "question": question,
+                "system": system,
+                "model": model,
+                "mime": mime,
+                "max_tokens": max_tokens,
+            }
         )
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 

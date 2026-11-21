@@ -857,8 +857,12 @@ class BrowserService:
         payload = {
             key: value
             for key, value in request.items()
-            if key not in ("confirmation", "question")
+            if key not in ("confirmation", "question", "max_side")
         }
+        if question:
+            # A model reads a full-resolution capture as thousands of image
+            # tokens: found live, 3636 for one Wikipedia page, minutes of GPU.
+            payload["max_side"] = self.settings.vision_max_side
         if action == "navigate":
             payload["url"] = _navigable(str(request.get("url") or ""))
         if action == "new_tab" and request.get("url"):

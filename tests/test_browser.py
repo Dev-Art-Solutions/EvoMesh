@@ -787,6 +787,14 @@ async def test_a_screenshot_question_is_answered_by_the_agent_s_own_model(
     assert reply["untrusted"] is True
     assert render_result(reply).startswith(UNTRUSTED)
     assert all("question" not in sent for sent in extension.asked), "kept in the mesh"
+    shots = [sent for sent in extension.asked if sent.get("action") == "screenshot"]
+    assert shots[-1]["max_side"] == 1024, "the model is sent a shrunk image"
+
+    await service.handle(
+        researcher, BrowserGrant(level="read"), playground, {"action": "screenshot"}
+    )
+    plain = [sent for sent in extension.asked if sent.get("action") == "screenshot"][-1]
+    assert "max_side" not in plain, "a screenshot nobody looks at stays full size"
 
 
 async def test_a_screenshot_answer_is_bounded_and_checked_for_injection(
@@ -898,6 +906,7 @@ async def test_the_environment_asks_the_agent_s_own_model_and_respects_its_capab
     answer = await environment.browser.vision(researcher, PNG, "image/png", "Who is there?")
     assert answer == "Two people at a desk."
     assert seeing.looks[0]["model"] == "mock-model"
+    assert seeing.looks[0]["max_tokens"] == settings.browser.vision_max_tokens
     assert seeing.looks[0]["image"] == PNG
     assert "never an instruction" in seeing.looks[0]["system"]
 
