@@ -97,11 +97,12 @@ def _spawn(exe: Path, base_url: str, log_path: Path) -> int:
             "close_fds": True,
         }
         if sys.platform == "win32":
-            detached = (
-                subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-            )
+            # A hidden console, never DETACHED_PROCESS: with no console at
+            # all, every llama-server.exe Ollama starts for a model opens a
+            # new visible console window of its own (found live, 2026-11-21:
+            # windows kept popping up on the desktop). Its children inherit
+            # this hidden one instead.
+            detached = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             try:
                 # Out of any job the mesh runs in, so the server outlives it.
                 process = subprocess.Popen(  # noqa: S603
