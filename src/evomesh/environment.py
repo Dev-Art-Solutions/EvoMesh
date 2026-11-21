@@ -18,7 +18,13 @@ from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
 from evomesh.bdi import BDIBehavior, ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
 from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
-from evomesh.browser import BrowserService, PendingAction, build_browser_tool
+from evomesh.browser import (
+    VISION_SYSTEM,
+    BrowserError,
+    BrowserService,
+    PendingAction,
+    build_browser_tool,
+)
 from evomesh.cognition import AgentBehavior, CycleOutcome
 from evomesh.cognitive_services import (
     CognitiveModelService,
@@ -156,6 +162,7 @@ class Environment:
         # The browser tool and EvoMesh's own automation Chrome (browser.py).
         self.browser = BrowserService(settings.browser, self.project_root)
         self.browser.on_pending = self._browser_waits
+        self.browser.vision = self._browser_look
         self._browser_tasks: set[asyncio.Task[None]] = set()
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
@@ -785,6 +792,30 @@ class Environment:
         )
         self._browser_tasks.add(task)
         task.add_done_callback(self._browser_tasks.discard)
+
+    async def _browser_look(
+        self, definition: AgentDefinition, image: bytes, mime: str, question: str
+    ) -> str:
+        """A screenshot question, answered by the agent's own provider and
+        model -- never a different, unconfigured one."""
+        provider = self.providers.get(definition.provider)
+        look = getattr(provider, "look", None)
+        if look is None:
+            raise BrowserError(
+                "vision_unavailable",
+                f"provider '{definition.provider}' cannot be sent images",
+            )
+        probe = getattr(provider, "supports_vision", None)
+        if probe is not None and await probe(definition.model_name) is False:
+            raise BrowserError(
+                "vision_unsupported",
+                f"{definition.model_name} does not take images (Ollama lists no vision "
+                "capability); the screenshot is saved for a human",
+            )
+        answer = await look(
+            image, question, system=VISION_SYSTEM, model=definition.model_name, mime=mime
+        )
+        return str(answer)
 
     def wake_ideas(self) -> None:
         """A human decided an idea: a review slot may have opened."""

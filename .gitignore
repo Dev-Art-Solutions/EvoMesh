@@ -14,6 +14,8 @@ workspace/*
 !workspace/.gitkeep
 evomesh.yaml
 evomesh.secrets.yaml
+# Written by scripts/install-chrome-bridge.ps1, with this machine's path.
+scripts/com.evomesh.browser_bridge.json
 .env
 desktop/**/bin/
 desktop/**/obj/

@@ -378,6 +378,9 @@ mcp_servers: []
 #   snapshot_links: 10
 #   screenshot_max_bytes: 5000000
 #   screenshot_keep: 20          # per agent, in its playground's screenshots/
+#   vision: true                 # a screenshot "question" goes to the agent's own model
+#   vision_answer_chars: 1500
+#   vision_timeout_seconds: 180
 #   confirmation_minutes: 15     # how long /browser approve stays valid
 
 # SMTP accounts agents can send email from (send_email tool). An agent may use

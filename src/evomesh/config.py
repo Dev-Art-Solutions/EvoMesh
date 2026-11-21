@@ -413,6 +413,12 @@ class BrowserSettings(BaseModel):
     # Screenshots land in the agent's own playground under screenshots/.
     screenshot_max_bytes: int = 5_000_000
     screenshot_keep: int = 20
+    # A screenshot request with a "question" sends that one image to the
+    # agent's own model, in a call of its own, and returns the answer (as
+    # untrusted page content). Off: questions are refused, files still saved.
+    vision: bool = True
+    vision_answer_chars: int = 1500
+    vision_timeout_seconds: float = 180.0
     # How long a human's /browser approve stays valid.
     confirmation_minutes: float = 15.0
 

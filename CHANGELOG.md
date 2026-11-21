@@ -4,6 +4,21 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.1-alpha.1] - 2026-11-21
+
+### Added
+
+- **Screenshot questions.** `{"action": "screenshot", "question": "..."}` sends that one image to the agent's own provider and model, in a call of its own, and returns the answer as `visual_analysis`. The job's transcript stays text.
+  - On Ollama, only a model whose `/api/show` capabilities list `vision` is sent the image. A text-only model would answer from the question alone.
+  - The answer is page content: marked untrusted, checked for injection phrases, bounded by `browser.vision_answer_chars`, with a reasoning model's thinking removed.
+  - A failed or slow answer never loses the saved screenshot. `browser.vision: false` refuses questions.
+  - `look()` on the Ollama, OpenAI-compatible and Anthropic providers, each in its own image shape.
+
+### Fixed
+
+- **`/browser stop` could not find EvoMesh's Chrome** when the checkout's path had a space in it, as on the machine it was built on. Windows quotes the whole `"--user-data-dir=..."` argument, and the old pattern read the path only up to the space. Nothing else was stopped by mistake. The lifecycle test now also runs on a spaced path.
+- `scripts/com.evomesh.browser_bridge.json`, written by `install-chrome-bridge.ps1` with this machine's path in it, is ignored by git.
+
 ## [0.7.0-alpha.1] - 2026-11-21
 
 A browser agents can drive, behind a boundary they cannot reach around.

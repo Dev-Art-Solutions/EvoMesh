@@ -84,7 +84,18 @@ Names match case-insensitively by substring, or exactly with `"exact": true`. Wh
 
 The values of password, hidden and payment fields are never returned.
 
-**Screenshots** are saved as files in the agent's own playground, under `screenshots/`, and the tool returns the path, not the image. They are capped by `browser.screenshot_max_bytes`, and only the newest `browser.screenshot_keep` are kept. Nothing is sent to any model or service. Only the visible tab can be captured.
+**Screenshots** are saved as files in the agent's own playground, under `screenshots/`, and the tool returns the path, not the image. They are capped by `browser.screenshot_max_bytes`, and only the newest `browser.screenshot_keep` are kept. Only the visible tab can be captured.
+
+**Asking about a screenshot.** Add a question and the agent's own model looks at the image:
+
+```json
+{"action": "screenshot", "question": "Which quarter has the tallest bar?"}
+```
+
+- The image goes to the agent's own provider and model, in one call of its own, outside the job's transcript. Nothing else is sent anywhere.
+- On Ollama, the model must list `vision` in `/api/show`. A text-only model is never sent the image, so it cannot describe a page it did not see. The reply says `vision_unsupported`.
+- The answer is page content: it is marked untrusted, checked for instruction-like phrases, cut to `browser.vision_answer_chars`, and a reasoning model's thinking is removed.
+- A failed or slow answer costs the answer, never the saved file. `browser.vision: false` refuses questions.
 
 ## What needs you
 
@@ -128,5 +139,5 @@ Chrome starts `browser_bridge.py` (via `scripts/chrome-native-host.bat`) when th
 - Clicks and typing are DOM events (`isTrusted: false`). A few sites ignore them; those need a human.
 - File uploads are not supported.
 - Elements inside cross-origin iframes and closed shadow roots are not reached.
-- The configured model may have vision (on this machine `ornith-1.5:35b` reports it), but harness tool results are text, so screenshots are saved files and the tool says no visual analysis was done.
+- A screenshot is looked at only when the request asks a question. The job's transcript stays text, so the model sees the answer, not the image.
 - Cancelling a job stops the waiting. A page action already running in the tab still finishes.

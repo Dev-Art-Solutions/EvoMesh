@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import uuid
 from contextvars import ContextVar
@@ -225,6 +226,8 @@ class OllamaProvider:
         # sees it. Configuring this is what makes the project's own budgets the
         # thing that trims, per the load-bearing rule in CLAUDE.md.
         self.num_ctx = num_ctx
+        # supports_vision() answers, per model name, once Ollama has given one.
+        self._vision: dict[str, bool] = {}
 
     def _options(self, num_ctx: int | None) -> dict[str, Any] | None:
         effective = num_ctx if num_ctx is not None else self.num_ctx
@@ -275,6 +278,61 @@ class OllamaProvider:
             # structured_fallback) to make a malformed/fabricated tool-call
             # envelope structurally impossible instead of merely unlikely.
             body["format"] = format
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await _post_with_retry(
+                    client, f"{self.base_url}/api/generate", json=body
+                )
+                response.raise_for_status()
+                data = response.json()
+                _record_usage(data.get("prompt_eval_count"), data.get("eval_count"))
+                return str(data["response"])
+            except (httpx.HTTPError, KeyError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+
+    async def supports_vision(self, model: str | None = None) -> bool | None:
+        """Whether Ollama lists ``vision`` among the model's capabilities
+        (/api/show). None when it cannot say -- an older server, or Ollama
+        not reachable -- and that is not remembered.
+
+        Asked before look(): a text-only model is sent the image anyway and
+        answers the question from the prompt alone, a description of a page
+        it never saw."""
+        name = model or self.model
+        if name in self._vision:
+            return self._vision[name]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(f"{self.base_url}/api/show", json={"model": name})
+                response.raise_for_status()
+                capabilities = response.json().get("capabilities")
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(capabilities, list):
+            return None
+        self._vision[name] = "vision" in capabilities
+        return self._vision[name]
+
+    async def look(
+        self,
+        image: bytes,
+        question: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        mime: str = "image/png",
+    ) -> str:
+        """One question about one image, outside any transcript."""
+        del mime  # Ollama takes the raw bytes and works the format out itself
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "prompt": question,
+            "system": system,
+            "images": [base64.b64encode(image).decode("ascii")],
+            "stream": False,
+        }
+        if options := self._options(None):
+            body["options"] = options
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await _post_with_retry(
@@ -398,6 +456,43 @@ class OpenAICompatibleProvider:
         # this thin wrapper.
         del format
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await _post_with_retry(
+                    client,
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers,
+                    json={"model": model or self.model, "messages": messages},
+                )
+                response.raise_for_status()
+                data = response.json()
+                usage = data.get("usage") or {}
+                _record_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+                return str(data["choices"][0]["message"]["content"])
+            except (httpx.HTTPError, KeyError, IndexError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+
+    async def look(
+        self,
+        image: bytes,
+        question: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        mime: str = "image/png",
+    ) -> str:
+        """One question about one image, as a chat-completions image part."""
+        url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            },
+        ]
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 response = await _post_with_retry(
@@ -556,6 +651,51 @@ class AnthropicProvider:
         )
         return turn.text
 
+    async def look(
+        self,
+        image: bytes,
+        question: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        mime: str = "image/png",
+    ) -> str:
+        """One question about one image, as a base64 image block."""
+        content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": base64.b64encode(image).decode("ascii"),
+                },
+            },
+            {"type": "text", "text": question},
+        ]
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "max_tokens": self.max_output_tokens,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if system:
+            body["system"] = system
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await _post_with_retry(
+                    client, f"{self.base_url}/messages", headers=self._headers, json=body
+                )
+                response.raise_for_status()
+                payload = response.json()
+                usage = payload.get("usage") or {}
+                _record_usage(usage.get("input_tokens"), usage.get("output_tokens"))
+            except (httpx.HTTPError, ValueError) as exc:
+                raise ModelUnavailableError(describe(exc)) from exc
+        return "".join(
+            str(block.get("text", ""))
+            for block in payload.get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
     @staticmethod
     def _content_blocks(message: ChatMessage) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
@@ -676,6 +816,7 @@ class MockProvider:
         # has to work in anyway -- so it is the default a test gets for free.
         self.turns = turns
         self.chats: list[list[ChatMessage]] = []
+        self.looks: list[dict[str, Any]] = []
 
     async def health(self) -> tuple[bool, str]:
         return True, "ready"
@@ -700,6 +841,20 @@ class MockProvider:
                 "num_ctx": num_ctx,
                 "format": format,
             }
+        )
+        return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+
+    async def look(
+        self,
+        image: bytes,
+        question: str,
+        *,
+        system: str = "",
+        model: str | None = None,
+        mime: str = "image/png",
+    ) -> str:
+        self.looks.append(
+            {"image": image, "question": question, "system": system, "model": model, "mime": mime}
         )
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 
