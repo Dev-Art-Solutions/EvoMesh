@@ -14,6 +14,7 @@ from evomesh.console import ConsoleChannel
 from evomesh.control import CONTROL_HOST, CONTROL_PORT, ControlServer, wait_for_console_or_shutdown
 from evomesh.environment import Environment, shutdown_step
 from evomesh.loop_watchdog import LoopWatchdog
+from evomesh.ollama_keeper import keepers_for
 from evomesh.processes import kill_running
 from evomesh.singleton import AlreadyRunningError, SingletonLock
 from evomesh.telegram import TelegramChannel
@@ -134,6 +135,14 @@ async def application(
         watchdog = LoopWatchdog()
         watchdog.start()
         environment.loop_watchdog = watchdog
+        # Ollama up before the agents' first cycles, and kept up after.
+        keepers = keepers_for(
+            dict(settings.models.providers),
+            log_file.parent if log_file is not None else Path(".runtime") / "logs",
+        )
+        for keeper in keepers:
+            await keeper.ensure()
+        keeper_tasks = [asyncio.create_task(keeper.run()) for keeper in keepers]
         await environment.start(start_agent_loops=True)
         shutdown = asyncio.Event()
         control = ControlServer(environment, shutdown, control_host, control_port)
@@ -150,6 +159,8 @@ async def application(
         finally:
             _start_shutdown_watchdog(environment)
             restart_watch.cancel()
+            for task in keeper_tasks:
+                task.cancel()
             if telegram_task is not None:
                 telegram.stop()
                 telegram_task.cancel()

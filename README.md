@@ -166,7 +166,7 @@ The local control channel listens only on `127.0.0.1:8765`. Closing the Control 
 
 ## Local model configuration
 
-`evomesh.yaml` configures Ollama (default), InferHub, or another local OpenAI-compatible endpoint. No cloud AI account is required. For Ollama, install the configured model, for example `ollama pull qwen3`. InferHub is optional and uses its OpenAI-compatible local endpoint.
+`evomesh.yaml` configures Ollama (default), InferHub, or another local OpenAI-compatible endpoint. No cloud AI account is required. For Ollama, install the configured model, for example `ollama pull qwen3`. When a local Ollama does not answer, the mesh starts `ollama serve` itself, before the agents and then every minute (`autostart: false` on the provider turns that off). InferHub is optional and uses its OpenAI-compatible local endpoint.
 
 EvoMesh is built for small context windows. `runtime.prompt_chars`, `memory_chars`, `context_chars`, and `inbox_chars` cap every prompt, and the defaults suit a 4k-token model; raise them if your models are larger. Reasoning-model `<think>` blocks are stripped before anything is stored or re-prompted, including the common case where the chat template already opened the block and the model returns only the closing tag.
 

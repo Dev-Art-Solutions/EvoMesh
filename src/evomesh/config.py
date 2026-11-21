@@ -49,6 +49,9 @@ class ProviderSettings(BaseModel):
     # `inferhub`/`openai_compatible` in evomesh.yaml.example never had to
     # name a kind before this field existed.
     kind: Literal["ollama", "openai", "anthropic"] | None = None
+    # Ollama only, on a local base_url: the mesh starts `ollama serve` when
+    # nothing answers there (ollama_keeper.py). False leaves it to a human.
+    autostart: bool = True
     # A 30B model on a busy GPU answers a full prompt in minutes, not seconds.
     # Too low a ceiling here reads to a human as "the agent is broken".
     timeout_seconds: float = 600

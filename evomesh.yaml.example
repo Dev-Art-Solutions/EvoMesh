@@ -224,6 +224,10 @@ models:
     ollama:
       base_url: http://127.0.0.1:11434
       model: qwen3
+      # When nothing answers at this (local) base_url, the mesh starts
+      # `ollama serve` itself, before the agents and then every minute.
+      # Log: .runtime/logs/ollama-serve.log. false leaves it to you.
+      # autostart: true
       # Seconds to wait for one answer. A 30B model on a busy GPU needs minutes.
       timeout_seconds: 600
       # Sent as `options.num_ctx` on every request. Ollama's own default is

@@ -514,9 +514,12 @@ class GoalManager:
             self.transition(goal, GoalStatus.FAILED, at=at)
             goal.blocked_reason = "stalled"
             return
-        cooldown = min(
-            STALL_COOLDOWN_MAX_SECONDS, STALL_COOLDOWN_SECONDS * 2 ** (goal.stalls - 1)
-        )
+        # The exponent is capped: a recurring goal's stalls never reset, and
+        # 2 ** 1100 does not fit a float. Found live 2026-11-21: Idea Scout's
+        # cycle raised OverflowError here every time, after counting the
+        # stall, so the goal never got a cooldown and failed again at once.
+        doublings = min(goal.stalls - 1, 32)
+        cooldown = min(STALL_COOLDOWN_MAX_SECONDS, STALL_COOLDOWN_SECONDS * 2**doublings)
         goal.next_attempt_at = at + timedelta(seconds=cooldown)
         self.transition(goal, GoalStatus.STALLED, reason=reason, at=at)
 

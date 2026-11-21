@@ -38,6 +38,22 @@ def test_a_stalled_goal_pauses_then_runs_again() -> None:
     assert goal.status is GoalStatus.RUNNABLE, "back in line once the pause is over"
 
 
+def test_a_recurring_goal_stalled_a_thousand_times_still_gets_its_cooldown() -> None:
+    """Found live: Idea Scout's goal had stalled past 1024 times, the
+    doubling overflowed a float, and every cycle raised OverflowError."""
+    mind = MindState()
+    goal = mind.add_goal("Scout ideas", recurring=True)
+    manager = GoalManager(mind)
+    now = now_utc()
+    manager.refresh(at=now)
+    goal.stalls = 1100
+
+    manager.mark_stalled(goal, "no progress", at=now)
+
+    assert goal.status is GoalStatus.STALLED
+    assert goal.next_attempt_at == now + timedelta(hours=1), "the cap, not a crash"
+
+
 def test_a_one_shot_goal_that_keeps_stalling_fails() -> None:
     mind = MindState()
     goal = mind.add_goal("Write the report")
