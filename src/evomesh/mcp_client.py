@@ -26,9 +26,12 @@ mesh the same way a hung shell command's did before that fix.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mcp import Client, StdioServerParameters
@@ -89,6 +92,41 @@ def _content_text(blocks: list[Any]) -> str:
     return "\n".join(parts)
 
 
+def config_fingerprint(config: McpServerConfig) -> str:
+    """What makes two configs the same server: everything but the name.
+
+    Two configs under one name with different fingerprints are two different
+    servers (another program, another URL, another key, another tool filter),
+    and must never share a connection -- see McpManager._connection_for."""
+    payload = config.model_dump_json(exclude={"name"})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+
+
+def config_problems(config: McpServerConfig) -> list[str]:
+    """What is wrong with a config before anything connects. Static: no
+    process is started and no URL is requested."""
+    problems: list[str] = []
+    if config.command and config.url:
+        problems.append("both command and url are set; command wins (stdio), url is ignored")
+    if not config.command and not config.url:
+        problems.append("neither command nor url is set; there is nothing to connect to")
+    if config.url and not config.command and not config.url.startswith(("http://", "https://")):
+        problems.append(f"url {config.url!r} is not http:// or https://")
+    if config.command:
+        on_disk = Path(config.command)
+        if shutil.which(config.command) is None and not on_disk.is_file():
+            problems.append(f"command {config.command!r} is not on PATH")
+    empty = sorted(key for key, value in config.env.items() if not value)
+    if empty:
+        problems.append(f"env {', '.join(empty)} empty (a secret that did not resolve?)")
+    empty_headers = sorted(key for key, value in config.headers.items() if not value)
+    if empty_headers:
+        problems.append(f"header {', '.join(empty_headers)} empty")
+    if config.timeout_seconds <= 0:
+        problems.append("timeout_seconds must be positive")
+    return problems
+
+
 RETRY_AFTER_SECONDS = 60.0
 
 
@@ -108,6 +146,27 @@ class McpConnection:
         self.last_error = ""
         self._failed_at: float | None = None
         self.calls = 0
+        self.failures = 0
+        self.connected_at: float | None = None
+        self.last_error_at: float | None = None
+        # How many tools the server offered before config.tools filtered
+        # them, and which filter names it does not offer at all -- a typo in
+        # `tools:` otherwise just looks like a server with fewer tools.
+        self.offered: int | None = None
+        self.unknown_filter: list[str] = []
+
+    def _failed(self, message: str) -> None:
+        self.last_error = message
+        self.last_error_at = time.time()
+        self.failures += 1
+
+    def retry_in(self) -> float | None:
+        """Seconds until a failed connect is tried again; None when it is not
+        waiting to retry."""
+        if self._client is not None or self._failed_at is None:
+            return None
+        left = RETRY_AFTER_SECONDS - (time.monotonic() - self._failed_at)
+        return left if left > 0 else None
 
     @property
     def connected(self) -> bool:
@@ -135,11 +194,13 @@ class McpConnection:
                 if http is not None:
                     await http.aclose()
                 self._failed_at = time.monotonic()
-                self.last_error = f"could not connect: {_why(exc)}"
+                self._failed(f"could not connect: {_why(exc)}")
                 raise McpConnectionError(f"{self.config.name}: {self.last_error}") from exc
             self._client = client
             self._http = http
             self._failed_at = None
+            self.connected_at = time.time()
+            self.failures = 0
             self.last_error = ""
         return self._client
 
@@ -151,9 +212,12 @@ class McpConnection:
             except Exception as exc:  # noqa: BLE001 - any protocol failure
                 await self.close()
                 self._failed_at = time.monotonic()
-                self.last_error = f"list_tools failed: {_why(exc)}"
+                self._failed(f"list_tools failed: {_why(exc)}")
                 raise McpConnectionError(f"{self.config.name}: {self.last_error}") from exc
             wanted = set(self.config.tools)
+            offered = {tool.name for tool in result.tools}
+            self.offered = len(offered)
+            self.unknown_filter = sorted(wanted - offered)
             self._tools = [tool for tool in result.tools if not wanted or tool.name in wanted]
         return self._tools
 
@@ -177,7 +241,7 @@ class McpConnection:
             # The session may be dead (server restarted, pipe closed); the
             # next use reconnects rather than failing against it forever.
             await self.close()
-            self.last_error = f"{name} failed: {_why(exc)}"
+            self._failed(f"{name} failed: {_why(exc)}")
             raise ToolDenied(
                 f"DENIED: mcp {self.config.name}.{name} failed: {_why(exc)}"
             ) from exc
@@ -206,7 +270,13 @@ class McpConnection:
 
 
 def _why(exc: BaseException) -> str:
-    return str(exc) or type(exc).__name__
+    # The SDK's transports run in a TaskGroup, so a refused connection
+    # arrives as "unhandled errors in a TaskGroup (1 sub-exception)" -- the
+    # one line a human reads to fix the config. The leaf is the reason.
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 def build_mcp_tool(server_name: str, info: McpToolInfo, connection: McpConnection) -> Tool:
@@ -226,6 +296,15 @@ def build_mcp_tool(server_name: str, info: McpToolInfo, connection: McpConnectio
     )
 
 
+MESH_WIDE = "mesh-wide"
+
+
+def _transport(config: McpServerConfig) -> str:
+    if config.command:
+        return f"stdio: {config.command} {' '.join(config.args)}".strip()
+    return f"http: {config.url}"
+
+
 @dataclass(frozen=True)
 class McpServerStatus:
     name: str
@@ -234,21 +313,48 @@ class McpServerStatus:
     tools: int | None
     calls: int
     last_error: str
+    # The fields below are filled by McpManager.diagnose; status() leaves
+    # them at their defaults.
+    fingerprint: str = ""
+    # Who configures this exact server: "mesh-wide" and/or agent names.
+    owners: tuple[str, ...] = ()
+    problems: tuple[str, ...] = ()
+    retry_in: float | None = None
+    failures: int = 0
+    connected_at: float | None = None
+    last_error_at: float | None = None
+    offered: int | None = None
+
+
+@dataclass(frozen=True)
+class McpCheck:
+    """One explicit connect-and-list, for `/mcp check`."""
+
+    status: McpServerStatus
+    tools: list[str] = field(default_factory=list)
+    error: str = ""
+    seconds: float = 0.0
 
 
 @dataclass
 class McpManager:
-    """Mesh-wide, owned by Environment.mcp. One McpConnection per resolved
-    server *name*, reused across every agent and job -- if two agents ever
-    configure genuinely different servers under the same name (not the
-    intended use: a name should mean one server everywhere in a mesh run),
-    whichever connects first wins for the lifetime of the connection rather
-    than being silently torn down and reconnected out from under a job that
-    may still be using it."""
+    """Mesh-wide, owned by Environment.mcp. One McpConnection per distinct
+    server, reused across every agent and job.
+
+    A *name* should mean one server everywhere in a mesh run, but nothing
+    enforced it: an agent's own `/mcp add` under a mesh-wide name, or two
+    agents each adding a different "files" server, used to share whichever
+    connection was made first -- one agent's jobs silently calling another
+    program, with another key, under the tool names it expected. Connections
+    are now matched on the whole config (config_fingerprint), so a config
+    that differs gets a connection of its own, and diagnose() names the
+    conflict instead of hiding it."""
 
     mesh_wide: list[McpServerConfig]
 
     def __post_init__(self) -> None:
+        # Keyed by name for the first config seen under it; a different
+        # config under the same name is keyed "name@fingerprint".
         self._connections: dict[str, McpConnection] = {}
 
     def resolve(
@@ -267,11 +373,29 @@ class McpManager:
             resolved[config.name] = config
         return resolved
 
+    def _find(self, config: McpServerConfig) -> tuple[str, McpConnection | None]:
+        """The key this config's connection lives (or would live) under."""
+        existing = self._connections.get(config.name)
+        if existing is None:
+            return config.name, None
+        existing_config = getattr(existing, "config", None)
+        fingerprint = config_fingerprint(config)
+        if existing_config is None or config_fingerprint(existing_config) == fingerprint:
+            return config.name, existing
+        key = f"{config.name}@{fingerprint}"
+        return key, self._connections.get(key)
+
     def _connection_for(self, config: McpServerConfig) -> McpConnection:
-        connection = self._connections.get(config.name)
+        key, connection = self._find(config)
         if connection is None:
+            if key != config.name:
+                logger.warning(
+                    "mcp: server '%s' is configured differently in two places; "
+                    "this one gets its own connection (see /mcp servers)",
+                    config.name,
+                )
             connection = McpConnection(config)
-            self._connections[config.name] = connection
+            self._connections[key] = connection
         return connection
 
     async def tools_for(
@@ -300,15 +424,11 @@ class McpManager:
         configs = {config.name: config for config in [*self.mesh_wide, *(extra or [])]}
         rows: list[McpServerStatus] = []
         for name, config in sorted(configs.items()):
-            connection = self._connections.get(name)
+            _, connection = self._find(config)
             rows.append(
                 McpServerStatus(
                     name=name,
-                    transport=(
-                        f"stdio: {config.command} {' '.join(config.args)}".strip()
-                        if config.command
-                        else f"http: {config.url}"
-                    ),
+                    transport=_transport(config),
                     connected=bool(connection and connection.connected),
                     tools=connection.tool_count if connection else None,
                     calls=connection.calls if connection else 0,
@@ -317,11 +437,99 @@ class McpManager:
             )
         return rows
 
+    def diagnose(
+        self, owned: list[tuple[str, McpServerConfig]] | None = None
+    ) -> list[McpServerStatus]:
+        """One row per distinct server -- mesh-wide plus every ``(owner,
+        config)`` in ``owned`` -- with its static config problems, its
+        connection's history, and a note when one name means two servers.
+        Never connects."""
+        entries = [(MESH_WIDE, config) for config in self.mesh_wide] + list(owned or [])
+        groups: dict[tuple[str, str], tuple[McpServerConfig, list[str]]] = {}
+        for owner, config in entries:
+            key = (config.name, config_fingerprint(config))
+            groups.setdefault(key, (config, []))[1].append(owner)
+        variants: dict[str, int] = {}
+        for name, _ in groups:
+            variants[name] = variants.get(name, 0) + 1
+        rows: list[McpServerStatus] = []
+        for (name, fingerprint), (config, owners) in sorted(groups.items()):
+            _, connection = self._find(config)
+            problems = config_problems(config)
+            if variants[name] > 1:
+                problems.append(
+                    f"conflict: '{name}' is configured {variants[name]} different ways; "
+                    "each gets its own connection, but the tool names "
+                    f"(mcp__{name}__*) are the same -- rename one"
+                )
+            if connection is not None and connection.unknown_filter:
+                problems.append(
+                    "tools filter names what the server does not offer: "
+                    + ", ".join(connection.unknown_filter)
+                )
+            rows.append(
+                McpServerStatus(
+                    name=name,
+                    transport=_transport(config),
+                    connected=bool(connection and connection.connected),
+                    tools=connection.tool_count if connection else None,
+                    calls=connection.calls if connection else 0,
+                    last_error=connection.last_error if connection else "",
+                    fingerprint=fingerprint,
+                    owners=tuple(dict.fromkeys(owners)),
+                    problems=tuple(problems),
+                    retry_in=connection.retry_in() if connection else None,
+                    failures=connection.failures if connection else 0,
+                    connected_at=connection.connected_at if connection else None,
+                    last_error_at=connection.last_error_at if connection else None,
+                    offered=connection.offered if connection else None,
+                )
+            )
+        return rows
+
+    async def check(
+        self, config: McpServerConfig, owned: list[tuple[str, McpServerConfig]] | None = None
+    ) -> McpCheck:
+        """Drop this server's connection and connect again now, ignoring the
+        retry delay, then list its tools. Starts the configured program (or
+        calls the URL) -- only ever on an explicit human request."""
+        key, connection = self._find(config)
+        if connection is not None:
+            await connection.close()
+            self._connections.pop(key, None)
+        started = time.monotonic()
+        tools: list[str] = []
+        error = ""
+        try:
+            infos = await self._connection_for(config).list_tools()
+            tools = [info.name for info in infos]
+        except McpConnectionError as exc:
+            error = str(exc)
+        seconds = time.monotonic() - started
+        fingerprint = config_fingerprint(config)
+        row = next(
+            (
+                item
+                for item in self.diagnose(owned)
+                if item.name == config.name and item.fingerprint == fingerprint
+            ),
+            None,
+        )
+        if row is None:
+            row = self.diagnose([("check", config)])[-1]
+        return McpCheck(status=row, tools=tools, error=error, seconds=seconds)
+
     async def reload(self, name: str | None = None) -> None:
-        """Drop one (or every) connection; the next use reconnects and
-        re-lists tools. For a server that was upgraded or restarted."""
-        for item in [name] if name else list(self._connections):
-            connection = self._connections.pop(item, None)
+        """Drop one server's connections (every config under that name) or
+        all of them; the next use reconnects and re-lists tools. For a server
+        that was upgraded or restarted."""
+        keys = [
+            key
+            for key in self._connections
+            if name is None or key == name or key.startswith(f"{name}@")
+        ]
+        for key in keys:
+            connection = self._connections.pop(key, None)
             if connection is not None:
                 await connection.close()
 

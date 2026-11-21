@@ -10,11 +10,21 @@ bot the agent argument may be left out, and means that agent.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
+from evomesh.capabilities import (
+    Capability,
+    deep_check,
+    grant_report,
+    inventory,
+    render_grants,
+    render_inventory,
+)
 from evomesh.contracts import AgentDefinition, McpServerConfig
 from evomesh.knowledge import render_reports
 from evomesh.mailer import EmailRefused
+from evomesh.mcp_client import MESH_WIDE, McpServerStatus, config_fingerprint
 
 if TYPE_CHECKING:
     from evomesh.environment import Environment
@@ -29,13 +39,19 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /email grant|revoke <agent> <account>  Let it send from that account (send_email tool)
   /email test <account> <to>    Send a test message through the account
   /email log [n]                Recent sends and refusals
-  /mcp servers                  MCP servers, connection state, tool counts, last error
+  /mcp servers                  MCP servers: state, owners, last error, retry timer, config problems
+  /mcp check [server]           Connect now (ignoring the retry delay) and report what it offers
   /mcp tools <server>           Connect and list a server's tools
   /mcp grant|revoke <agent> <server>  Mesh-wide servers an agent may use
   /mcp add <agent> <name> <command> [args...]  |  /mcp add <agent> <name> <http-url>
                                 A server only this agent uses
   /mcp remove <agent> <name>    Remove that agent's own server
   /mcp reload [server]          Reconnect (after a server was upgraded or restarted)
+  /capabilities                 Tools, skills and MCP servers: usable or not, and why
+  /capabilities check           Same, also asking each tool's Python for its `requires:` modules
+  /capabilities refresh         Rescan tools/ and skills/, drop MCP connections -- no restart
+  /capabilities grants          Each agent's effective tools/MCP access, legacy defaults flagged
+  /capabilities pin <agent>     Write its current (legacy) access out as an explicit list
 """
 
 
@@ -212,34 +228,30 @@ class OperationsCommands:
         usage = (
             "Usage: /mcp servers  |  /mcp tools <server>  |  /mcp grant|revoke <agent> <server>"
             "  |  /mcp add <agent> <name> <command-or-url> [args...]  |  "
-            "/mcp remove <agent> <name>  |  /mcp reload [server]"
+            "/mcp remove <agent> <name>  |  /mcp reload [server]  |  /mcp check [server]"
         )
         action = parts[1].lower() if len(parts) > 1 else "servers"
         environment = self.environment
         agents = environment.registry.all()
         own = [config for agent in agents for config in agent.mcp_servers]
+        owned = [(agent.name, config) for agent in agents for config in agent.mcp_servers]
         if action == "servers":
             rows = []
-            for status in environment.mcp.status(own):
+            for status in environment.mcp.diagnose(owned):
                 users = [
                     agent.name
                     for agent in agents
-                    if any(config.name == status.name for config in agent.mcp_servers)
+                    if agent.name in status.owners
                     or (
-                        any(config.name == status.name for config in environment.mcp.mesh_wide)
+                        MESH_WIDE in status.owners
+                        and not any(c.name == status.name for c in agent.mcp_servers)
                         and (
                             (allowed := environment.mcp_allowed(agent)) is None
                             or status.name in allowed
                         )
                     )
                 ]
-                state = "connected" if status.connected else "idle"
-                tools = "?" if status.tools is None else str(status.tools)
-                error = f"\n    last error: {status.last_error}" if status.last_error else ""
-                rows.append(
-                    f"{status.name} [{state}, {tools} tools, {status.calls} calls] "
-                    f"{status.transport}\n    agents: {', '.join(users) or 'none'}{error}"
-                )
+                rows.append(_render_server(status, users))
             return "\n".join(rows) or (
                 "No MCP servers. Add mesh-wide ones under mcp_servers in evomesh.yaml, "
                 "or one agent's own with /mcp add."
@@ -311,4 +323,122 @@ class OperationsCommands:
         if action == "reload":
             await environment.mcp.reload(parts[2] if len(parts) > 2 else None)
             return "MCP connections dropped; the next job reconnects."
+        if action == "check":
+            targets = [
+                config
+                for config in [*environment.mcp.mesh_wide, *own]
+                if len(parts) < 3 or config.name == parts[2]
+            ]
+            if not targets:
+                return f"No MCP server '{parts[2]}'." if len(parts) > 2 else "No MCP servers."
+            seen: set[tuple[str, str]] = set()
+            blocks: list[str] = []
+            for config in targets:
+                key = (config.name, config_fingerprint(config))
+                if key in seen:
+                    continue
+                seen.add(key)
+                result = await environment.mcp.check(config, owned)
+                verdict = (
+                    f"connected in {result.seconds:.1f}s, {len(result.tools)} tools"
+                    if not result.error
+                    else f"failed after {result.seconds:.1f}s: {result.error}"
+                )
+                lines = [f"{config.name}: {verdict}", f"    {result.status.transport}"]
+                if result.tools:
+                    lines.append(f"    tools: {', '.join(result.tools)}")
+                lines += [f"    ! {problem}" for problem in result.status.problems]
+                blocks.append("\n".join(lines))
+            return "\n".join(blocks)
         return usage
+
+    # -- capabilities -----------------------------------------------------
+
+    async def _command_capabilities(self, parts: list[str]) -> str:
+        usage = (
+            "Usage: /capabilities [tools|skills|mcp]  |  /capabilities check  |  "
+            "/capabilities refresh  |  /capabilities grants  |  /capabilities pin <agent>"
+        )
+        environment = self.environment
+        action = parts[1].lower() if len(parts) > 1 else ""
+        agents = environment.registry.all()
+        owned = [(agent.name, config) for agent in agents for config in agent.mcp_servers]
+
+        def current() -> list[Capability]:
+            return inventory(
+                environment.tools,
+                environment.skills,
+                environment.mcp.diagnose(owned),
+                environment.settings.harness.shell_programs(),
+            )
+
+        if action in ("", "tools", "skills", "mcp", "tool", "skill"):
+            return render_inventory(current(), action.rstrip("s") if action != "mcp" else "mcp")
+        if action == "check":
+            return render_inventory(await deep_check(environment.tools, current()))
+        if action == "refresh":
+            tools = await environment.tools.refresh()
+            skills = await environment.skills.refresh()
+            await environment.mcp.reload()
+            return "\n".join(
+                [
+                    tools.render("tools"),
+                    skills.render("skills"),
+                    "mcp: connections dropped; each reconnects and re-lists its tools "
+                    "on next use (/mcp check to do it now)",
+                ]
+            )
+        installed = [definition.name for definition in environment.tools.discover()]
+        mesh = [config.name for config in environment.mcp.mesh_wide]
+        if action == "grants":
+            return render_grants(grant_report(agents, installed, mesh)) or "No agents."
+        if action == "pin" and len(parts) == 3:
+            agent = environment.registry.get(parts[2])
+            pinned: list[str] = []
+            for row in grant_report([agent], installed, mesh):
+                if not row.legacy:
+                    continue
+                if row.kind == "tools":
+                    agent.tools = list(row.effective)
+                else:
+                    agent.mcp = list(row.effective)
+                pinned.append(f"{row.kind}: {', '.join(row.effective) or 'none'}")
+            if not pinned:
+                return f"{agent.name} already has explicit tool and MCP lists."
+            await environment.repository.save_agent(agent)
+            return (
+                f"Pinned {agent.name}'s current access, unchanged -- "
+                + "; ".join(pinned)
+                + ". New tools and servers now need a grant."
+            )
+        return usage
+
+
+def _render_server(status: McpServerStatus, users: list[str]) -> str:
+    state = "connected" if status.connected else "idle"
+    if status.last_error and not status.connected:
+        state = "failing"
+    tools = "?" if status.tools is None else str(status.tools)
+    if status.offered is not None and status.tools is not None and status.offered > status.tools:
+        tools += f" of {status.offered}"
+    lines = [
+        f"{status.name} [{state}, {tools} tools, {status.calls} calls] {status.transport}",
+        f"    agents: {', '.join(users) or 'none'}",
+    ]
+    if len(status.owners) > 1 or status.owners != (MESH_WIDE,):
+        lines.append(f"    configured by: {', '.join(status.owners)}")
+    if status.connected_at is not None:
+        lines.append(f"    connected since {_clock(status.connected_at)}")
+    if status.last_error:
+        when = f" at {_clock(status.last_error_at)}" if status.last_error_at else ""
+        lines.append(f"    last error{when}: {status.last_error}")
+    if status.failures > 1:
+        lines.append(f"    failed {status.failures} times in a row")
+    if status.retry_in is not None:
+        lines.append(f"    next connect attempt in {status.retry_in:.0f}s (/mcp check: now)")
+    lines += [f"    ! {problem}" for problem in status.problems]
+    return "\n".join(lines)
+
+
+def _clock(epoch: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(epoch))

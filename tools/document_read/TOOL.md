@@ -2,6 +2,7 @@
 name: document_read
 description: Read and extract text or tabular content from a document file -- .docx, .pdf, .xlsx/.xlsm, or .csv. Returns JSON. Needs the doc-processing venv from scripts/install-docs-env.ps1/.sh (see tools/document_read/README.md); if that has not been run yet, this tool fails with a clear "python-docx/pypdf/openpyxl not found" error instead of silently doing nothing.
 command: '"D:/Projects/Dev-art solutions/EvoMesh/.runtime/docs/Scripts/python.exe" "{tool_dir}/scripts/document_read.py"'
+requires: ["python:docx", "python:pypdf", "python:openpyxl"]
 parameters:
   - name: request
     description: >

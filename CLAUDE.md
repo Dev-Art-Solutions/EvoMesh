@@ -53,7 +53,9 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `skills.py`, `permissions.py` | skill discovery (see rule 19) and path grants (application-level, not an OS sandbox) |
 | `knowledge.py` | per-agent wiki (Karpathy's raw → pages → index/log; lint is code) and `reports.md`, the journal `/reports` reads |
 | `mailer.py` | SMTP accounts → `send_email`, only for agents granted an account; rate limit, allow-list, audit file |
-| `mcp_client.py` | MCP servers as tool sources; per-agent access mirrors `tools` (system agents: none by default) |
+| `mcp_client.py` | MCP servers as tool sources; per-agent access mirrors `tools` (system agents: none by default). Connections are keyed by the whole config (`config_fingerprint`), never the name alone |
+| `bundles.py` | staged, reversible replacement of a `tools/<name>` or `skills/<name>` directory: copy to `.runtime/capabilities/staging`, validate, swap by rename, keep the replaced one in `previous/`. Every install goes through it; never `rmtree` an installed bundle |
+| `capabilities.py` | `/capabilities`: a read-only view over the three registries (state, missing dependencies, legacy grants). **Not a registry** — never cache or install anything here |
 | `ops_commands.py` | `/reports`, `/wiki`, `/email`, `/mcp` — a ConsoleChannel mixin, so console.py stays readable |
 
 ## Build / test / run

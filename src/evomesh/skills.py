@@ -26,14 +26,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 
+from evomesh.bundles import copy_into, overlay_file, replace_directory, restore_previous
 from evomesh.contracts import SkillDefinition, now_utc
+from evomesh.tools import NAME_PATTERN, RefreshReport, diff_scan, directory_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +166,10 @@ def parse_skill(path: Path, text: str, *, created_by: str = "system") -> SkillDe
     description = str(meta.get("description") or "").strip()
     if not name or not description:
         raise InvalidSkillError(f"{path}: frontmatter needs both 'name' and 'description'")
+    if not NAME_PATTERN.match(name):
+        raise InvalidSkillError(
+            f"{path}: name {name!r} must be letters, digits, '-' and '_' (at most 64)"
+        )
     return SkillDefinition(name=name, description=description, path=path, created_by=created_by)
 
 
@@ -182,6 +188,10 @@ class SkillRegistry:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._skills: dict[str, SkillDefinition] = {}
+        # Directory name -> why it is not a skill, from the last scan.
+        self.errors: dict[str, str] = {}
+        self._fingerprints: dict[str, str] = {}
+        self._lock = asyncio.Lock()
 
     @property
     def skills_dir(self) -> Path:
@@ -190,24 +200,53 @@ class SkillRegistry:
     async def load(self) -> None:
         """Rescan disk. A handful of small files -- cheap enough to redo
         after every /skill install rather than patch the registry in place."""
-        self._skills = await asyncio.to_thread(self._scan)
+        await self.refresh()
 
-    def _scan(self) -> dict[str, SkillDefinition]:
+    async def refresh(self) -> RefreshReport:
+        """Rescan skills/ and report what changed since the last scan."""
+        async with self._lock:
+            before = dict(self._fingerprints)
+            found, errors, fingerprints = await asyncio.to_thread(self._scan)
+            self._skills, self.errors, self._fingerprints = found, errors, fingerprints
+        for name, why in errors.items():
+            logger.warning("skill at skills/%s could not be loaded: %s", name, why)
+        return diff_scan(before, fingerprints, errors)
+
+    def _scan(self) -> tuple[dict[str, SkillDefinition], dict[str, str], dict[str, str]]:
         found: dict[str, SkillDefinition] = {}
+        errors: dict[str, str] = {}
+        fingerprints: dict[str, str] = {}
         if not self.skills_dir.is_dir():
-            return found
+            return found, errors, fingerprints
         for entry in sorted(self.skills_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith((".", "_")):
+                continue
             skill_file = entry / SKILL_FILENAME
             if not skill_file.is_file():
+                errors[entry.name] = f"no {SKILL_FILENAME}"
                 continue
             try:
                 text = skill_file.read_text(encoding="utf-8")
                 definition = parse_skill(skill_file.relative_to(self.root), text)
+                fingerprint = directory_fingerprint(entry)
             except (InvalidSkillError, OSError, UnicodeDecodeError) as exc:
-                logger.warning("skill at %s could not be loaded: %s", skill_file, exc)
+                errors[entry.name] = str(exc)
                 continue
+            if (other := found.get(definition.name)) is not None:
+                # The directory named after the skill is the one an install
+                # writes and a rollback restores; a stray copy never wins.
+                loser, keep = entry.name, other
+                if entry.name == definition.name:
+                    loser, keep = other.path.parent.name, definition
+                errors[loser] = (
+                    f"name '{definition.name}' is already taken by "
+                    f"{keep.path.parent.as_posix()}; this one is ignored"
+                )
+                if keep is other:
+                    continue
             found[definition.name] = definition
-        return found
+            fingerprints[definition.name] = fingerprint
+        return found, errors, fingerprints
 
     def discover(self, query: str = "") -> list[SkillDefinition]:
         needle = query.lower()
@@ -232,43 +271,132 @@ class SkillRegistry:
         text = await asyncio.to_thread((self.root / skill.path).read_text, encoding="utf-8")
         return skill_body(text)
 
-    def render_catalog(self) -> str:
+    def render_catalog(
+        self,
+        *,
+        query: str = "",
+        max_chars: int = 0,
+        preferred: list[str] | tuple[str, ...] = (),
+    ) -> str:
         """One line per skill, sized for a prompt: name, description, and the
         path to read for the rest. Never the body -- spending that budget
         unconditionally would undo the reason a skill is a file an agent
         reads only when it decides to, rather than a paragraph pinned to
-        every prompt whether it is relevant or not."""
+        every prompt whether it is relevant or not.
+
+        ``max_chars`` (0: no limit) caps the whole catalog. Past it, the
+        skills the job is most likely to need keep their full line -- the
+        agent's own ``preferred`` skills first, then those sharing the most
+        words with ``query`` (the job's objective) -- and the rest are named
+        on one line, still readable at skills/<name>/SKILL.md. A catalog that
+        grows with every skill a mesh learns is otherwise a cost every job
+        pays on every turn of a small context."""
         if not self._skills:
             return ""
-        lines = [
-            f"- {skill.name}: {skill.description} (read {skill.path.as_posix()} for how)"
-            for skill in sorted(self._skills.values(), key=lambda item: item.name)
-        ]
-        return "Skills available -- read one only if it is relevant to this task:\n" + "\n".join(
-            lines
-        )
+        header = "Skills available -- read one only if it is relevant to this task:\n"
+        skills = sorted(self._skills.values(), key=lambda item: item.name)
+        lines = {
+            skill.name: (
+                f"- {skill.name}: {skill.description} (read {skill.path.as_posix()} for how)"
+            )
+            for skill in skills
+        }
+        full = header + "\n".join(lines.values())
+        if max_chars <= 0 or len(full) <= max_chars:
+            return full
+        wanted = _words(query)
+        favourite = set(preferred)
+
+        def score(skill: SkillDefinition) -> tuple[int, int, str]:
+            overlap = len(wanted & _words(f"{skill.name} {skill.description}"))
+            return (0 if skill.name in favourite else 1, -overlap, skill.name)
+
+        kept: list[str] = []
+        rest: list[str] = []
+        used = len(header)
+        for skill in sorted(skills, key=score):
+            line = lines[skill.name]
+            if used + len(line) + 1 <= max_chars * 3 // 4:
+                kept.append(line)
+                used += len(line) + 1
+            else:
+                rest.append(skill.name)
+        names = ""
+        if rest:
+            prefix = "\n- also installed (read skills/<name>/SKILL.md): "
+            room = max(max_chars - used - len(prefix), 0)
+            shown: list[str] = []
+            for name in rest:
+                more = f", +{len(rest) - len(shown)} more (ls skills)"
+                if len(", ".join([*shown, name])) + len(more) > room:
+                    break
+                shown.append(name)
+            hidden = len(rest) - len(shown)
+            names = prefix + ", ".join(shown) + (f", +{hidden} more (ls skills)" if hidden else "")
+        return header + "\n".join(kept) + names
+
+    def _validator(
+        self, created_by: str, expected: str | None = None
+    ) -> Callable[[Path], SkillDefinition]:
+        def validate(stage: Path) -> SkillDefinition:
+            text = (stage / SKILL_FILENAME).read_text(encoding="utf-8")
+            definition = parse_skill(Path("<new skill>"), text, created_by=created_by)
+            if expected is not None and definition.name != expected:
+                raise InvalidSkillError(
+                    f"{SKILL_FILENAME} names '{definition.name}', not '{expected}'"
+                )
+            if findings := scan_skill_content(text):
+                raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
+            if (size := len(text.encode("utf-8"))) > MAX_SKILL_BYTES:
+                raise InvalidSkillError(
+                    f"{definition.name}: refused -- {size} bytes exceeds the "
+                    f"{MAX_SKILL_BYTES}-byte limit for a skill file"
+                )
+            return definition
+
+        return validate
+
+    async def _swap_in(
+        self,
+        name: str,
+        fill: Callable[[Path], None] | None,
+        validate: Callable[[Path], SkillDefinition],
+    ) -> SkillDefinition:
+        """``fill`` None restores the kept previous version instead."""
+        target = self.skills_dir / name
+        async with self._lock:
+            if fill is None:
+                definition = await asyncio.to_thread(
+                    restore_previous, self.root, "skills", target, validate
+                )
+            else:
+                definition = await asyncio.to_thread(
+                    replace_directory, self.root, "skills", target, fill, validate
+                )
+            installed = definition.model_copy(
+                update={"path": (target / SKILL_FILENAME).relative_to(self.root)}
+            )
+            self._skills[installed.name] = installed
+            self.errors.pop(installed.name, None)
+            self._fingerprints[installed.name] = await asyncio.to_thread(
+                directory_fingerprint, target
+            )
+        return installed
 
     async def install(self, source_text: str, *, created_by: str = "human") -> SkillDefinition:
         """Write a new skill from a SKILL.md's raw text -- a file already
         read, or a URL already fetched. This one step is the whole
         installation mechanism: whatever produced valid frontmatter and a
         body becomes a skill, and a market is just a place skills like this
-        one get shared from.
+        one get shared from. Over an installed skill, scripts beside its
+        SKILL.md are kept, and the version replaced is kept for rollback().
         """
         definition = parse_skill(Path("<new skill>"), source_text, created_by=created_by)
-        if findings := scan_skill_content(source_text):
-            raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
-        if (size := len(source_text.encode("utf-8"))) > MAX_SKILL_BYTES:
-            raise InvalidSkillError(
-                f"{definition.name}: refused -- {size} bytes exceeds the "
-                f"{MAX_SKILL_BYTES}-byte limit for a skill file"
-            )
-        target = self.skills_dir / definition.name / SKILL_FILENAME
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_text, source_text, encoding="utf-8")
-        installed = definition.model_copy(update={"path": target.relative_to(self.root)})
-        self._skills[installed.name] = installed
-        return installed
+        validate = self._validator(created_by, definition.name)
+        target = self.skills_dir / definition.name
+        return await self._swap_in(
+            definition.name, overlay_file(target, SKILL_FILENAME, source_text), validate
+        )
 
     async def install_directory(
         self, source: Path, *, created_by: str = "human"
@@ -279,24 +407,22 @@ class SkillRegistry:
         tells an agent to run ("run scripts/check.sh") actually exists next
         to it. The scripts stay inert either way -- an agent runs one with
         its own harness tools, on purpose, the same as reading any skill.
+        Staged and validated before anything installed is touched.
         """
         skill_file = source / SKILL_FILENAME
         if not await asyncio.to_thread(skill_file.is_file):
             raise InvalidSkillError(f"{source}: no {SKILL_FILENAME} in this directory")
         text = await asyncio.to_thread(skill_file.read_text, encoding="utf-8")
         definition = parse_skill(Path("<new skill>"), text, created_by=created_by)
-        if findings := scan_skill_content(text):
-            raise InvalidSkillError(f"{definition.name}: refused -- {'; '.join(findings)}")
-        if (size := len(text.encode("utf-8"))) > MAX_SKILL_BYTES:
-            raise InvalidSkillError(
-                f"{definition.name}: refused -- {size} bytes exceeds the "
-                f"{MAX_SKILL_BYTES}-byte limit for a skill file"
-            )
-        target = self.skills_dir / definition.name
-        await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
-        await asyncio.to_thread(shutil.copytree, source, target)
-        installed = definition.model_copy(
-            update={"path": (target / SKILL_FILENAME).relative_to(self.root)}
-        )
-        self._skills[installed.name] = installed
-        return installed
+        validate = self._validator(created_by, definition.name)
+        return await self._swap_in(definition.name, copy_into(source), validate)
+
+    async def rollback(self, name: str) -> SkillDefinition:
+        """Put back the version the last install of ``name`` replaced."""
+        validate = self._validator("rollback", name)
+        return await self._swap_in(name, None, validate)
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) > 2}
+

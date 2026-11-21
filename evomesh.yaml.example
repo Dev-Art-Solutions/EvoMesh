@@ -128,6 +128,10 @@ evolution:
 #   # are dropped with a marker saying so -- because the alternative is the model
 #   # server dropping the oldest end of the prompt, where the objective lives.
 #   transcript_chars: 12000
+#   # The skills catalog in front of every job. Over this, the agent's own skills
+#   # and those matching the job keep their line; the rest are named only.
+#   # 0 = no limit.
+#   skill_catalog_chars: 2400
 #   # Programs the harness may run, by bare name. Empty -- the default -- means
 #   # the shell tool is not offered at all. There is no shell interpreter, so
 #   # pipes and redirects are arguments rather than operators, and this is an

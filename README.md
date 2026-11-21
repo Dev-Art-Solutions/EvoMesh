@@ -99,7 +99,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.5.0-alpha.1 makes agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.6.0-alpha.1 makes capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -365,7 +365,7 @@ Use the `fetch` tool. Do not answer from memory when a URL is available...
 
 **A skill can be a group of commands, not only a description.** The same shape Claude Code itself uses: a skill's directory can hold scripts beside `SKILL.md`, which the body names by relative path for an agent to run with its own harness tools. `skills/validate-skill/` is a real one — `scripts/check.py` checks a candidate `SKILL.md`'s frontmatter before you `/skill install` it, using the identical rules the installer enforces. The scripts stay exactly as inert as the prose until an agent's own tool call actually runs one.
 
-**Installing one is the whole market mechanism.** `/skill install <path-or-url-or-directory>` accepts a lone `SKILL.md` — local file or fetched over HTTP — or a directory bundling scripts alongside one; either way it checks the frontmatter parses, writes it under `skills/<name>/`, and it is discoverable immediately, no restart. A directory install replaces a previous one of the same name outright, so a stale bundled file from an earlier version never survives a reinstall.
+**Installing one is the whole market mechanism.** `/skill install <path-or-url-or-directory>` accepts a lone `SKILL.md` — local file or fetched over HTTP — or a directory bundling scripts alongside one; either way it checks the frontmatter parses, writes it under `skills/<name>/`, and it is discoverable immediately, no restart. A directory install replaces a previous one of the same name as a whole unit, so a stale bundled file from an earlier version never survives a reinstall. It is staged and validated first, and the replaced version is kept for rollback (see [Capability management](#capability-management)).
 
 **An agent can write its own, too.** `/learn grant <agent>` (needs `/harness grant` as well — `learn_skills: true` on an agent template grants both at once) adds `learn_skill` and `patch_skill` to that agent's own harness jobs, reactive chat reply and cyclic plan step alike: `learn_skill(name, description, body)` creates or fully rewrites one, `patch_skill(name, old_text, new_text)` fixes one exact piece of a skill this same agent already wrote — the identical unique-match contract the harness's own `edit` tool uses on a real file, cheaper than resending a whole body through `learn_skill` for a small correction. Unlike the harness's own `write`/`edit` tools — confined to the job root — both reach the mesh-wide `skills/` directory through `SkillRegistry.install()`, the identical one step `/skill install` uses, so a written skill is real, well-formed, and discoverable immediately, never a draft. Both `_respond_through_harness` and `through_harness` (bdi.py) nudge a granted agent to call one of them, but only *after* actually using a procedure not already covered by one of its own skills — never for one only planned. `/learn revoke <agent>` takes it back; `/learn status <agent>` shows whether it is currently granted. `news-watcher` ships with this on (see its `AGENT.md`): ask it for headlines in a format `news-report-export` does not already name, and — model willing — the next such request may not need this README updated for it.
 
@@ -408,6 +408,91 @@ Any [Model Context Protocol](https://modelcontextprotocol.io) server — stdio (
 ```
 
 An AGENT.md can say `mcp: [filesystem]` (mesh-wide servers by name) and `mcp_servers:` (servers only that agent uses, same shape as the config).
+
+**One name means one server.** Connections are matched on the whole config, not the name alone, so an agent's own `files` server and a mesh-wide `files` server with a different command, URL, key or `tools:` filter never share a connection. Before, whichever connected first was used for both. Both still work, but `/mcp servers` marks the pair as a `conflict:`, because their tools carry the same `mcp__files__*` names. Rename one.
+
+`/mcp servers` also shows when a server connected, its last error and when that happened, how many times in a row it failed, and how long until the next connect attempt. It lists config problems found without connecting: no command or URL, a command not on PATH, an empty `env` value (a secret that did not resolve), and a `tools:` filter naming a tool the server does not offer. `/mcp check [server]` connects now, skipping the one-minute retry delay, and reports what the server offers:
+
+```text
+> /mcp check fixture
+fixture: connected in 1.0s, 1 tools
+    stdio: python tests/fixtures/mcp_stdio_server.py
+    tools: echo
+    ! tools filter names what the server does not offer: search
+```
+
+## Capability management
+
+Tools, skills and MCP servers stay in their own registries (`tools/`, `skills/`, `mcp_servers`). `/capabilities` reads all three and reports what an agent's job can actually use, and why anything else is not usable. It is a report and installs nothing. The only thing it ever runs is `/capabilities check`, which asks a tool's own Python whether the modules it declares can be found.
+
+On a fresh clone that has not run `scripts/install-docs-env.ps1`, with one half-copied bundle:
+
+```text
+> /capabilities tools
+tools: 11 available, 1 invalid, 1 missing-dependency
+  available: check-site, chrome-browser, crawl_records, crawl_schedule, crawl_site, ...
+  half-copied [invalid] tools/half-copied
+      no TOOL.md
+  document_read [missing-dependency] tools/document_read
+      program not found: D:/Projects/Dev-art solutions/EvoMesh/.runtime/docs/Scripts/python.exe
+```
+
+States: `available`, `inactive` (its program is not in `harness.shell_allow`), `missing-dependency`, `invalid` (it did not parse, or a second directory claims the same name), and for MCP servers `not-connected`, `unreachable` and `misconfigured`. `/capabilities tools|skills|mcp` narrows the list. `/capabilities check` adds the Python-module check.
+
+A tool can declare what it needs. Nothing installs these; they are only checked:
+
+```yaml
+requires: ["python:docx", "program:git", "file:data/model.json"]
+```
+
+`python:` is asked of the interpreter the tool's own `command` runs, so a tool with its own venv is checked against that venv. `document_read` and `document_write` declare theirs.
+
+**Refresh without a restart.** A tool or skill copied onto disk by hand or by a `git pull` used to be invisible until the mesh restarted. `/tool refresh` rescans `tools/`; `/capabilities refresh` rescans `tools/` and `skills/` and drops MCP connections so each one re-lists its tools on next use. Changes are compared by content, so an edited script counts as updated:
+
+```text
+> /capabilities refresh
+tools: added: word_count; updated: news_fetch
+skills: no change
+mcp: connections dropped; each reconnects and re-lists its tools on next use (/mcp check to do it now)
+```
+
+A job already running keeps the tools it started with. The next job gets the new set.
+
+**Installs are staged, and the previous version is kept.** `/tool install` and `/skill install` (directory or single file) first copy the new version to `.runtime/capabilities/staging/`. They validate it there: it must parse, its name must match, and every file its `command` names under `{tool_dir}` must exist. Only then is it swapped in by renaming. The version it replaces is moved to `.runtime/capabilities/previous/`. A bundle that fails validation, or a swap that Windows blocks because a script is still open, leaves the installed tool exactly as it was:
+
+```text
+> /tool validate D:/incoming/word_count
+word_count: valid (available)
+> /tool install D:/incoming/word_count
+Installed 'word_count': Count the words in a text file. (tools/word_count/TOOL.md)
+> /tool install D:/incoming-broken/word_count
+Could not install the tool: InvalidToolError: word_count: refused -- its command needs scripts/count.py, which the bundle does not contain
+> /tool rollback word_count
+Rolled back 'word_count' to its previous version (tools/word_count/TOOL.md).
+```
+
+A rollback keeps the version it replaced, so `/tool rollback` again undoes it. Tool and skill names are now letters, digits, `-` and `_` only, so an install can no longer write outside `tools/` or `skills/`.
+
+**What an agent sees stays small.** The skills catalog put in front of every job is capped at `harness.skill_catalog_chars` (default 2400, `0` = no limit). On the live mesh, 23 skills came to 5,930 characters on every job. Over the cap, the agent's own `skills:` come first, then the skills sharing the most words with the job's objective, each with its full line. The rest are listed by name only, still readable at `skills/<name>/SKILL.md`. Unusable tools are still never offered to a job at all.
+
+### Grants: the legacy defaults and how to leave them
+
+Per-agent grants are unchanged and still enforced. An agent's `tools:` list and `mcp:` list decide what its jobs are offered. Without a list, an ordinary agent gets every installed tool and every mesh-wide MCP server, and a system agent gets none. That default is broad: a tool installed tomorrow, `mt5_signal` included, reaches every such agent without anyone granting it. Nothing changes this on its own. `/capabilities grants` shows each agent's effective access and flags the broad defaults:
+
+```text
+> /capabilities grants
+Analyst tools: check-site, chrome-browser, ..., mt5_signal, news_fetch, send_results (legacy default: grows with every install)
+Analyst mcp: files, fixture (legacy default: grows with every mesh-wide server)
+Trader tools: mt5_query, mt5_signal
+Trader mcp: none
+On a default that grants nothing: Agent Architect, Environment Evolver, Evaluator, Guardian, Idea Scout
+```
+
+The migration keeps access exactly as it is today and only stops it from growing:
+
+1. `/capabilities pin <agent>` writes the agent's current effective tools and MCP servers out as explicit lists. Its jobs are offered exactly what they were offered before.
+2. `/tool grant|revoke <agent> <tool>` and `/mcp grant|revoke <agent> <server>` edit those lists from then on. A new tool needs a grant before it reaches the agent.
+3. An agent spawned from a template already gets an explicit `tools:` list. Older agents may still be on the default. Changing the default itself is a candidate for a later release, once `/capabilities grants` shows no agent left on it.
 
 **The other direction — EvoMesh as an MCP server.** `python -m evomesh.mcp_server` is a stdio MCP server over the running mesh's control port, so Claude Code, Claude Desktop or any MCP client can drive it: `mesh_status`, `list_agents`, `ask_agent`, `agent_reports`, `agent_knowledge`, `notifications`, and `run_command` for any console command (`/exit` is refused). For Claude Code:
 

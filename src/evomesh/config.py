@@ -284,6 +284,12 @@ class HarnessSettings(BaseModel):
     # is dropped by the model server from the oldest end -- where the objective
     # lives -- when nobody caps it here.
     transcript_chars: int = 12000
+    # The skills catalog spliced in front of every job's objective. Past this,
+    # the agent's own skills and those matching the objective keep their line
+    # and the rest are listed by name only. Measured 2026-11-21: 23 skills
+    # were 5930 characters on every job, half a transcript_chars of skills
+    # before the job had read a file. 0 means no limit (the old behavior).
+    skill_catalog_chars: int = 2400
     # Programs the shell tool may run, by bare name. Empty -- the default --
     # means the tool is not offered at all. This is an allow-list rather than a
     # deny-list because a deny-list is a promise that every dangerous command

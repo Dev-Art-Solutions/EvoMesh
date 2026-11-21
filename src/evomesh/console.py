@@ -15,6 +15,7 @@ from evomesh import cron
 from evomesh.agent_label import agent_label
 from evomesh.agent_templates import InvalidAgentTemplateError, MissingAgentTemplateError
 from evomesh.architect import ArchitectInterview
+from evomesh.capabilities import State, check_python_requirements, tool_capability
 from evomesh.channels import Output
 from evomesh.cognition import FILE_LINE
 from evomesh.contracts import (
@@ -51,6 +52,13 @@ HELP = (
   /tools [query]                  Search installed custom tools by name or description
   /tool show <name>               Preview a custom tool's TOOL.md
   /tool install <path-or-url-or-directory>  A named, described tool over one allow-listed command
+                                    (staged and validated; the replaced version is kept)
+  /tool refresh                   Rescan tools/: a tool copied or edited on disk goes live
+  /tool validate <dir-or-name>    Check a bundle and its dependencies without installing it
+  /tool rollback <name>           Put back the version the last install replaced
+  /tool grant|revoke <agent> <tool>  Edit the tools an agent's jobs are offered
+  /capabilities [tools|skills|mcp|check|refresh|grants|pin <agent>]
+                                    What is installed, what is usable, and why not
   /agent-templates [query]         Search installed agent templates
   /agent-template show <name>      Preview a template's AGENT.md
   /agent-template install <directory>  A bundle: AGENT.md, plus skills/*, tools/*
@@ -496,10 +504,27 @@ class ConsoleChannel(OperationsCommands):
         return "\n".join(rows)
 
     async def _command_tool(self, parts: list[str]) -> str:
-        usage = 'Usage: /tool show <name>  |  /tool install <path-or-url-or-directory>'
+        usage = (
+            "Usage: /tool show <name>  |  /tool install <path-or-url-or-directory>  |  "
+            "/tool refresh  |  /tool validate <directory-or-name>  |  /tool rollback <name>  |  "
+            "/tool grant|revoke <agent> <tool>"
+        )
+        if len(parts) == 2 and parts[1].lower() == "refresh":
+            report = await self.environment.tools.refresh()
+            return report.render("tools")
+        if len(parts) == 4 and parts[1].lower() in ("grant", "revoke"):
+            return await self._tool_grant(parts[1].lower(), parts[2], parts[3])
         if len(parts) < 3:
             return usage
         action, target = parts[1].lower(), parts[2]
+        if action == "validate":
+            return await self._tool_validate(target)
+        if action == "rollback":
+            try:
+                definition = await self.environment.tools.rollback(target)
+            except (InvalidToolError, OSError, UnicodeDecodeError) as exc:
+                return f"Could not roll back {target}: {describe(exc)}"
+            return f"Rolled back '{definition.name}' to its previous version ({definition.path})."
         if action == "show":
             try:
                 return await self.environment.tools.read(target)
@@ -531,11 +556,64 @@ class ConsoleChannel(OperationsCommands):
             except ValueError:
                 active = False
             note = "" if active else " -- add its program to harness.shell_allow to activate it"
+            capability = tool_capability(
+                definition, self.environment.tools.directory(definition), allow
+            )
+            if capability.state == State.MISSING_DEPENDENCY:
+                note += " -- not usable yet: " + "; ".join(capability.problems)
             return (
                 f"Installed '{definition.name}': {definition.description} "
                 f"({definition.path}){note}"
             )
         return usage
+
+    async def _tool_validate(self, target: str) -> str:
+        """Check a bundle directory -- or an installed tool by name -- the
+        way install would, plus its dependencies, without installing it."""
+        tools = self.environment.tools
+        source = Path(target)
+        try:
+            if await asyncio.to_thread(source.is_dir):
+                definition = await tools.validate_directory(source)
+                tool_dir = source
+            else:
+                definition = tools.get(target)
+                tool_dir = tools.directory(definition)
+        except MissingToolError:
+            return f"{target} is neither a tool directory nor an installed tool."
+        except (InvalidToolError, OSError, UnicodeDecodeError) as exc:
+            return f"Invalid: {describe(exc)}"
+        allow = self.environment.settings.harness.shell_programs()
+        capability = tool_capability(definition, tool_dir, allow)
+        problems = [
+            *capability.problems,
+            *await check_python_requirements(definition, tool_dir),
+        ]
+        verdict = "valid" if not problems else "valid, with problems"
+        lines = [f"{definition.name}: {verdict} ({capability.state})"]
+        lines += [f"  - {problem}" for problem in problems]
+        return "\n".join(lines)
+
+    async def _tool_grant(self, action: str, agent_name: str, tool: str) -> str:
+        """Edit one agent's explicit tool list. An agent on the legacy
+        default (tools unset: every tool) is first given that default
+        written out, so a grant never narrows and a revoke removes one."""
+        environment = self.environment
+        agent = environment.registry.get(agent_name)
+        installed = [definition.name for definition in environment.tools.discover()]
+        if action == "grant" and tool not in installed:
+            return f"There is no tool called {tool}."
+        if agent.tools is None:
+            names = [] if agent.type == "system" else sorted(installed)
+        else:
+            names = list(agent.tools)
+        if action == "grant" and tool not in names:
+            names.append(tool)
+        if action == "revoke":
+            names = [name for name in names if name != tool]
+        agent.tools = names
+        await environment.repository.save_agent(agent)
+        return f"{agent.name} may use tools: {', '.join(names) or 'none'}."
 
     def _command_agent_templates(self, parts: list[str]) -> str:
         query = " ".join(parts[1:])

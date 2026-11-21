@@ -2,6 +2,7 @@
 name: document_write
 description: Generate a document file -- .docx, .pdf, .xlsx, or .csv -- from a JSON description (title, paragraphs, a table, or xlsx sheets). Returns JSON. Needs the doc-processing venv from scripts/install-docs-env.ps1/.sh (see tools/document_write/README.md); if that has not been run yet, this tool fails with a clear "python-docx/reportlab/openpyxl not found" error instead of silently doing nothing.
 command: '"D:/Projects/Dev-art solutions/EvoMesh/.runtime/docs/Scripts/python.exe" "{tool_dir}/scripts/document_write.py"'
+requires: ["python:docx", "python:openpyxl", "python:reportlab"]
 parameters:
   - name: request
     description: >

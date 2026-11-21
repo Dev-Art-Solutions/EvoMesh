@@ -4,7 +4,65 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0-alpha.1] - 2026-11-21
+
+Capabilities you can see, refresh and roll back. Tools, skills and MCP servers
+stay in their own registries, and `/capabilities` reports across all three what
+a job can actually use and why the rest is not usable. A tool copied onto disk
+is live after `/tool refresh`, not after a restart. An install that would break
+a working tool is refused before it touches it. Two different MCP servers under
+one name no longer share a connection. Also in this release: the Crawler's
+`crawl_records` and the Evolver's idea previews, listed below.
+
 ### Added
+
+- **`/capabilities`: what is usable, and why not.** One report over
+  `tools/`, `skills/` and `mcp_servers`, with a state per capability:
+  available, inactive (its program is not allow-listed), missing-dependency,
+  invalid, misconfigured, not-connected or unreachable, and the reason
+  underneath. Before, a broken `TOOL.md` was one log line at startup and then
+  simply absent; a tool whose venv was gone looked fine until its first
+  call. `/capabilities check` also asks each tool's own interpreter whether
+  the modules it declares are importable (`importlib.util.find_spec`, which
+  runs nothing).
+- **`requires:` in a TOOL.md.** `python:<module>`, `program:<name>`,
+  `file:<path>`: checked, never installed. `document_read` and
+  `document_write` declare python-docx, pypdf, openpyxl and reportlab.
+- **Refresh without a restart.** `/tool refresh` and `/capabilities refresh`
+  rescan `tools/` and `skills/` and report what was added, updated (by
+  content, so an edited script counts), removed or invalid. Before, a tool
+  that arrived by `git pull` stayed invisible until the mesh restarted.
+  `/capabilities refresh` also drops MCP connections so each re-lists its
+  tools.
+- **Staged installs, with the previous version kept.** `/tool install` and
+  `/skill install` copy the new version into `.runtime/capabilities/staging`,
+  validate it there, and only then swap it in by rename. The version it
+  replaces goes to `.runtime/capabilities/previous`, and `/tool rollback
+  <name>` puts it back. Before, an install was `rmtree` then `copytree`: a
+  bundle naming a script it did not ship, a copy that failed halfway, or a
+  script Windows held open left a working tool deleted and the new one
+  partial. Reinstalling a tool from its own directory used to delete it.
+  `/tool validate <dir-or-name>` runs the same checks without installing.
+- **`/mcp check [server]` and a fuller `/mcp servers`.** `/mcp check`
+  connects now, skipping the one-minute retry delay, and lists what the
+  server offers. `/mcp servers` adds when it connected, its last error and
+  when, failures in a row, the time to the next attempt, who configures it,
+  and config problems found without connecting: no command or URL, a
+  command not on PATH, an empty `env` value, a `tools:` filter naming a
+  tool the server does not offer. A refused HTTP connect used to read
+  "unhandled errors in a TaskGroup (1 sub-exception)"; it now names the
+  real error.
+- **`/capabilities grants`, `/capabilities pin`, `/tool grant|revoke`.** The
+  legacy default (no `tools:` or `mcp:` list on an ordinary agent: every
+  installed tool and every mesh-wide server, `mt5_signal` included) is
+  unchanged but now visible. `pin` writes an agent's current effective
+  access out as explicit lists, so nothing it can do changes, and from then
+  on a new tool needs a grant. README has the migration path.
+- **A budgeted skills catalog.** `harness.skill_catalog_chars` (default
+  2400, `0` = no limit) caps the catalog put in front of every job. On the
+  live mesh, 23 skills came to 5,930 characters. Over the cap, the agent's
+  own skills, then those sharing the most words with the objective, keep
+  their line; the rest are named.
 
 - **The Crawler turns a listing into a CSV (`crawl_records`).** One row per
   record with its link in `url`, one column per field. Nested fields become
@@ -57,6 +115,17 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **Two MCP servers under one name shared one connection.** An agent's own
+  `files` server and a mesh-wide `files` server with another command, URL,
+  key or tool filter used whichever connected first, so one agent's jobs
+  called the other's program. Connections are now matched on the whole
+  config; a different one gets its own connection, and `/mcp servers` marks
+  the pair as a conflict, since their tool names are the same.
+- **A tool or skill name could be a path.** An install named `../x` wrote
+  outside `tools/`. Names are now letters, digits, `-` and `_`. Every
+  shipped and installed name already was. When two directories claim one
+  name, the one named after it wins and the other is reported, not the one
+  that sorts first.
 - **Git commands could reach the repository around a plain folder.** I
   traced every git call the suite makes (`GIT_TRACE_SETUP`). A scratch folder
   without its own `.git` sent `git status`, `git worktree remove --force`,

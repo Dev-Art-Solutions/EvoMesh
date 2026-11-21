@@ -1686,7 +1686,17 @@ class Environment:
         # all: naming it and where to read it, so the model decides whether to
         # spend a step on it, rather than the description being pinned to
         # every job whether it turns out relevant or not.
-        catalog = self.skills.render_catalog() if job.catalog else ""
+        catalog = (
+            self.skills.render_catalog(
+                query=job.objective,
+                max_chars=self.settings.harness.skill_catalog_chars,
+                preferred=self.registry.get(job.agent_id).skills
+                if job.agent_id and self._has(job.agent_id)
+                else (),
+            )
+            if job.catalog
+            else ""
+        )
         task = f"{catalog}\n\n{job.objective}" if catalog else job.objective
         try:
             return await runner.run(task)
