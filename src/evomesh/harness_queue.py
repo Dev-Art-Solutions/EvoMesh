@@ -407,9 +407,28 @@ class HarnessWorker:
         self.deliver = deliver
         self.lane = lane
         self.task: asyncio.Task[None] | None = None
+        self.busy = False
 
     def start(self, name: str) -> None:
         self.task = asyncio.create_task(self._loop(), name=name)
+
+    async def run_one(self) -> None:
+        """Take one job, run it to the end, and return. Used for a worker
+        lent while a job waits on another agent (Environment's ask_agent):
+        ``busy`` tells the lender whether cancelling it would cut a job off."""
+        job = await self.queue.take(lane=self.lane)
+        self.busy = True
+        try:
+            result = await self.run(job)
+            self.queue.finish(job, result)
+        except asyncio.CancelledError:
+            self.queue.cancel(job, "the mesh stopped while this job was running")
+            await self._deliver(job)
+            raise
+        except Exception as exc:  # noqa: BLE001 - one bad job never kills the lender
+            logger.exception("harness job %s failed", job.number)
+            self.queue.cancel(job, f"{type(exc).__name__}: {exc}")
+        await self._deliver(job)
 
     async def _loop(self) -> None:
         while True:

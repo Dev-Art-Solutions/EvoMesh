@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from evomesh.agent_templates import AgentTemplateRegistry
 from evomesh.agents import AgentRegistry, AgentRuntime, system_agent_definitions
-from evomesh.bdi import BDIBehavior, ReflectiveBehavior
+from evomesh.bdi import HARNESS_RESPOND_TIMEOUT_SECONDS, BDIBehavior, ReflectiveBehavior
 from evomesh.behaviors import EvolverBehavior, default_behaviors
 from evomesh.blackboard import ArtifactRecord, Blackboard, WorldFact
 from evomesh.browser import (
@@ -77,6 +77,7 @@ from evomesh.improvements import (
 from evomesh.knowledge import build_knowledge_tools
 from evomesh.loop_watchdog import LoopWatchdog
 from evomesh.mailer import Mailer, build_send_email_tool
+from evomesh.manager import ManagerDesk, build_manager_tools
 from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
 from evomesh.messaging import MessageBus
@@ -163,6 +164,8 @@ class Environment:
         self.browser = BrowserService(settings.browser, self.project_root)
         self.browser.on_pending = self._browser_waits
         self.browser.vision = self._browser_look
+        # The human's point of contact's work and pending commands.
+        self.manager = ManagerDesk(self)
         self._browser_tasks: set[asyncio.Task[None]] = set()
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
@@ -1011,6 +1014,7 @@ class Environment:
             self.provider_health = (False, f"Provider '{default_name}' is not configured")
         self.evolver.provider = self.providers.get(default_name)
         self._start_harness_workers()
+        await self.manager.start()
         if start_agent_loops:
             await self.start_all()
         await self.refresh_world()
@@ -1106,6 +1110,7 @@ class Environment:
         if killed:
             logger.info("shutdown: killed %s running child process(es)", killed)
         await shutdown_step("stopping the harness workers", self._stop_harness_workers())
+        await shutdown_step("stopping the manager desk", self.manager.stop())
         # After the workers, not before: no in-flight harness job should
         # still be mid call_tool() on an MCP connection this is about to
         # close (see mcp_client.py's own docstring on why this matters --
@@ -1415,6 +1420,7 @@ class Environment:
         )
         if browser is not None:
             tools.append(browser)
+        tools.extend(build_manager_tools(self.manager, definition))
         knowledge = (
             definition.knowledge
             if definition.knowledge is not None
@@ -1496,6 +1502,20 @@ class Environment:
                 raise ValueError("an agent cannot ask itself")
             reply_mailbox = f"ask:{uuid4()}"
             self.bus.register(reply_mailbox)
+            # The asking job holds a worker while it waits, and the agent it
+            # asks answers through a harness job of its own -- with one
+            # priority worker, that answer queued behind the very job waiting
+            # for it until the ask timed out. Found building the Manager,
+            # whose whole job is asking. So the wait lends a worker: one job,
+            # the answer's, then it is gone.
+            lent = HarnessWorker(
+                self.harness_queue, self._run_harness_job, self._deliver_harness, lane="priority"
+            )
+            lending = (
+                asyncio.create_task(lent.run_one(), name=f"evomesh-harness-lent-{reply_mailbox}")
+                if self.harness_workers
+                else None
+            )
             try:
                 await self.send_message(
                     Message(
@@ -1505,12 +1525,18 @@ class Environment:
                         metadata={"reply_to": reply_mailbox},
                     )
                 )
-                reply = await self.bus.receive(reply_mailbox, wait_seconds=120)
+                # Past the asked agent's own reactive limit, so its "still
+                # working" answer arrives rather than a bare timeout.
+                reply = await self.bus.receive(
+                    reply_mailbox, wait_seconds=HARNESS_RESPOND_TIMEOUT_SECONDS + 30
+                )
                 return reply.content
             finally:
                 # One-shot: nothing else will ever address this mailbox
                 # again, on either the answered or the timed-out path.
                 self.bus.unregister(reply_mailbox)
+                if lending is not None and not lent.busy:
+                    lending.cancel()
 
         return ask
 

@@ -819,6 +819,12 @@ class AgentDefinition(BaseModel):
     # signed-in browser is a capability granted per agent, like email.
     # `/browser grant <agent> read|interact [user]`.
     browser: BrowserGrant | None = None
+    # The human's point of contact (manager.py): it reads the roster, hands
+    # work to the agent that owns it, follows that work and reports back,
+    # and runs mesh commands -- read-only ones directly, anything that
+    # changes the mesh only after `/manager approve <n>`. Set only by a
+    # human (`/manager set <agent>`, or a template a human spawned).
+    manager: bool = False
     # The knowledge wiki tools (knowledge.py). None: on for an ordinary
     # agent, off for a system agent, whose knowledge is the codebase itself.
     knowledge: bool | None = None

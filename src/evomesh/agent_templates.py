@@ -106,6 +106,8 @@ class AgentTemplateDefinition(BaseModel):
     # skills/ directory is not implied by anything a template already asks
     # for, so a template has to opt in explicitly.
     learn_skills: bool = False
+    # The human's point of contact (manager.py, AgentDefinition.manager).
+    manager: bool = False
     # See watchers.py -- a command polled on its own interval, never on this
     # agent's cognition cycle. May use the placeholder {template_dir} for the
     # template's own installed directory, the same way a tool's command may
@@ -205,6 +207,7 @@ def parse_agent_template(
             rules=[dict(item) for item in rules],
             harness=bool(meta.get("harness", False)),
             learn_skills=bool(meta.get("learn_skills", False)),
+            manager=bool(meta.get("manager", False)),
             watch_command=str(watch.get("command") or "").strip(),
             watch_interval_seconds=(
                 float(watch["interval_seconds"])
@@ -360,6 +363,7 @@ class AgentTemplateRegistry:
             ],
             rules=[dict(item) for item in template.rules],
             can_learn_skills=template.learn_skills,
+            manager=template.manager,
             status=AgentStatus.ACTIVE,
             watch_command=template.watch_command.replace(
                 "{template_dir}", str(bundle_root.resolve(strict=False))
@@ -395,7 +399,7 @@ class AgentTemplateRegistry:
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())
 
         await environment.register_agent(definition)
-        if template.tools or template.harness or template.learn_skills:
+        if template.tools or template.harness or template.learn_skills or template.manager:
             # A custom tool only reaches a model through the harness, so a
             # template naming tools is asking for harness access to use them
             # -- the same grant `/harness grant <agent>` makes by hand. A

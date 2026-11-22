@@ -59,6 +59,11 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /browser revoke <agent>       Take the browser tool away
   /browser pending              Sensitive browser actions waiting for you
   /browser approve|deny <n>     Let one through once, or refuse it
+  /manager set|unset <agent>    Make it your point of contact: it routes work to the
+                                agent that owns it, follows it, and runs commands
+  /manager tasks                Work managers handed out, and its state
+  /manager pending              Commands a manager wants to run that change the mesh
+  /manager approve|deny <n>     Run one once, or refuse it
 """
 
 
@@ -492,6 +497,52 @@ class OperationsCommands:
                     "It has to repeat the exact request to use it."
                 )
             return f"Refused #{item.number}: {item.agent} will be told not to retry."
+        return usage
+
+    # -- the manager --------------------------------------------------------
+
+    async def _command_manager(self, parts: list[str]) -> str:
+        usage = (
+            "Usage: /manager set|unset <agent>  |  /manager tasks  |  /manager pending  |  "
+            "/manager approve|deny <n>"
+        )
+        environment = self.environment
+        desk = environment.manager
+        action = parts[1].lower() if len(parts) > 1 else "tasks"
+        if action in ("set", "unset") and len(parts) == 3:
+            agent = environment.registry.get(parts[2])
+            if action == "set" and agent.type == "system":
+                return f"{agent.name} is a system agent; a manager is an ordinary agent."
+            agent.manager = action == "set"
+            if agent.manager and not agent.harness_root:
+                # Its tools only reach the model through the harness.
+                agent.harness_root = str(environment.default_harness_root(agent))
+            agent.touch()
+            await environment.repository.save_agent(agent)
+            if agent.manager:
+                return (
+                    f"{agent.name} is now a manager: it can read the roster, hand tasks to "
+                    "other agents and follow them, and run read-only commands. Anything that "
+                    "changes the mesh waits for /manager approve <n>."
+                )
+            return f"{agent.name} is an ordinary agent again."
+        if action == "tasks":
+            if not desk.tasks:
+                return "No manager has handed out a task yet."
+            return "\n".join(
+                f"{task.id} [{task.status}] {task.agent_name}: {task.request[:100]}"
+                for task in reversed(desk.tasks[-20:])
+            )
+        if action == "pending":
+            live = [item for item in desk.pending.values() if not item.expired()]
+            if not live:
+                return "No manager command is waiting for you."
+            return "\n".join(
+                f"#{item.number} {item.command}" for item in sorted(live, key=lambda i: i.number)
+            )
+        if action in ("approve", "deny") and len(parts) == 3 and parts[2].isdigit():
+            number = int(parts[2])
+            return await desk.approve(number) if action == "approve" else desk.deny(number)
         return usage
 
 
