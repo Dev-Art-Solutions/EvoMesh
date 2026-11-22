@@ -868,6 +868,21 @@ class Environment:
             except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
                 logger.exception("A per-agent notification channel failed")
 
+    async def tell_human(self, agent_id: str, text: str) -> None:
+        """A message from an agent to the human it is talking to, now, apart
+        from its answer: on the agent's own line when it has one -- not
+        echoed into the shared channel, where it is someone else's chatter --
+        and through announce() when it has none."""
+        listeners = list(self.agent_notifiers.get(agent_id, []))
+        if not listeners:
+            await self.announce(text)
+            return
+        for notify in listeners:
+            try:
+                await notify(text)
+            except Exception:  # noqa: BLE001 - a broken channel never stops the mesh
+                logger.exception("A per-agent notification channel failed")
+
     async def start_agent_telegram(self, definition: AgentDefinition) -> None:
         """Start a private Telegram bot for one agent, if it has one configured.
 

@@ -4,6 +4,14 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The Manager can send separate messages** (`message_human`): one per item when asked ("each number in its own message"), or a progress note during long work, on its own line; its answer still goes out last. At most 20 a minute.
+
+### Fixed
+
+- An agent's own Telegram bot no longer puts its name in front of every answer ("Manager> ..."): a private line only ever has one agent.
+
 ## [0.8.0-alpha.1] - 2026-11-22
 
 One agent to talk to. Nine agents meant knowing which one owns news, which one crawls, and which console command does what; the Manager knows instead.

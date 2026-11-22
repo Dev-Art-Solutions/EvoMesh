@@ -51,6 +51,10 @@ MAX_TASKS = 100
 OUTPUT_CHARS = 3500
 APPROVAL_MINUTES = 30
 ROSTER_CHARS = 4000
+# message_human: enough to count down from ten or list a few items one by
+# one; a loop past it is cut off rather than flooding the human's phone.
+MESSAGES_PER_MINUTE = 20
+MESSAGE_CHARS = 3500
 
 # Never run from the tool, approved or not. /exit ends the mesh with nothing
 # left to bring it back; /manager is the approval channel itself; the rest
@@ -460,6 +464,24 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         del context
         return await desk.run_command(definition, str(args.get("command") or ""))
 
+    sent: list[float] = []
+
+    async def message(context: Any, args: dict[str, Any]) -> str:
+        del context
+        text = str(args.get("text") or "").strip()
+        if not text:
+            raise ToolDenied("DENIED: message_human needs the text.")
+        now = asyncio.get_running_loop().time()
+        sent[:] = [at for at in sent if now - at < 60]
+        if len(sent) >= MESSAGES_PER_MINUTE:
+            raise ToolDenied(
+                f"DENIED: {MESSAGES_PER_MINUTE} messages a minute is the limit; put the rest "
+                "in your answer."
+            )
+        sent.append(now)
+        await desk.environment.tell_human(definition.id, text[:MESSAGE_CHARS])
+        return "sent"
+
     return (
         Tool(
             name="mesh_agents",
@@ -488,6 +510,18 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
             description="The tasks you handed out and what came of them.",
             parameters={"type": "object", "properties": {}},
             run=status,
+        ),
+        Tool(
+            name="message_human",
+            description="Send the human a separate message right now, before your answer: "
+            "when they ask for things one message at a time, or progress on long work. "
+            "Your final answer still goes out last, so do not repeat what you sent.",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+            run=message,
         ),
         Tool(
             name="mesh_command",

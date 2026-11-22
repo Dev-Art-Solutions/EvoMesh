@@ -319,3 +319,34 @@ async def test_an_agents_own_bot_does_not_prefix_every_answer_with_its_name(
         assert await shared.route("здравей") == "Manager> Здравей!"
     finally:
         await environment.stop()
+
+
+async def test_the_manager_can_send_separate_messages_but_not_a_flood(tmp_path: Path) -> None:
+    """Found on its bot: "count from 10 to 0, each number in its own message"
+    got one message and an apology -- an answer is one message."""
+    environment, manager, _ = await mesh(tmp_path)
+    heard: list[str] = []
+
+    async def bot(text: str) -> None:
+        heard.append(text)
+
+    try:
+        message = tools(environment, manager)["message_human"]
+        assert await message.run(None, {"text": "без бот"}) == "sent"  # type: ignore[attr-defined]
+        assert any(item[2] == "без бот" for item in environment.announcement_log), (
+            "with no line of its own it reaches the shared channel"
+        )
+
+        await environment.add_agent_notifier(manager.id, bot)
+        logged = len(environment.announcement_log)
+        for number in range(10, -1, -1):
+            await message.run(None, {"text": str(number)})  # type: ignore[attr-defined]
+        assert heard == [str(number) for number in range(10, -1, -1)]
+        assert len(environment.announcement_log) == logged, "not echoed into the shared one"
+
+        for _ in range(8):
+            await message.run(None, {"text": "още"})  # type: ignore[attr-defined]
+        with pytest.raises(ToolDenied):
+            await message.run(None, {"text": "one too many"})  # type: ignore[attr-defined]
+    finally:
+        await environment.stop()
