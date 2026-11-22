@@ -4,6 +4,10 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0-alpha.1] - 2026-11-22
+
+The Manager learned from a night of being talked to on Telegram: it sends separate messages, repeats anything on a clock, stops what you name, lists what it runs with numbers, does what you ask without asking back, and every goal now says who asked for it. None of it is the Manager's alone: any agent can be given the same tools.
+
 ### Added
 
 - **The Manager can send separate messages** (`message_human`): one per item when asked ("each number in its own message"), or a progress note during long work, on its own line; its answer still goes out last. At most 20 a minute.
