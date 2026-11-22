@@ -282,7 +282,14 @@ class ConsoleChannel(OperationsCommands):
             response = await self.environment.bus.receive("human", wait_seconds=300)
         except TimeoutError:
             return f"Timed out waiting for {agent.name}."
-        return f"{agent.name}> {self._resolve_file_references(agent, response.content)}"
+        return self._reply(agent, response.content)
+
+    def _reply(self, agent: AgentDefinition, text: str) -> str:
+        """An agent's answer. Named where the conversation can be with any
+        agent; an agent's own private bot only ever talks to that one, so
+        "Manager> " in front of every line there is noise."""
+        text = self._resolve_file_references(agent, text)
+        return text if self.locked_agent_id else f"{agent.name}> {text}"
 
     def _resolve_file_references(self, agent: AgentDefinition, text: str) -> str:
         """Rewrite each ``FILE: <relative>`` line an agent's reply carries
@@ -365,7 +372,7 @@ class ConsoleChannel(OperationsCommands):
             response = await self.environment.bus.receive("human", wait_seconds=300)
         except TimeoutError:
             return f"Sent {destination.name} to {agent.name}, but it did not respond in time."
-        return f"{agent.name}> {self._resolve_file_references(agent, response.content)}"
+        return self._reply(agent, response.content)
 
     # -- commands -------------------------------------------------------
 

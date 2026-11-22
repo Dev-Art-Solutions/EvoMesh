@@ -297,3 +297,25 @@ async def test_asking_an_agent_lends_the_worker_the_asker_is_holding(tmp_path: P
         release.set()
     finally:
         await environment.stop()
+
+
+async def test_an_agents_own_bot_does_not_prefix_every_answer_with_its_name(
+    tmp_path: Path,
+) -> None:
+    """Found on the Manager's bot: "Manager> Здравей!" -- the name tells a
+    shared conversation who answered; a private line has only one agent."""
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider(["Здравей!"])})
+    await environment.start()
+    try:
+        manager = AgentDefinition(name="Manager", purpose="Point of contact", manager=True)
+        await environment.register_agent(manager)
+        await environment.start_agent(manager.id, start_delay=3600)
+
+        private = ConsoleChannel(environment, locked_agent_id=manager.id)
+        assert await private.route("здравей") == "Здравей!"
+
+        shared = ConsoleChannel(environment)
+        await shared.route("/chat Manager")
+        assert await shared.route("здравей") == "Manager> Здравей!"
+    finally:
+        await environment.stop()
