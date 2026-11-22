@@ -17,7 +17,6 @@ from evomesh.agent_templates import InvalidAgentTemplateError, MissingAgentTempl
 from evomesh.architect import ArchitectInterview
 from evomesh.capabilities import State, check_python_requirements, tool_capability
 from evomesh.channels import Output
-from evomesh.cognition import FILE_LINE
 from evomesh.contracts import (
     AgentDefinition,
     AgentStatus,
@@ -318,15 +317,7 @@ class ConsoleChannel(OperationsCommands):
         project_path -> there, otherwise the agent's own playground) to
         find the file the agent meant.
         """
-        base = self.environment.default_harness_root(agent)
-
-        def resolve(match: re.Match[str]) -> str:
-            raw = match.group(1)
-            path = Path(raw)
-            resolved = path if path.is_absolute() else base / path
-            return match.group(0)[: -len(raw)] + str(resolved)
-
-        return FILE_LINE.sub(resolve, text)
+        return self.environment.resolve_files(agent, text)
 
     async def _infer(self, prompt: str, system: str) -> str:
         if not self.environment.provider_health[0]:

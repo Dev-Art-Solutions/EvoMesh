@@ -25,7 +25,7 @@ from evomesh.browser import (
     PendingAction,
     build_browser_tool,
 )
-from evomesh.cognition import AgentBehavior, CycleOutcome
+from evomesh.cognition import FILE_LINE, AgentBehavior, CycleOutcome, strip_reasoning
 from evomesh.cognitive_services import (
     CognitiveModelService,
     CognitiveServiceType,
@@ -168,7 +168,7 @@ class Environment:
         self.manager = ManagerDesk(self)
         # Finished work is written up by the Manager itself, through the same
         # ask path ask_agent uses.
-        self.manager.report = self._make_ask_agent("manager-desk")
+        self.manager.report = self._make_ask_agent("manager-desk", wait_if_busy=True)
         self._browser_tasks: set[asyncio.Task[None]] = set()
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same
@@ -1507,7 +1507,9 @@ class Environment:
 
         return delegate
 
-    def _make_ask_agent(self, sender_id: str) -> Callable[[str, str], Awaitable[str]]:
+    def _make_ask_agent(
+        self, sender_id: str, *, wait_if_busy: bool = False
+    ) -> Callable[[str, str], Awaitable[str]]:
         """A harness job's ``ask_agent`` tool, bound to the agent it runs for.
 
         Reaches AgentRuntime._handle's reactive path (the same one a human's
@@ -1529,6 +1531,15 @@ class Environment:
                 # look silly. Refused before the round-trip, not after a
                 # timeout.
                 raise ValueError("an agent cannot ask itself")
+            if not wait_if_busy and (busy := self.busy_with(target.id)):
+                # Found live: a Manager asked a busy agent "how far are you?"
+                # and waited three and a half minutes, twice, while the human
+                # waited on the Manager. A busy agent cannot answer until its
+                # own work ends, so that is the answer, at once.
+                return (
+                    f"{target.name} is busy and cannot answer until it finishes: "
+                    f"{busy}. Tell the human that, or ask again later."
+                )
             reply_mailbox = f"ask:{uuid4()}"
             self.bus.register(reply_mailbox)
             # The asking job holds a worker while it waits, and the agent it
@@ -1559,7 +1570,7 @@ class Environment:
                 reply = await self.bus.receive(
                     reply_mailbox, wait_seconds=HARNESS_RESPOND_TIMEOUT_SECONDS + 30
                 )
-                return reply.content
+                return self.resolve_files(target, reply.content)
             finally:
                 # One-shot: nothing else will ever address this mailbox
                 # again, on either the answered or the timed-out path.
@@ -1841,6 +1852,9 @@ class Environment:
         if job.agent_id and (runtime := self.runtimes.get(job.agent_id)) is not None:
             runtime.wake()
         await self._publish_job_artifacts(job)
+        if job.agent_id and job.to_human:
+            await self._answer_late(job)
+            return
         if not job.agent_id or not job.notify:
             return
         if job.result is not None:
@@ -1851,6 +1865,47 @@ class Environment:
         await self.send_message(
             Message(sender_id="harness", recipient_id=job.agent_id, content=body)
         )
+
+    async def _answer_late(self, job: HarnessJob) -> None:
+        """The answer a human stopped waiting for, sent to them on the agent's
+        line -- not into the agent's own inbox, where it was answered again as
+        a new question and never reached the person who asked."""
+        try:
+            agent = self.registry.get(job.agent_id)
+        except KeyError:
+            return
+        if job.result is not None and job.result.outcome == "answered":
+            text = strip_reasoning(job.result.answer) or "(no answer)"
+        elif job.result is not None:
+            text = f"That did not finish ({job.result.outcome}): {job.result.detail}"
+        else:
+            text = f"That did not finish: {job.detail}"
+        await self.tell_human(agent.id, self.resolve_files(agent, text))
+
+    def resolve_files(self, agent: AgentDefinition, text: str) -> str:
+        """Each `FILE: <relative>` line made absolute against the agent that
+        wrote it. Found live: a PDF another agent wrote was named under the
+        Manager's own directory, where it was not, once the answer was passed
+        on -- so a path is resolved where it is born, not where it ends up."""
+        base = self.default_harness_root(agent)
+
+        def resolve(match: re.Match[str]) -> str:
+            raw = match.group(1)
+            path = Path(raw)
+            resolved = path if path.is_absolute() else base / path
+            return match.group(0)[: -len(raw)] + str(resolved)
+
+        return FILE_LINE.sub(resolve, text)
+
+    def busy_with(self, agent_id: str) -> str | None:
+        """What an agent is tied up with right now, or None: a long job of
+        its own in the harness. It cannot answer anyone until that ends."""
+        job = self.harness.open_job_for(agent_id)
+        if job is None or job.priority:
+            return None
+        minutes = int((now_utc() - job.created_at).total_seconds() // 60)
+        label = " ".join((job.label or job.objective).split())[:160]
+        return f"{label} ({minutes} min so far, step {job.steps})"
 
     async def _publish_job_artifacts(self, job: HarnessJob) -> None:
         """What a job wrote is a shared artifact, found by key instead of

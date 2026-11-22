@@ -388,6 +388,11 @@ class ManagerDesk:
             if task.status in ("running", "stalled") and task.goal_id == event.goal_id:
                 summary = str(event.payload.get("summary") or "")
                 if summary:
+                    try:
+                        agent = self.environment.registry.get(task.agent_id)
+                        summary = self.environment.resolve_files(agent, summary)
+                    except KeyError:
+                        pass
                     task.result = summary
                 # Off the publisher's path: handlers run inside the finishing
                 # agent's own cycle, and writing the report waits on a model.

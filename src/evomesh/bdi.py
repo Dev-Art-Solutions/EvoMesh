@@ -50,6 +50,7 @@ from evomesh.contracts import (
     Message,
     MindState,
     PlanStep,
+    now_utc,
 )
 from evomesh.events import Event, EventBus, EventType
 from evomesh.goal_manager import GoalEvaluationContext, GoalManager, PreemptionPolicy
@@ -165,6 +166,9 @@ HARNESS_RESPOND_TIMEOUT_SECONDS = 180.0
 # A Manager's answer usually waits on another agent's (ask_agent), so it gets
 # the longer wait -- still under the console's 300s.
 MANAGER_RESPOND_TIMEOUT_SECONDS = 280.0
+# How long a human waits for a reactive answer before being told it is in
+# hand; the answer itself follows on the agent's line (HarnessJob.to_human).
+HUMAN_ACK_SECONDS = 45.0
 HARNESS_RESPOND_POLL_SECONDS = 0.5
 
 RECONSIDER_NO_INTENTION = "nothing committed yet"
@@ -976,6 +980,9 @@ class BDIBehavior:
                 # hand the agent its own step's result a second time, as a
                 # fresh "message" from "harness" for respond() to answer.
                 notify=False,
+                # Somebody is waiting on a goal they asked for: ahead of the
+                # mesh's own background work.
+                urgent=_asked_for(context),
             )
             step.job = job.number
             if job.open:
@@ -1052,10 +1059,13 @@ class BDIBehavior:
         harness = context.service("harness")
         if not root or harness is None or not isinstance(harness, HarnessGateway):
             return None
-        if harness.open_job_for(context.definition.id) is not None:
-            # Already has a job in flight for something else -- answering from
-            # memory this once beats hijacking that job or queuing a second one
-            # (the queue allows only one open job per agent anyway).
+        if (busy := harness.open_job_for(context.definition.id)) is not None:
+            # Already has a job in flight. Answering from memory here made
+            # things up -- found live, "how far did you get?" got "the mesh
+            # is waiting for the harness, 0 cycles" while the work ran. Say
+            # what is really running, at once; its answer comes when it ends.
+            if message.sender_id == "human":
+                return busy_reply(busy)
             return None
         # The harness job already gets every installed skill's one-line
         # catalog entry prepended (environment.py's _run_harness_job) -- but
@@ -1081,7 +1091,12 @@ class BDIBehavior:
         # reaching document_write. Excludes the current message itself
         # (already named above) so it is not repeated.
         history_hint = ""
-        if prior := context.inbox[:-1][-3:]:
+        if context.conversation:
+            history_hint = (
+                "\n\nThe conversation so far, oldest first (what you said is yours to "
+                "build on):\n" + render_conversation(context.conversation)
+            )
+        elif prior := context.inbox[:-1][-3:]:
             lines = "\n".join(
                 f"- {item.sender_id}: {' '.join(item.content.split())}" for item in prior
             )
@@ -1162,10 +1177,24 @@ class BDIBehavior:
             if context.definition.manager
             else HARNESS_RESPOND_TIMEOUT_SECONDS
         )
+        if message.sender_id == "human":
+            # A person waiting minutes in silence reads it as a hang -- found
+            # live on the Manager's bot. Past this, they hear it is in hand
+            # and the answer follows on their line when it is done.
+            limit = min(limit, HUMAN_ACK_SECONDS)
         while job.open and elapsed < limit:
             await asyncio.sleep(HARNESS_RESPOND_POLL_SECONDS)
             elapsed += HARNESS_RESPOND_POLL_SECONDS
         if job.open:
+            if message.sender_id == "human":
+                # Its answer goes to the human when it ends. Delivered into
+                # the agent's own inbox instead, it was answered again as a new
+                # question and never reached the person who asked.
+                job.to_human = True
+                return (
+                    "Still working on that -- I will send the answer here as soon "
+                    "as it is done."
+                )
             job.notify = True
             return (
                 f"Still working on that (harness job {job.number}) -- ask again "
@@ -1176,6 +1205,50 @@ class BDIBehavior:
         if job.result.outcome == "answered":
             return job.result.answer.strip() or "The harness job found nothing to report."
         return f"[{job.result.outcome}] {job.result.detail}"
+
+
+CONVERSATION_CHARS = 4000
+TURN_CHARS = 700
+
+
+def render_conversation(turns: list[tuple[str, str]]) -> str:
+    """The newest turns that fit CONVERSATION_CHARS, oldest first; each
+    turn clipped. Rule 3: the trim is ours, and the newest survive."""
+    lines: list[str] = []
+    used = 0
+    for who, text in reversed(turns):
+        flat = " ".join(text.split())
+        if len(flat) > TURN_CHARS:
+            flat = flat[:TURN_CHARS] + " [...]"
+        line = f"- {who}: {flat}"
+        if used + len(line) > CONVERSATION_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(reversed(lines))
+
+
+def _asked_for(context: CycleContext) -> bool:
+    goal = context.definition.mind.next_goal()
+    return goal is not None and bool(
+        goal.requested_by or goal.parameters.get("requester_id")
+    )
+
+
+def busy_reply(job: Any) -> str:
+    """What an agent says while it is still on the last request: true,
+    and at once, never a model's guess."""
+    started = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+    elapsed = ""
+    if started is not None:
+        minutes = max(0, int((now_utc() - started).total_seconds() // 60))
+        elapsed = f" ({minutes} min so far, step {getattr(job, 'steps', 0)})"
+    label = " ".join(str(getattr(job, "label", "") or "").split())[:160] or "your last request"
+    job.to_human = True
+    return (
+        f"Still working on: {label}{elapsed}. I will send the answer here as "
+        "soon as it is done; ask me again after that."
+    )
 
 
 class ReflectiveBehavior(BDIBehavior):

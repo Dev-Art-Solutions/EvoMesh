@@ -49,6 +49,8 @@ from evomesh.storage import SQLiteRepository
 logger = logging.getLogger(__name__)
 
 MAX_INBOX_HISTORY = 6
+# Turns of the human conversation an agent keeps (both sides).
+MAX_CONVERSATION = 16
 MAX_PENDING_EVENTS = 64
 DELEGATED_GOAL_PRIORITY = 2
 
@@ -191,6 +193,7 @@ class AgentRuntime:
     _tasks: list[asyncio.Task[None]] = field(default_factory=list, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _inbox: list[Message] = field(default_factory=list, init=False)
+    _conversation: list[tuple[str, str]] = field(default_factory=list, init=False)
     # -inf is "never", and a runtime that never cycled is due at once. It was
     # 0.0, which on time.monotonic()'s own clock means "at boot": found
     # 2026-09-24 when CI (a VM up for under ten minutes) never gave a
@@ -337,6 +340,12 @@ class AgentRuntime:
                 )
                 self.state.last_error = str(exc)
             self.state.phase = AgentPhase.ERROR if error else AgentPhase.IDLE
+        if incoming.sender_id == "human":
+            self._conversation = [
+                *self._conversation,
+                ("human", incoming.content),
+                (self.definition.name, response),
+            ][-MAX_CONVERSATION:]
         outgoing = Message(
             sender_id=self.definition.id,
             # A plain message replies to its sender's own mailbox -- but that
@@ -1015,6 +1024,7 @@ class AgentRuntime:
             budget=self.budget,
             world=self.world_context(),
             inbox=list(self._inbox),
+            conversation=list(self._conversation),
             services=self.services(),
             work=self._work_summary(),
             num_ctx=self.num_ctx,

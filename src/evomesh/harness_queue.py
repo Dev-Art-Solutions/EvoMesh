@@ -27,6 +27,11 @@ from evomesh.harness import HarnessResult
 logger = logging.getLogger(__name__)
 
 
+# Put on the background line to wake a worker for an urgent job, which
+# waits on its own line; never a real job number (those start at 1).
+URGENT_SIGNAL = 0
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -63,6 +68,12 @@ class HarnessJob:
     # usually has finishes what it started, this only decides what it picks
     # up next.
     priority: bool = False
+    # Background work a human asked for (a goal with requested_by): ahead
+    # of every other waiting background job, never ahead of a reactive one.
+    urgent: bool = False
+    # Its answer goes to the human on the agent's line when it ends -- set
+    # when the human's own wait for it ran out.
+    to_human: bool = False
     status: JobStatus = JobStatus.QUEUED
     steps: int = 0
     # Whether a finished job should land in its agent's inbox as a message.
@@ -165,6 +176,7 @@ class HarnessQueue:
         # something, no matter how long the background lane is running.
         self._priority_waiting: asyncio.Queue[int] = asyncio.Queue()
         self._background_waiting: asyncio.Queue[int] = asyncio.Queue()
+        self._urgent_waiting: asyncio.Queue[int] = asyncio.Queue()
         # `jobs` is process memory, not a database -- nothing here ever stops
         # running on its own, so an unpruned dict has no ceiling (the same
         # class of bug this project has already fixed for generation
@@ -210,6 +222,7 @@ class HarnessQueue:
         priority: bool = False,
         catalog: bool = True,
         reading_only: bool = False,
+        urgent: bool = False,
     ) -> HarnessJob:
         existing = self.open_job_for(agent_id)
         if existing is not None:
@@ -233,10 +246,18 @@ class HarnessQueue:
             priority=priority,
             catalog=catalog,
             reading_only=reading_only,
+            urgent=urgent,
         )
         self._next += 1
         self.jobs[job.number] = job
-        (self._priority_waiting if priority else self._background_waiting).put_nowait(job.number)
+        if priority:
+            self._priority_waiting.put_nowait(job.number)
+        elif urgent:
+            self._urgent_waiting.put_nowait(job.number)
+            # Wakes a background worker waiting on the ordinary line.
+            self._background_waiting.put_nowait(URGENT_SIGNAL)
+        else:
+            self._background_waiting.put_nowait(job.number)
         self._prune_finished()
         return job
 
@@ -257,6 +278,8 @@ class HarnessQueue:
             job = await self._take_from(self._priority_waiting)
             if job is not None:
                 return job
+        if not self._urgent_waiting.empty():
+            return await self._take_from(self._background_waiting)
         priority_get = asyncio.ensure_future(self._priority_waiting.get())
         background_get = asyncio.ensure_future(self._background_waiting.get())
         try:
@@ -278,6 +301,10 @@ class HarnessQueue:
             for task in (priority_get, background_get):
                 if not task.done():
                     task.cancel()
+        if number == URGENT_SIGNAL:
+            if self._urgent_waiting.empty():
+                return await self.take(lane=lane)
+            number = self._urgent_waiting.get_nowait()
         job = self.jobs.get(number)
         if job is None or job.status is not JobStatus.QUEUED:
             return await self.take(lane=lane)
@@ -286,7 +313,14 @@ class HarnessQueue:
 
     async def _take_from(self, waiting: asyncio.Queue[int]) -> HarnessJob:
         while True:
-            number = await waiting.get()
+            if waiting is self._background_waiting and not self._urgent_waiting.empty():
+                number = self._urgent_waiting.get_nowait()
+            else:
+                number = await waiting.get()
+                if number == URGENT_SIGNAL:
+                    if self._urgent_waiting.empty():
+                        continue
+                    number = self._urgent_waiting.get_nowait()
             job = self.jobs.get(number)
             if job is not None and job.status is JobStatus.QUEUED:
                 job.status = JobStatus.RUNNING
@@ -352,6 +386,7 @@ class HarnessGateway:
         allow_write: bool = True,
         catalog: bool = True,
         reading_only: bool = False,
+        urgent: bool = False,
     ) -> HarnessJob:
         return self.queue.submit(
             objective,
@@ -366,6 +401,7 @@ class HarnessGateway:
             notify=notify,
             catalog=catalog,
             reading_only=reading_only,
+            urgent=urgent,
         )
 
     def job(self, number: int) -> HarnessJob | None:

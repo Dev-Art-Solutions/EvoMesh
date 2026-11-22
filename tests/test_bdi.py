@@ -1490,11 +1490,15 @@ async def test_a_reactive_question_answers_from_memory_without_harness_access(
     assert answer == "From memory: no tool access here."
 
 
-async def test_a_reactive_question_answers_from_memory_when_a_job_is_already_open(
+async def test_a_question_while_a_job_is_open_gets_the_truth_at_once(
     tmp_path: Path,
 ) -> None:
-    """An agent already mid-job on something else must not have that job
-    hijacked (or a second one queued) by an unrelated question."""
+    """An agent already mid-job must not have that job hijacked (or a second
+    one queued). It used to answer a human from memory instead -- found live,
+    "how far did you get?" got an invented "waiting for the harness, 0
+    cycles" while the work ran. Now a human gets what is really running, at
+    once, and that job's answer is sent to them when it ends. Another agent's
+    question still gets the memory answer."""
     from evomesh.harness_queue import HarnessGateway
 
     definition = AgentDefinition(
@@ -1503,7 +1507,12 @@ async def test_a_reactive_question_answers_from_memory_when_a_job_is_already_ope
     memory = AgentMemory(tmp_path / "workspace", definition)
     await memory.ensure()
     harness = HarnessGateway(HarnessQueue(), {})
-    harness.submit("investigate something else entirely", agent_id=definition.id, root=tmp_path)
+    job = harness.submit(
+        "investigate something else entirely",
+        agent_id=definition.id,
+        root=tmp_path,
+        label="the 20 headlines as a PDF",
+    )
     context = CycleContext(
         definition=definition,
         provider=MockProvider(["Answering from memory instead."]),
@@ -1514,10 +1523,16 @@ async def test_a_reactive_question_answers_from_memory_when_a_job_is_already_ope
 
     answer = await BDIBehavior().respond(
         context,
-        Message(sender_id="human", recipient_id=definition.id, content="What is my balance?"),
+        Message(sender_id="human", recipient_id=definition.id, content="How far did you get?"),
     )
+    assert answer.startswith("Still working on: the 20 headlines as a PDF (")
+    assert job.to_human, "its answer goes to the human when it ends"
 
-    assert answer == "Answering from memory instead."
+    from_agent = await BDIBehavior().respond(
+        context,
+        Message(sender_id="manager", recipient_id=definition.id, content="Status?"),
+    )
+    assert from_agent == "Answering from memory instead."
 
 
 def test_parse_plan_extracts_numbered_steps() -> None:

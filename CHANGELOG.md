@@ -4,6 +4,17 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+Found in a real evening of asking the Manager for "the 20 latest headlines in Bulgarian, as a PDF":
+
+- **An agent remembers the conversation, both sides.** A harness answer used to see only the last three incoming messages and none of its own replies, so "as a PDF" did not know which list. It now sees the newest turns of the conversation, its own answers included, within a fixed budget.
+- **A human hears at once.** A question that takes longer than 45 seconds is answered "still working on that, I will send the answer here", and the answer follows on the agent's own line when it is done. It used to wait up to almost five minutes, then say "Still working on that (harness job 31)", and the real answer was fed back into the agent's own inbox and never reached the person who asked.
+- **"How far did you get?" while an agent works gets the truth.** It used to be answered from memory, with no tools, and the Manager invented "the mesh is waiting for the harness, 0 cycles". It now says what is really running and for how long, without a model.
+- **Asking a busy agent answers at once.** `ask_agent` waited three and a half minutes, twice, on an agent tied up with its own long job. It now says that agent is busy, with what, and for how long.
+- **A file is named where it was written.** A PDF another agent made was passed on under the Manager's own directory, where it was not. `FILE:` lines are made absolute against the agent that wrote them, and a message an agent sends on its own (a task's report, a late answer) now uploads its file on Telegram as a reply does.
+- **Work a human asked for goes first.** A plan step of a goal somebody asked for goes ahead of every other waiting background job, never ahead of a human's reactive question.
+
 ## [0.9.0-alpha.1] - 2026-11-22
 
 The Manager learned from a night of being talked to on Telegram: it sends separate messages, repeats anything on a clock, stops what you name, lists what it runs with numbers, does what you ask without asking back, and every goal now says who asked for it. None of it is the Manager's alone: any agent can be given the same tools.

@@ -636,6 +636,9 @@ class TelegramChannel:
     async def announce(self, text: str) -> None:
         for chat_id in sorted(self._allowed):
             await self.send(chat_id, text)
+            # A late answer or a task's report names its file like a reply
+            # does; it was sent as a path the human could not open.
+            await self._send_file_references(chat_id, self.locked_agent_id or "", text)
 
     async def send(
         self, chat_id: int, text: str, markup: dict[str, Any] | None = None
@@ -662,16 +665,20 @@ class TelegramChannel:
         workspace" means without a second definition of it.
         """
         references = extract_file_references(text)
-        if not references or not agent_id:
+        if not references:
             return
+        base: Path | None = None
         try:
-            agent = self.environment.registry.get(agent_id)
+            base = self.environment.default_harness_root(
+                self.environment.registry.get(agent_id)
+            )
         except KeyError:
-            return
-        base = self.environment.default_harness_root(agent)
+            base = None  # absolute paths only
         for relative in references:
             path = Path(relative)
             if not path.is_absolute():
+                if base is None:
+                    continue
                 path = base / path
             if path.is_file():
                 await self._send_document(chat_id, path)

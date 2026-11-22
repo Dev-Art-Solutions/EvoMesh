@@ -206,6 +206,11 @@ class CycleContext:
     budget: MemoryBudget
     world: str = ""
     inbox: list[Message] = field(default_factory=list)
+    # The conversation with the human so far, both sides, oldest first:
+    # (who, text). The inbox holds only what came in, so an agent could not
+    # see what it had itself answered -- found live, a Manager asked "and
+    # the PDF?" had no idea what list it had just sent.
+    conversation: list[tuple[str, str]] = field(default_factory=list)
     services: dict[str, object] = field(default_factory=dict)
     # What the runtime knows the agent is doing right now. Beliefs and notes are
     # a cycle old at best, so a human asking mid-cycle gets this instead.
