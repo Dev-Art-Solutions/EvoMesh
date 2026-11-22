@@ -66,7 +66,8 @@ for an agent's own standing work.
   even read it: every repeat and every handed-out task. `stop` lets you stop
   just one -- when they say "stop the news", stop only that one.
 - "What are you running?", "give me your tasks": show `task_status`'s
-  numbered list as it is. They stop one by its number ("stop 2"), which
+  numbered list as it is. It has your repeats, every goal you put on another
+  agent (however you did it), and goals other agents put on you. They stop one by its number ("stop 2"), which
   stops it before you even read the message; `stop` with what "number"
   does the same.
 - Short and concrete: the answer, then who it came from if that matters.

@@ -78,6 +78,31 @@ STOP_ONE = re.compile(
 STOP_NAMED = re.compile(r"^(?:стоп|спри|спрете|stop)\b[\s,:-]*(.+)$")
 
 
+OPEN_STATUSES = {
+    GoalStatus.PENDING,
+    GoalStatus.RUNNABLE,
+    GoalStatus.ACTIVE,
+    GoalStatus.BLOCKED,
+    GoalStatus.STALLED,
+}
+# What assign_task appends to a goal; shown without it.
+ASKED_BY = " (Asked by "
+
+
+def requester_of(goal: Any) -> str | None:
+    """Who asked for a goal: Goal.requested_by, or, for a delegation accepted
+    before that field existed, the requester its parameters recorded."""
+    asker = goal.requested_by or goal.parameters.get("requester_id")
+    return str(asker) if asker else None
+
+
+def _goal_line(goal: Any) -> str:
+    text = goal.description.split(ASKED_BY, 1)[0]
+    status = goal.status.value if hasattr(goal.status, "value") else str(goal.status)
+    every = f" every {goal.interval_seconds}s" if goal.interval_seconds else ""
+    return f"[{status}{every}]: {text[:120]}"
+
+
 def _stems(text: str) -> set[str]:
     """Rough word stems (the first five letters of words of four or more),
     enough for "новините" to find "новини" in any language. No list of
@@ -331,10 +356,11 @@ class ManagerDesk:
         # The goal's last summary is what comes back; found live, a crawl
         # ended on "compiled the two lists" with the headlines nowhere in it.
         goal = GoalManager(target.mind).create(
-            f"{text} (Asked by {manager.name} for the human. Your final answer must be "
+            f"{text}{ASKED_BY}{manager.name} for the human. Your final answer must be "
             "the result itself -- the list, the figures, the text -- not a description "
             "of what you did.)",
             priority=8,
+            requested_by=manager.id,
         )
         target.touch()
         await environment.repository.save_agent(target)
@@ -562,9 +588,28 @@ class ManagerDesk:
         self._checks.add(saving)
         saving.add_done_callback(self._checks.discard)
 
+    def _open_goals(self, agent_id: str) -> tuple[list[tuple[Any, Any]], list[Any]]:
+        """(goals this agent asked other agents for, as (agent, goal)), and
+        (its own goals someone else asked for) -- every open one, however it
+        was created: assign_task, a delegation, a command a manager ran."""
+        handed: list[tuple[Any, Any]] = []
+        given: list[Any] = []
+        for agent in self.environment.registry.all():
+            for goal in agent.mind.goals:
+                if goal.status not in OPEN_STATUSES:
+                    continue
+                asker = requester_of(goal)
+                if agent.id == agent_id:
+                    if asker and asker != agent_id:
+                        given.append(goal)
+                elif asker == agent_id:
+                    handed.append((agent, goal))
+        return handed, given
+
     def listing(self, manager_id: str) -> list[str]:
-        """Everything this Manager runs for the human, numbered 1..n -- the
-        numbers "stop 1" refers to -- then what finished lately, unnumbered."""
+        """Everything this agent runs for the human, numbered 1..n -- the
+        numbers "stop 1" refers to: its repeats, what it handed to other agents,
+        and what other agents handed to it. Then what finished lately."""
         entries: list[tuple[str, str]] = []
         lines: list[str] = []
         for item in self.repeats.get(manager_id, []):
@@ -573,17 +618,23 @@ class ManagerDesk:
                 f"{len(entries)}. every {item.every_seconds:g}s ({item.runs} so far): "
                 f"{item.description[:120]}"
             )
-        mine = self.tasks_for(manager_id)
-        for task in reversed(mine):
-            if task.status in ("running", "stalled"):
-                entries.append(("task", task.id))
-                lines.append(
-                    f"{len(entries)}. {task.agent_name} [{task.status}]: {task.request[:120]}"
-                )
+        handed, given = self._open_goals(manager_id)
+        for agent, goal in handed:
+            entries.append(("goal", f"{agent.id}:{goal.id}"))
+            lines.append(f"{len(entries)}. {agent.name} {_goal_line(goal)}")
+        for goal in given:
+            entries.append(("goal", f"{manager_id}:{goal.id}"))
+            lines.append(
+                f"{len(entries)}. mine, from {self._name(requester_of(goal))} {_goal_line(goal)}"
+            )
         self._listed[manager_id] = entries
         if not lines:
             lines.append("Nothing is running.")
-        done = [task for task in reversed(mine) if task.status not in ("running", "stalled")]
+        done = [
+            task
+            for task in reversed(self.tasks_for(manager_id))
+            if task.status not in ("running", "stalled")
+        ]
         if done:
             lines.append("Finished lately:")
             lines += [
@@ -592,6 +643,14 @@ class ManagerDesk:
                 for task in done[:5]
             ]
         return lines
+
+    def _name(self, agent_id: str | None) -> str:
+        if agent_id == "human":
+            return "you"
+        try:
+            return self.environment.registry.get(agent_id or "").name
+        except KeyError:
+            return agent_id or "?"
 
     async def stop_listed(self, manager_id: str, number: int) -> str:
         if manager_id not in self._listed:
@@ -604,11 +663,29 @@ class ManagerDesk:
             if self.stop_repeats(manager_id, int(key)):
                 return f"⏹ Stopped {number}."
             return f"{number} had already ended."
-        for task in self.tasks_for(manager_id):
-            if task.id == key and task.status in ("running", "stalled"):
-                await self.stop_task(task)
-                return f"⏹ Stopped {number} ({task.agent_name})."
-        return f"{number} had already ended."
+        agent_id, goal_id = key.split(":", 1)
+        name = await self.stop_goal(agent_id, goal_id)
+        return f"⏹ Stopped {number} ({name})." if name else f"{number} had already ended."
+
+    async def stop_goal(self, agent_id: str, goal_id: str) -> str:
+        """Cancel one goal, and close the task that was following it. Returns
+        the agent's name, or "" when there was nothing open to stop."""
+        try:
+            agent = self.environment.registry.get(agent_id)
+            goal = agent.mind.goal(goal_id)
+        except KeyError:
+            return ""
+        if goal.status not in OPEN_STATUSES:
+            return ""
+        GoalManager(agent.mind).cancel(goal, "stopped by the human")
+        agent.touch()
+        await self.environment.repository.save_agent(agent)
+        for task in self.tasks:
+            if task.goal_id == goal_id and task.status in ("running", "stalled"):
+                task.status = "cancelled"
+                task.result = "stopped by the human"
+        await self._save()
+        return agent.name
 
     def describe_repeats(self, manager_id: str | None = None) -> list[str]:
         owners = [manager_id] if manager_id is not None else list(self.repeats)
@@ -633,38 +710,25 @@ class ManagerDesk:
 
     async def stop_task(self, task: TrackedTask) -> None:
         """Take handed-out work back: drop the goal on its agent."""
-        try:
-            agent = self.environment.registry.get(task.agent_id)
-            goal = agent.mind.goal(task.goal_id)
-        except KeyError:
-            pass
-        else:
-            if goal.status not in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
-                GoalManager(agent.mind).cancel(goal, "stopped by the human")
-                agent.touch()
-                await self.environment.repository.save_agent(agent)
-        task.status = "cancelled"
-        task.result = "stopped by the human"
-        await self._save()
+        if not await self.stop_goal(task.agent_id, task.goal_id):
+            task.status = "cancelled"
+            task.result = "stopped by the human"
+            await self._save()
 
     async def stop_everything(self, manager_id: str) -> str:
-        """Every repeat and every running handed-out task of this Manager."""
+        """Every repeat of this agent and every open goal it handed to another
+        agent -- not the work others handed to it, which is theirs to stop."""
         repeats = self.stop_repeats(manager_id)
-        open_tasks = [
-            task
-            for task in self.tasks_for(manager_id)
-            if task.status in ("running", "stalled")
-        ]
-        for task in open_tasks:
-            await self.stop_task(task)
-        if not repeats and not open_tasks:
+        handed, _ = self._open_goals(manager_id)
+        names = sorted({await self.stop_goal(agent.id, goal.id) for agent, goal in handed} - {""})
+        stopped = len(handed)
+        if not repeats and not stopped:
             return ""
         parts = []
         if repeats:
             parts.append(f"{repeats} repeating")
-        if open_tasks:
-            names = ", ".join(sorted({task.agent_name for task in open_tasks}))
-            parts.append(f"{len(open_tasks)} task(s) on {names}")
+        if stopped:
+            parts.append(f"{stopped} task(s) on {', '.join(names)}")
         return "⏹ Stopped: " + "; ".join(parts) + "."
 
     async def stop_on_word(self, manager_id: str, text: str) -> str | None:
@@ -698,8 +762,12 @@ class ManagerDesk:
                 )
                 texts.append(item.description if item else "")
             else:
-                task = next((t for t in self.tasks if t.id == key), None)
-                texts.append(f"{task.agent_name} {task.request}" if task else "")
+                agent_id, goal_id = key.split(":", 1)
+                try:
+                    agent = self.environment.registry.get(agent_id)
+                    texts.append(f"{agent.name} {agent.mind.goal(goal_id).description}")
+                except KeyError:
+                    texts.append("")
         hits = [index for index, text in enumerate(texts, 1) if wanted & _stems(text)]
         if len(hits) == 1:
             return await self.stop_listed(manager_id, hits[0])
@@ -720,7 +788,7 @@ class ManagerDesk:
             )
         human_asked = self.human_turn.get(manager.id, False)
         if human_asked and (kind == "work" or (kind == "approve" and self.trusted)):
-            return await self._execute(command)
+            return await self._execute(command, manager.id)
         if kind in ("approve", "work"):
             number = self._next
             self._next += 1
@@ -736,12 +804,13 @@ class ManagerDesk:
                 "asked. Tell them what you asked to run and why, then stop -- do not try "
                 "another way."
             )
-        return await self._execute(command)
+        return await self._execute(command, manager.id)
 
-    async def _execute(self, command: str) -> str:
+    async def _execute(self, command: str, actor_id: str = "human") -> str:
         from evomesh.console import ConsoleChannel
 
         console = ConsoleChannel(self.environment)
+        console.actor_id = actor_id
         output = await console.route(command)
         if len(output) > OUTPUT_CHARS:
             output = output[:OUTPUT_CHARS] + f"\n[... {len(output) - OUTPUT_CHARS} chars cut]"
@@ -753,7 +822,7 @@ class ManagerDesk:
             return f"No pending command {number}. /manager pending lists them."
         if pending.expired():
             return f"Command {number} expired ({APPROVAL_MINUTES} min); ask again."
-        output = await self._execute(pending.command)
+        output = await self._execute(pending.command, pending.manager_id)
         # Into the Manager's inbox for its next answer, as a broadcast so it
         # is context, not a question it must reply to.
         await self.environment.send_message(

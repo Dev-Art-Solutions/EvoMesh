@@ -542,7 +542,8 @@ async def test_one_numbered_list_and_stop_by_its_number(
         lines = listing.splitlines()
         assert lines[0].startswith("1. every 60s") and "news {n}" in lines[0]
         assert lines[1].startswith("2. every 60s") and "count {n}" in lines[1]
-        assert lines[2].startswith("3. Crawler [running]") and "crawl a site" in lines[2]
+        assert lines[2].startswith("3. Crawler [runnable]") and "crawl a site" in lines[2]
+        assert "Asked by" not in lines[2], "the instructions for the agent are not shown"
         assert "1. every 60s" in await console.route("/manager tasks")
 
         # "спри 1" stops the first, before any model; the rest keeps running.
@@ -669,5 +670,56 @@ async def test_stop_names_one_thing_in_words(
         assert "София" in asked and "Варна" in asked
         assert len(desk.repeats[manager.id]) == 3, "nothing stopped on a guess"
         assert await desk.stop_on_word(manager.id, "stop варна") == "⏹ Stopped 3."
+    finally:
+        await environment.stop()
+
+
+async def test_every_goal_knows_who_asked_for_it_from_either_side(tmp_path: Path) -> None:
+    """Asked for: the human gave work to one agent, which created it on
+    another, and the human could not find it. However a goal is created for
+    another agent -- assign_task, a command a manager ran, a delegation -- it
+    carries who asked, and both sides list it."""
+    from evomesh.coordination import WorkItem
+    from evomesh.manager import requester_of
+
+    environment, manager, crawler = await mesh(tmp_path)
+    desk = environment.manager
+    console = ConsoleChannel(environment)
+    try:
+        # A command the manager ran, because the human asked for it.
+        desk.human_turn[manager.id] = True
+        await tools(environment, manager)["mesh_command"].run(  # type: ignore[attr-defined]
+            None, {"command": '/goal add Crawler "watch example.com" 5 3600'}
+        )
+        desk.human_turn.pop(manager.id)
+        goal = next(g for g in crawler.mind.goals if "watch example.com" in g.description)
+        assert goal.requested_by == manager.id
+
+        listing = "\n".join(desk.listing(manager.id))
+        assert "1. Crawler [" in listing and "every 3600s" in listing
+        assert "(from Manager)" in await console.route("/goals Crawler")
+        assert "1. mine, from Manager" in "\n".join(desk.listing(crawler.id)), (
+            "the agent that got it says where it came from"
+        )
+
+        # A goal the human added by hand is "from you" on that agent.
+        await console.route('/goal add Crawler "count the pages" 5')
+        human = next(g for g in crawler.mind.goals if "count the pages" in g.description)
+        assert human.requested_by == "human"
+        assert "mine, from you" in "\n".join(desk.listing(crawler.id))
+
+        # A delegation carries its requester too, and an older one is read
+        # from the parameters it always recorded.
+        await environment.start_agent(crawler.id, start_delay=3600)
+        staged = environment.runtimes[crawler.id]._staged_goal(  # noqa: SLF001
+            WorkItem(parent_goal_id="", objective="crawl x"), manager.id
+        )
+        assert staged.requested_by == manager.id
+        staged.requested_by = None
+        assert requester_of(staged) == manager.id
+
+        # And stopping by number reaches it wherever it lives.
+        assert await desk.stop_listed(manager.id, 1) == "⏹ Stopped 1 (Crawler)."
+        assert goal.status is GoalStatus.CANCELLED
     finally:
         await environment.stop()

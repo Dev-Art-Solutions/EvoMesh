@@ -33,7 +33,7 @@ from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.improvements import ImprovementStatus
-from evomesh.manager import coordinates
+from evomesh.manager import coordinates, requester_of
 from evomesh.models import describe
 from evomesh.ops_commands import OPS_HELP, OperationsCommands
 from evomesh.procedural_learning import ProcedureLearner
@@ -218,6 +218,9 @@ class ConsoleChannel(OperationsCommands):
         # conversation can never be pointed at a different agent, and there is
         # no Architect draft flow -- the agent already exists.
         self.locked_agent_id = locked_agent_id
+        # Who a /goal add here is for: "human" at a console, an agent's id
+        # when a manager runs the command (Goal.requested_by).
+        self.actor_id = "human"
         self.selected_agent = locked_agent_id or "architect"
         self.architect = ArchitectInterview()
         self.running = True
@@ -882,12 +885,22 @@ class ConsoleChannel(OperationsCommands):
         rows = []
         for goal in definition.mind.goals:
             flag = " (recurring)" if goal.recurring else ""
+            if (asker := requester_of(goal)) and asker != definition.id:
+                flag += f" (from {self._agent_name(asker)})"
             rows.append(
                 f"{goal.id} [{'paused' if goal.blocked_reason == PAUSED else goal.status}]"
                 f" p{goal.priority}{flag} {goal.description}"
                 + (f"\n    last: {goal.notes[-1]}" if goal.notes else "")
             )
         return "\n".join(rows)
+
+    def _agent_name(self, agent_id: str) -> str:
+        if agent_id == "human":
+            return "you"
+        try:
+            return self.environment.registry.get(agent_id).name
+        except KeyError:
+            return agent_id
 
     async def _command_goal(self, parts: list[str]) -> str:
         if len(parts) < 4:
@@ -924,6 +937,7 @@ class ConsoleChannel(OperationsCommands):
                 interval_seconds=interval,
                 cron_expression=cron_expression,
                 recurring=bool(interval or cron_expression),
+                requested_by=self.actor_id,
             )
             message = f"Added goal {goal.id} to {definition.name}."
             if interval:

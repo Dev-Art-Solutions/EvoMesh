@@ -594,6 +594,7 @@ class AgentRuntime:
                 "delegation_depth": item.delegation_depth,
             },
             owner_agent_id=self.definition.id,
+            requested_by=requester_id,
             # Ahead of a standing goal (3): someone is waiting on this, and a
             # recurring goal that is always runnable would otherwise starve it.
             priority=DELEGATED_GOAL_PRIORITY,

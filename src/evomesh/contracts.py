@@ -171,6 +171,11 @@ class Goal(BaseModel):
     # with /goal notify <agent> <id> [on|off]: an agent narrating every step
     # of every goal unprompted is noise, not a feature, until asked for.
     notify: bool = False
+    # Who asked for this goal when it was not this agent itself: another
+    # agent's id (assign_task, a delegation, a command a manager ran) or
+    # "human". A human who asked one agent should be able to find work that
+    # agent then created on another -- from either side.
+    requested_by: str | None = None
     # Optional. A regex a recurring goal's report is expected to match, line
     # by line, before it reaches a human -- a backstop for goals whose skill
     # asks the model for a strict format (e.g. news-impact-analysis's
@@ -558,6 +563,7 @@ class MindState(BaseModel):
         failure_conditions: Sequence[GoalCondition] = (),
         deadline: datetime | None = None,
         owner_agent_id: str | None = None,
+        requested_by: str | None = None,
     ) -> Goal:
         parent = self.goal(parent_goal_id) if parent_goal_id is not None else None
         known = {goal.id for goal in self.goals}
@@ -579,6 +585,7 @@ class MindState(BaseModel):
             failure_conditions=list(failure_conditions),
             deadline=deadline,
             owner_agent_id=owner_agent_id,
+            requested_by=requested_by,
             recurring=recurring,
             interval_seconds=interval_seconds,
             cron=cron_expression,
