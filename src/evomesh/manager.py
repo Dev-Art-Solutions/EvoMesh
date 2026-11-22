@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATE_KEY = "manager_tasks"
+TRUST_KEY = "manager_trust"
 MAX_TASKS = 100
 OUTPUT_CHARS = 3500
 APPROVAL_MINUTES = 30
@@ -55,6 +56,20 @@ ROSTER_CHARS = 4000
 # one; a loop past it is cut off rather than flooding the human's phone.
 MESSAGES_PER_MINUTE = 20
 MESSAGE_CHARS = 3500
+# A repeat: something done again on a clock -- a message, or a question to
+# an agent whose answer is passed on. The clock is code: a model takes
+# seconds to answer, so "every second" can only be a loop, and a run never
+# overlaps the one before it. Bounded so a forgotten one ends on its own.
+REPEAT_MIN_SECONDS = 1.0
+REPEAT_DEFAULT_RUNS = 600
+REPEAT_MAX_RUNS = 3600
+# A human's whole message, any case: stops everything the Manager runs for
+# them -- repeats and handed-out work -- before any model reads it (rule 6:
+# a word list, never a model, decides this).
+STOP_WORDS = {"стоп", "спри", "спрете", "stop", "спри!", "стоп!", "stop!"}
+# What an asked agent says when a repeated question has nothing new: that
+# run sends nothing.
+NOTHING_NEW = "NOTHING_NEW"
 
 # Never run from the tool, approved or not. /exit ends the mesh with nothing
 # left to bring it back; /manager is the approval channel itself; the rest
@@ -98,9 +113,28 @@ READ_ONLY: dict[str, set[str] | None] = {
 # Read-only only in their bare form: with more arguments they change things.
 READ_ONLY_BARE = {"/procedures": 2, "/improvements": 1, "/rules": 2}
 
+# Commands that change what agents do, never what they may do. These run
+# without approval when the human's own message started the Manager's turn
+# ("give NewsWatcher a goal") -- not when a repeat, a report or another
+# agent's answer did. Everything that grants, revokes, installs, deletes or
+# restarts stays behind approval whatever started it: that is how text from
+# a web page could otherwise widen what an agent may do.
+WORK: dict[str, set[str] | None] = {
+    "/goal": {"add", "done", "drop", "pause", "resume", "notify", "pattern", "text"},
+    "/agent": {"start", "stop", "mute", "unmute"},
+    "/cycle": None,
+    "/model": None,
+    "/num-ctx": None,
+}
+
+# A human's whole reply to a waiting command, any case, decided by a word
+# list (rule 6), never by a model.
+YES_WORDS = {"да", "yes", "ok", "okay", "ок", "давай", "добре", "одобрявам", "approve", "y"}
+NO_WORDS = {"не", "no", "недей", "откажи", "deny", "n"}
+
 
 def classify(command: str) -> str:
-    """'read', 'approve' or 'forbidden' for one console command line."""
+    """'read', 'work', 'approve' or 'forbidden' for one console command line."""
     try:
         parts = shlex.split(command)
     except ValueError:
@@ -112,6 +146,10 @@ def classify(command: str) -> str:
         return "forbidden"
     if name in READ_ONLY_BARE:
         return "read" if len(parts) <= READ_ONLY_BARE[name] else "approve"
+    if name in WORK:
+        actions = WORK[name]
+        action = parts[1].lower() if len(parts) > 1 else ""
+        return "work" if actions is None or action in actions else "approve"
     if name not in READ_ONLY:
         return "approve"
     actions = READ_ONLY[name]
@@ -148,6 +186,15 @@ class PendingCommand:
         return datetime.now(UTC) - self.created_at > timedelta(minutes=APPROVAL_MINUTES)
 
 
+@dataclass
+class Repeat:
+    number: int
+    description: str
+    every_seconds: float
+    runs: int = 0
+    task: asyncio.Task[None] | None = None
+
+
 class ManagerDesk:
     """The work Managers handed out, and the commands waiting on a human.
     Owned by Environment.manager; tasks persist, pending commands do not."""
@@ -162,10 +209,25 @@ class ManagerDesk:
         # its ask path; None in a bare desk, which then sends the raw report.
         self.report: Callable[[str, str], Awaitable[str]] | None = None
         self._checks: set[asyncio.Task[None]] = set()
+        # manager_id -> True while a human's own message is being answered: the
+        # only time a "work" command runs without approval. Set by the console.
+        self.human_turn: dict[str, bool] = {}
+        # /manager trust on: what changes access runs too when the human asked
+        # -- the human's own choice, off by default, kept across restarts.
+        self.trusted = False
+        # manager_id -> its running repeats (not persisted: a restart ends them).
+        self.repeats: dict[str, list[Repeat]] = {}
+        self._repeat_ids = 1
 
     # -- lifecycle -------------------------------------------------------
 
+    async def set_trusted(self, trusted: bool) -> None:
+        self.trusted = trusted
+        await self.environment.repository.save_state(TRUST_KEY, {"trusted": trusted})
+
     async def start(self) -> None:
+        trust = await self.environment.repository.load_state(TRUST_KEY)
+        self.trusted = bool(isinstance(trust, dict) and trust.get("trusted"))
         stored = await self.environment.repository.load_state(STATE_KEY)
         if isinstance(stored, list):
             for item in stored:
@@ -181,6 +243,8 @@ class ManagerDesk:
     async def stop(self) -> None:
         for checking in list(self._checks):
             checking.cancel()
+        for manager_id in list(self.repeats):
+            self.stop_repeats(manager_id)
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             try:
@@ -334,6 +398,135 @@ class ManagerDesk:
         await self._save()
         await self.environment.announce_agent(task.manager_id, text)
 
+    # -- repeats and stopping ----------------------------------------------
+
+    def start_repeat(
+        self,
+        manager_id: str,
+        every_seconds: float,
+        *,
+        message: str = "",
+        agent: str = "",
+        question: str = "",
+        start: int = 1,
+        step: int = 1,
+        runs: int = REPEAT_DEFAULT_RUNS,
+    ) -> Repeat:
+        """Send ``message`` (with {n} counting from ``start`` by ``step``), or
+        ask ``agent`` ``question`` and pass the answer on, every
+        ``every_seconds`` -- counted from when the last run finished."""
+        if every_seconds < REPEAT_MIN_SECONDS:
+            raise ToolDenied(f"DENIED: every_seconds must be at least {REPEAT_MIN_SECONDS:g}.")
+        if bool(message.strip()) == bool(question.strip()):
+            raise ToolDenied("DENIED: give either a message or a question, not both or neither.")
+        if message:
+            try:
+                message.format(n=start)
+            except (KeyError, IndexError, ValueError) as exc:
+                raise ToolDenied(f"DENIED: a message may use only {{n}}: {exc}") from exc
+        target = manager_id
+        if question:
+            try:
+                target = self.environment.registry.get(agent or manager_id).id
+            except KeyError as exc:
+                raise ToolDenied(f"DENIED: no agent named {agent!r}.") from exc
+            if self.report is None:
+                raise ToolDenied("DENIED: asking is not available in this mesh.")
+        runs = max(1, min(int(runs), REPEAT_MAX_RUNS))
+        repeat = Repeat(
+            number=self._repeat_ids,
+            description=message or f"{agent or 'me'}: {question}",
+            every_seconds=every_seconds,
+        )
+        self._repeat_ids += 1
+
+        async def run() -> None:
+            n = start
+            for _ in range(runs):
+                if message:
+                    text = message.format(n=n)
+                else:
+                    assert self.report is not None
+                    try:
+                        text = await self.report(
+                            target,
+                            f"{question}\n\nThis is asked again every {every_seconds:g}s. "
+                            "Give only what is new since your last answer to it; if "
+                            f"nothing is, reply exactly {NOTHING_NEW}.",
+                        )
+                    except Exception as exc:  # noqa: BLE001 - one failed run is reported
+                        text = f"({repeat.description[:80]}: {exc})"
+                    if NOTHING_NEW in text.upper().replace(" ", "_"):
+                        # "Every 30 seconds" must not mean a "no news" every 30 seconds.
+                        repeat.runs += 1
+                        await asyncio.sleep(every_seconds)
+                        continue
+                await self.environment.tell_human(manager_id, text[:MESSAGE_CHARS])
+                repeat.runs += 1
+                n += step
+                await asyncio.sleep(every_seconds)
+
+        repeat.task = asyncio.create_task(run(), name=f"manager-repeat-{repeat.number}")
+        running = self.repeats.setdefault(manager_id, [])
+        running.append(repeat)
+        repeat.task.add_done_callback(
+            lambda _: running.remove(repeat) if repeat in running else None
+        )
+        return repeat
+
+    def stop_repeats(self, manager_id: str, number: int | None = None) -> int:
+        running = self.repeats.get(manager_id, [])
+        chosen = [item for item in running if number is None or item.number == number]
+        for item in chosen:
+            if item.task is not None:
+                item.task.cancel()
+            running.remove(item)
+        return len(chosen)
+
+    async def stop_task(self, task: TrackedTask) -> None:
+        """Take handed-out work back: drop the goal on its agent."""
+        try:
+            agent = self.environment.registry.get(task.agent_id)
+            goal = agent.mind.goal(task.goal_id)
+        except KeyError:
+            pass
+        else:
+            if goal.status not in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
+                GoalManager(agent.mind).cancel(goal, "stopped by the human")
+                agent.touch()
+                await self.environment.repository.save_agent(agent)
+        task.status = "cancelled"
+        task.result = "stopped by the human"
+        await self._save()
+
+    async def stop_everything(self, manager_id: str) -> str:
+        """Every repeat and every running handed-out task of this Manager."""
+        repeats = self.stop_repeats(manager_id)
+        open_tasks = [
+            task
+            for task in self.tasks_for(manager_id)
+            if task.status in ("running", "stalled")
+        ]
+        for task in open_tasks:
+            await self.stop_task(task)
+        if not repeats and not open_tasks:
+            return ""
+        parts = []
+        if repeats:
+            parts.append(f"{repeats} repeating")
+        if open_tasks:
+            names = ", ".join(sorted({task.agent_name for task in open_tasks}))
+            parts.append(f"{len(open_tasks)} task(s) on {names}")
+        return "⏹ Stopped: " + "; ".join(parts) + "."
+
+    async def stop_on_word(self, manager_id: str, text: str) -> str | None:
+        """Called before a human's message reaches a Manager: a stop word,
+        with anything running, stops it all at once -- a model would take
+        seconds to read it, and a repeat would not wait for that."""
+        if " ".join(text.lower().split()) not in STOP_WORDS:
+            return None
+        return await self.stop_everything(manager_id) or None
+
     # -- commands --------------------------------------------------------
 
     async def run_command(self, manager: AgentDefinition, command: str) -> str:
@@ -344,19 +537,23 @@ class ManagerDesk:
                 f"DENIED: {command.split(' ', 1)[0] or 'that'} cannot be run from here, "
                 "approved or not. Tell the human to run it themselves."
             )
-        if kind == "approve":
+        human_asked = self.human_turn.get(manager.id, False)
+        if human_asked and (kind == "work" or (kind == "approve" and self.trusted)):
+            return await self._execute(command)
+        if kind in ("approve", "work"):
             number = self._next
             self._next += 1
             self.pending[number] = PendingCommand(number, manager.id, command, "changes the mesh")
             await self.environment.announce_agent(
                 manager.id,
                 f"🛑 {manager.name} wants to run: {command}\n"
-                f"/manager approve {number}  or  /manager deny {number}",
+                f"Reply \"yes\" or \"no\" (or /manager approve|deny {number})",
             )
             return (
-                f"confirmation_required: this command changes the mesh, so a human must "
-                f"approve it with /manager approve {number}. They have been asked. Tell the "
-                "human what you asked to run and why, then stop -- do not try another way."
+                f"confirmation_required: this command changes the mesh, so the human must "
+                f"approve it: they reply \"yes\" (or /manager approve {number}). They have been "
+                "asked. Tell them what you asked to run and why, then stop -- do not try "
+                "another way."
             )
         return await self._execute(command)
 
@@ -387,6 +584,21 @@ class ManagerDesk:
             )
         )
         return f"Ran {pending.command}\n{output}"
+
+    async def answer_pending(self, manager_id: str, text: str) -> str | None:
+        """A human's bare "yes"/"no" with commands waiting: approve or deny
+        them all, before any model reads it. None when it is neither."""
+        word = " ".join(text.lower().split()).strip(".!")
+        waiting = sorted(
+            (item for item in self.pending.values()
+             if item.manager_id == manager_id and not item.expired()),
+            key=lambda item: item.number,
+        )
+        if not waiting or word not in YES_WORDS | NO_WORDS:
+            return None
+        if word in NO_WORDS:
+            return "\n".join(self.deny(item.number) for item in waiting)
+        return "\n\n".join([await self.approve(item.number) for item in waiting])
 
     def deny(self, number: int) -> str:
         pending = self.pending.pop(number, None)
@@ -464,6 +676,45 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         del context
         return await desk.run_command(definition, str(args.get("command") or ""))
 
+    def _number(args: dict[str, Any], key: str, default: float) -> float:
+        value = args.get(key)
+        try:
+            return float(value) if value is not None and value != "" else default
+        except (TypeError, ValueError) as exc:
+            raise ToolDenied(f"DENIED: {key} must be a number") from exc
+
+    async def repeat(context: Any, args: dict[str, Any]) -> str:
+        del context
+        started = desk.start_repeat(
+            definition.id,
+            _number(args, "every_seconds", 0),
+            message=str(args.get("message") or ""),
+            agent=str(args.get("agent") or ""),
+            question=str(args.get("question") or ""),
+            start=int(_number(args, "start", 1)),
+            step=int(_number(args, "step", 1)),
+            runs=int(_number(args, "max_runs", REPEAT_DEFAULT_RUNS)),
+        )
+        return (
+            f"repeat #{started.number} running every {started.every_seconds:g}s. It ends "
+            "when the human says stop, or with stop(repeat)."
+        )
+
+    async def stop(context: Any, args: dict[str, Any]) -> str:
+        del context
+        what = str(args.get("what") or "all").strip().lower()
+        if what == "all":
+            return await desk.stop_everything(definition.id) or "nothing was running"
+        if what.startswith("repeat"):
+            number = int(_number(args, "number", 0))
+            return f"stopped {desk.stop_repeats(definition.id, number)} repeat(s)"
+        task_id = str(args.get("task") or "")
+        for task in desk.tasks_for(definition.id):
+            if task.id == task_id and task.status in ("running", "stalled"):
+                await desk.stop_task(task)
+                return f"stopped task {task.id} on {task.agent_name}"
+        raise ToolDenied(f"DENIED: no running task {task_id!r}; task_status lists them.")
+
     sent: list[float] = []
 
     async def message(context: Any, args: dict[str, Any]) -> str:
@@ -522,6 +773,41 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
                 "required": ["text"],
             },
             run=message,
+        ),
+        Tool(
+            name="repeat",
+            description="Do something again on a clock until the human says stop: send a "
+            'message ("{n}" counts) or ask an agent a question and pass its answer on '
+            '(no agent: you answer it yourself). E.g. every_seconds 1, message "{n}"; or '
+            'every_seconds 600, agent NewsWatcher, question "latest headlines".',
+            parameters={
+                "type": "object",
+                "properties": {
+                    "every_seconds": {"type": "number", "description": "at least 1"},
+                    "message": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "question": {"type": "string"},
+                    "start": {"type": "integer"},
+                    "step": {"type": "integer"},
+                    "max_runs": {"type": "integer", "description": "safety limit"},
+                },
+                "required": ["every_seconds"],
+            },
+            run=repeat,
+        ),
+        Tool(
+            name="stop",
+            description='Stop what you run for the human. what: "all" (every repeat and '
+            'every handed-out task), "repeat" with number, or "task" with task id.',
+            parameters={
+                "type": "object",
+                "properties": {
+                    "what": {"type": "string", "enum": ["all", "repeat", "task"]},
+                    "number": {"type": "integer"},
+                    "task": {"type": "string"},
+                },
+            },
+            run=stop,
         ),
         Tool(
             name="mesh_command",

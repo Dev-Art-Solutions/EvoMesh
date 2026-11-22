@@ -7,6 +7,9 @@ All notable changes to EvoMesh are documented in this file.
 ### Added
 
 - **The Manager can send separate messages** (`message_human`): one per item when asked ("each number in its own message"), or a progress note during long work, on its own line; its answer still goes out last. At most 20 a minute.
+- **The Manager repeats things on a clock** (`repeat`): a message ("count every second", `{n}` counts) or a question to an agent whose answer it passes on ("the news every ten minutes"). The clock is code, not a model; a run never overlaps the last, and each repeat is bounded (600 runs by default). A repeated question asks only for what is new, and a run with nothing new sends nothing. Found live: asked for "the news every 30 seconds, nothing twice", the Manager added a goal on NewsWatcher whose results reached no one.
+- **What you ask the Manager for, it does.** A command that changes what agents do (goals, start/stop, model, context, a cycle) runs without approval when your own message asked for it; the same command started by a repeat, a report or another agent's answer still waits. Commands that change what agents may do (grants, installs, deletes, restart) wait for a plain "yes" ("no" refuses) instead of `/manager approve <n>`, and `/manager trust on` lets those run too when you asked.
+- **"Stop" stops everything the Manager runs for you**, before any model reads it: every repeat and every handed-out task (the goal on the other agent is cancelled). `/manager stop` does the same; the Manager can also stop just one.
 
 ### Fixed
 

@@ -64,6 +64,10 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /manager tasks                Work managers handed out, and its state
   /manager pending              Commands a manager wants to run that change the mesh
   /manager approve|deny <n>     Run one once, or refuse it
+  /manager trust on|off         On: what you ask it for runs without a question,
+                                grants included (off by default)
+  /manager stop                 Stop all it runs for you: repeats and handed-out
+                                tasks (saying "stop" to it does the same)
 """
 
 
@@ -504,7 +508,7 @@ class OperationsCommands:
     async def _command_manager(self, parts: list[str]) -> str:
         usage = (
             "Usage: /manager set|unset <agent>  |  /manager tasks  |  /manager pending  |  "
-            "/manager approve|deny <n>"
+            "/manager approve|deny <n>  |  /manager stop  |  /manager trust on|off"
         )
         environment = self.environment
         desk = environment.manager
@@ -543,6 +547,23 @@ class OperationsCommands:
         if action in ("approve", "deny") and len(parts) == 3 and parts[2].isdigit():
             number = int(parts[2])
             return await desk.approve(number) if action == "approve" else desk.deny(number)
+        if action == "trust":
+            if len(parts) == 3 and parts[2].lower() in ("on", "off"):
+                await desk.set_trusted(parts[2].lower() == "on")
+            if desk.trusted:
+                return (
+                    "Trust is ON: what you ask a manager for runs without a question, grants "
+                    "and installs included. Something it asked for on its own (a repeat, a "
+                    "report, another agent's answer) still waits for you. /manager trust off"
+                )
+            return (
+                "Trust is OFF: what you ask for runs, but anything that changes what agents "
+                "may do (grants, installs, restart) waits for your yes. /manager trust on"
+            )
+        if action == "stop":
+            managers = [agent for agent in environment.registry.all() if agent.manager]
+            said = [await desk.stop_everything(agent.id) for agent in managers]
+            return "\n".join(line for line in said if line) or "Nothing is running."
         return usage
 
 

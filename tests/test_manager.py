@@ -57,8 +57,11 @@ def tools(environment: Environment, agent: AgentDefinition) -> dict[str, object]
         ("/browser status", "read"),
         ("/browser grant Manager interact", "approve"),
         ("/harness grant Manager", "approve"),
-        ("/goal add Crawler \"crawl x\"", "approve"),
-        ("/model Crawler qwen3", "approve"),
+        ("/goal add Crawler \"crawl x\"", "work"),
+        ("/goal frobnicate Crawler", "approve"),
+        ("/agent delete Crawler", "approve"),
+        ("/model Crawler qwen3", "work"),
+        ("/telegram set Crawler x", "approve"),
         ("/procedures Crawler", "read"),
         ("/procedures Crawler approve x", "approve"),
         ("/wiki Crawler", "read"),
@@ -183,7 +186,9 @@ async def test_a_command_that_changes_the_mesh_waits_for_the_human(tmp_path: Pat
         )
         assert "confirmation_required" in asked
         assert not any("watch example.com" in g.description for g in crawler.mind.goals)
-        assert any("/manager approve 1" in text for text in heard), "the human is asked"
+        assert any("/manager approve|deny 1" in text and "yes" in text for text in heard), (
+            "the human is asked"
+        )
 
         for forbidden in ("/exit", "/manager approve 1"):
             with pytest.raises(ToolDenied):
@@ -348,5 +353,168 @@ async def test_the_manager_can_send_separate_messages_but_not_a_flood(tmp_path: 
             await message.run(None, {"text": "още"})  # type: ignore[attr-defined]
         with pytest.raises(ToolDenied):
             await message.run(None, {"text": "one too many"})  # type: ignore[attr-defined]
+    finally:
+        await environment.stop()
+
+
+async def until(condition: object, seconds: float = 5.0) -> None:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not condition():  # type: ignore[operator]
+        assert asyncio.get_running_loop().time() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
+async def test_anything_can_repeat_on_a_clock_and_stop_stops_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found on its bot: "count +1 every second until I say stop" -- a model
+    call takes seconds, so the clock has to be code. And not only a counter:
+    "the news every ten minutes" is a question to an agent on the same clock,
+    and "stop" has to stop long handed-out work too."""
+    from evomesh import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REPEAT_MIN_SECONDS", 0.01)
+    environment, manager, crawler = await mesh(tmp_path)
+    heard: list[str] = []
+
+    async def bot(text: str) -> None:
+        heard.append(text)
+
+    asked: list[tuple[str, str]] = []
+
+    async def ask(agent_id: str, question: str) -> str:
+        asked.append((agent_id, question))
+        # Every other run has nothing new.
+        return "NOTHING_NEW" if len(asked) % 2 == 0 else f"headlines #{len(asked)}"
+
+    environment.manager.report = ask
+    await environment.add_agent_notifier(manager.id, bot)
+    manager_tools = tools(environment, manager)
+    repeat, stop = manager_tools["repeat"], manager_tools["stop"]
+    private = ConsoleChannel(environment, locked_agent_id=manager.id)
+    try:
+        for bad in (
+            {"message": "{n}", "every_seconds": 0.001},
+            {"message": "{x}", "every_seconds": 0.02},
+            {"every_seconds": 0.02},
+            {"message": "{n}", "question": "news?", "every_seconds": 0.02},
+            {"agent": "Nobody", "question": "news?", "every_seconds": 0.02},
+        ):
+            with pytest.raises(ToolDenied):
+                await repeat.run(None, bad)  # type: ignore[attr-defined]
+
+        # A counter.
+        await repeat.run(None, {"message": "{n}", "every_seconds": 0.02})  # type: ignore[attr-defined]
+        await until(lambda: len(heard) >= 3)
+        assert heard[:3] == ["1", "2", "3"]
+
+        # A question to an agent, its answer passed on, on the same clock.
+        await repeat.run(  # type: ignore[attr-defined]
+            None, {"agent": "Crawler", "question": "latest headlines", "every_seconds": 0.02}
+        )
+        await until(lambda: len(asked) >= 3)
+        assert asked[0][0] == crawler.id and asked[0][1].startswith("latest headlines")
+        assert "reply exactly NOTHING_NEW" in asked[0][1]
+        assert "headlines #1" in heard and "headlines #3" in heard
+        assert not any("NOTHING_NEW" in text for text in heard), "nothing new, nothing sent"
+
+        # And long handed-out work.
+        await manager_tools["assign_task"].run(  # type: ignore[attr-defined]
+            None, {"agent": "Crawler", "task": "crawl a huge site"}
+        )
+        task = environment.manager.tasks[-1]
+
+        # "стоп" stops all of it, before any model sees the message.
+        said = await private.route("Стоп")
+        assert said.startswith("⏹ Stopped") and "2 repeating" in said and "Crawler" in said
+        assert task.status == "cancelled"
+        assert crawler.mind.goal(task.goal_id).status is GoalStatus.CANCELLED
+        await asyncio.sleep(0.01)
+        count = len(heard)
+        await asyncio.sleep(0.1)
+        assert len(heard) == count, "nothing after stop"
+        assert await environment.manager.stop_on_word(manager.id, "stop") is None, (
+            "with nothing running, 'stop' is an ordinary message"
+        )
+
+        # One at a time, a bounded one ends by itself, and /manager stop.
+        heard.clear()
+        await repeat.run(  # type: ignore[attr-defined]
+            None,
+            {"message": "tick {n}", "every_seconds": 0.01, "start": 10, "step": 10,
+             "max_runs": 3},
+        )
+        await until(lambda: len(heard) >= 3)
+        await asyncio.sleep(0.05)
+        assert heard == ["tick 10", "tick 20", "tick 30"], "and no more"
+        first = await repeat.run(None, {"message": "a", "every_seconds": 0.02})  # type: ignore[attr-defined]
+        await repeat.run(None, {"message": "b", "every_seconds": 0.02})  # type: ignore[attr-defined]
+        number = int(first.split("#")[1].split()[0])
+        assert "stopped 1" in await stop.run(None, {"what": "repeat", "number": number})  # type: ignore[attr-defined]
+        assert "1 repeating" in await ConsoleChannel(environment).route("/manager stop")
+        assert "Nothing is running" in await ConsoleChannel(environment).route("/manager stop")
+    finally:
+        await environment.stop()
+
+
+async def test_what_the_human_asks_for_runs_and_access_waits_for_a_yes(tmp_path: Path) -> None:
+    """Found on its bot: the human asked for a goal, and still had to type
+    /manager approve 1. A command that changes what agents do runs when the
+    human's own message asked; one that changes what they may do waits for a
+    plain "yes" -- never for text another agent or a page sent."""
+    environment, manager, crawler = await mesh(tmp_path)
+    command = tools(environment, manager)["mesh_command"]
+    desk = environment.manager
+    try:
+        # Not the human's turn (a repeat, a report): even work waits.
+        waited = await command.run(None, {"command": '/goal add Crawler "watch a" 5'})  # type: ignore[attr-defined]
+        assert "confirmation_required" in waited
+
+        desk.human_turn[manager.id] = True
+        ran = await command.run(None, {"command": '/goal add Crawler "watch b" 5'})  # type: ignore[attr-defined]
+        assert "Added goal" in ran
+        assert any("watch b" in goal.description for goal in crawler.mind.goals)
+        grant = await command.run(None, {"command": "/browser grant Crawler interact"})  # type: ignore[attr-defined]
+        assert "confirmation_required" in grant, "access never runs unasked"
+        assert crawler.browser is None
+        desk.human_turn.pop(manager.id)
+
+        private = ConsoleChannel(environment, locked_agent_id=manager.id)
+        said = await private.route("Да")
+        assert "Added goal" in said and "may now interact" in said, "a yes approves all waiting"
+        assert crawler.browser is not None
+        assert await desk.answer_pending(manager.id, "да") is None, "nothing left to approve"
+
+        await command.run(None, {"command": "/browser revoke Crawler"})  # type: ignore[attr-defined]
+        assert "Denied" in await private.route("не")
+        assert crawler.browser is not None, "a no refuses"
+    finally:
+        await environment.stop()
+
+
+async def test_trust_lets_what_the_human_asked_for_run_grants_included(tmp_path: Path) -> None:
+    environment, manager, crawler = await mesh(tmp_path)
+    command = tools(environment, manager)["mesh_command"]
+    desk = environment.manager
+    console = ConsoleChannel(environment)
+    try:
+        assert "Trust is OFF" in await console.route("/manager trust")
+        assert "Trust is ON" in await console.route("/manager trust on")
+        desk.human_turn[manager.id] = True
+        ran = await command.run(None, {"command": "/browser grant Crawler read"})  # type: ignore[attr-defined]
+        assert "may now read" in ran and crawler.browser is not None
+        desk.human_turn.pop(manager.id)
+        unasked = await command.run(None, {"command": "/browser revoke Crawler"})  # type: ignore[attr-defined]
+        assert "confirmation_required" in unasked, "not asked by the human: still waits"
+        with pytest.raises(ToolDenied):
+            await command.run(None, {"command": "/exit"})  # type: ignore[attr-defined]
+
+        again = ManagerDesk(environment)
+        await again.start()
+        try:
+            assert again.trusted, "kept across restarts"
+        finally:
+            await again.stop()
+        assert "Trust is OFF" in await console.route("/manager trust off")
     finally:
         await environment.stop()

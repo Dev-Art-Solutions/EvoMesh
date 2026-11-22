@@ -275,13 +275,27 @@ class ConsoleChannel(OperationsCommands):
                 return await self.architect.draft(text, provider, model, self._infer)
             return self.architect.refine(text)
         agent = self.environment.registry.get(self.selected_agent)
-        await self.environment.send_message(
-            Message(sender_id="human", recipient_id=agent.id, content=text)
-        )
+        desk = self.environment.manager
+        if agent.manager:
+            # Words, not a model: a "yes" to a waiting command, or "stop" while
+            # its repeats keep running -- both answered before any model reads.
+            if (answered := await desk.answer_pending(agent.id, text)) is not None:
+                return self._reply(agent, answered)
+            if stopped := await desk.stop_on_word(agent.id, text):
+                return self._reply(agent, stopped)
+            # What the human asks for in their own message is theirs to ask:
+            # work commands run without approval for this turn only.
+            desk.human_turn[agent.id] = True
         try:
-            response = await self.environment.bus.receive("human", wait_seconds=300)
-        except TimeoutError:
-            return f"Timed out waiting for {agent.name}."
+            await self.environment.send_message(
+                Message(sender_id="human", recipient_id=agent.id, content=text)
+            )
+            try:
+                response = await self.environment.bus.receive("human", wait_seconds=300)
+            except TimeoutError:
+                return f"Timed out waiting for {agent.name}."
+        finally:
+            desk.human_turn.pop(agent.id, None)
         return self._reply(agent, response.content)
 
     def _reply(self, agent: AgentDefinition, text: str) -> str:

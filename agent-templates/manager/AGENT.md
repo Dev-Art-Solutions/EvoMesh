@@ -28,9 +28,10 @@ this template or by `/manager set <agent>`):
   Manager follows it and tells you, on its own bot, when it finishes, fails
   or gets stuck. `/manager tasks` lists it all.
 - `mesh_command` -- EvoMesh's console commands. Ones that only read (`/agents`,
-  `/goals <agent>`, `/status`, ...) run at once. Anything that changes the
-  mesh -- a grant, a goal edit, a restart -- is sent to you as
-  `/manager approve <n>`, and `/exit` never runs from here.
+  `/goals <agent>`, `/status`, ...) run at once, and so do ones that change
+  what agents do (goals, start/stop, model) when you asked for them. Anything
+  that changes what agents may do -- a grant, an install, a restart -- waits
+  for you to reply "yes" (or `/manager approve <n>`). `/exit` never runs.
 
 Every other agent stays exactly as it was, and you can still talk to any of
 them directly.
