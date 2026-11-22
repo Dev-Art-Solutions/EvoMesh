@@ -99,7 +99,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.7.1-alpha.1 lets an agent ask its own model what a screenshot shows, and finds EvoMesh's Chrome again when the checkout's path has a space in it. Before that, 0.7.0-alpha.1 gave agents a browser they can drive: EvoMesh's own Chrome on a dedicated profile, structured actions over deterministic element targeting, compact snapshots and screenshots, behind per-agent grants and a human confirmation for anything sensitive. Before that, 0.6.0-alpha.1 made capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.8.0-alpha.1 adds the Manager: one agent to talk to, which finds the agent that owns a request, gets the answer or hands over the work, follows it and reports back, and runs EvoMesh's commands with your approval for anything that changes the mesh. It also lets an agent ask its own model what a screenshot shows, and finds EvoMesh's Chrome again when the checkout's path has a space in it. Before that, 0.7.0-alpha.1 gave agents a browser they can drive: EvoMesh's own Chrome on a dedicated profile, structured actions over deterministic element targeting, compact snapshots and screenshots, behind per-agent grants and a human confirmation for anything sensitive. Before that, 0.6.0-alpha.1 made capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -499,6 +499,28 @@ The migration keeps access exactly as it is today and only stops it from growing
 ```bash
 claude mcp add evomesh -- "D:/Projects/Dev-art solutions/EvoMesh/.venv/Scripts/python.exe" -m evomesh.mcp_server
 ```
+
+## The Manager
+
+One agent to talk to instead of nine. Spawn it once:
+
+```text
+/agent-template spawn manager Manager
+/telegram set Manager <token>          optional: its own Telegram bot (@BotFather)
+```
+
+Then just ask it, in any language: "the latest news from Bulgaria", "scrape this site every morning", "what is Crawler doing?". It reads the roster to find who owns the request, asks that agent (`ask_agent`) or hands it the work (`assign_task`), and does it itself when nobody owns it. Work it handed out is followed: when it finishes, fails or gets stuck, the Manager tells you on its own line, with the result itself rather than an account of the work.
+
+It runs EvoMesh's commands for you. Read-only ones (`/agents`, `/goals <agent>`, `/status`, ...) run at once; anything that changes the mesh comes to you first:
+
+```text
+/manager pending              what it wants to run
+/manager approve|deny <n>     run it once, or refuse
+/manager tasks                what it handed out, and the state of each
+/manager set|unset <agent>    make another agent a manager
+```
+
+Every other agent stays as it was, and you can still talk to any of them directly. Give it the strongest model that fits: routing and tool calls are its whole job.
 
 ## Browser automation
 

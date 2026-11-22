@@ -166,6 +166,9 @@ class Environment:
         self.browser.vision = self._browser_look
         # The human's point of contact's work and pending commands.
         self.manager = ManagerDesk(self)
+        # Finished work is written up by the Manager itself, through the same
+        # ask path ask_agent uses.
+        self.manager.report = self._make_ask_agent("manager-desk")
         self._browser_tasks: set[asyncio.Task[None]] = set()
         # learn_skill/patch_skill calls awaiting /learn approve|reject when
         # HarnessSettings.skill_write_approval is on. In-memory only, same

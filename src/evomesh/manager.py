@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shlex
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -153,6 +154,10 @@ class ManagerDesk:
         self.pending: dict[int, PendingCommand] = {}
         self._next = 1
         self._sweep_task: asyncio.Task[None] | None = None
+        # (manager_id, prompt) -> that Manager's answer. Set by Environment to
+        # its ask path; None in a bare desk, which then sends the raw report.
+        self.report: Callable[[str, str], Awaitable[str]] | None = None
+        self._checks: set[asyncio.Task[None]] = set()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -170,6 +175,8 @@ class ManagerDesk:
         self._sweep_task = asyncio.create_task(self._sweep_loop(), name="manager-desk")
 
     async def stop(self) -> None:
+        for checking in list(self._checks):
+            checking.cancel()
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             try:
@@ -204,8 +211,13 @@ class ManagerDesk:
         text = " ".join(task.split())
         if not text:
             raise ToolDenied("DENIED: assign_task needs the task, in words.")
+        # The goal's last summary is what comes back; found live, a crawl
+        # ended on "compiled the two lists" with the headlines nowhere in it.
         goal = GoalManager(target.mind).create(
-            f"{text} (asked by {manager.name} for the human)", priority=8
+            f"{text} (Asked by {manager.name} for the human. Your final answer must be "
+            "the result itself -- the list, the figures, the text -- not a description "
+            "of what you did.)",
+            priority=8,
         )
         target.touch()
         await environment.repository.save_agent(target)
@@ -230,11 +242,20 @@ class ManagerDesk:
 
     async def _on_event(self, event: Event) -> None:
         for task in self.tasks:
-            if task.status == "running" and task.goal_id == event.goal_id:
+            if task.status in ("running", "stalled") and task.goal_id == event.goal_id:
                 summary = str(event.payload.get("summary") or "")
                 if summary:
                     task.result = summary
-                await self.check(task)
+                # Off the publisher's path: handlers run inside the finishing
+                # agent's own cycle, and writing the report waits on a model.
+                checking = asyncio.create_task(self.check(task), name=f"manager-{task.id}")
+                self._checks.add(checking)
+                checking.add_done_callback(self._checks.discard)
+
+    async def settled(self) -> None:
+        """Wait for the checks events started (tests, and an orderly stop)."""
+        while self._checks:
+            await asyncio.gather(*list(self._checks), return_exceptions=True)
 
     async def _sweep_loop(self) -> None:
         while True:
@@ -248,6 +269,8 @@ class ManagerDesk:
 
     async def check(self, task: TrackedTask) -> None:
         """Read the goal's state on its agent and report a change once."""
+        if task.status not in ("running", "stalled"):
+            return  # an earlier check already closed it
         try:
             agent = self.environment.registry.get(task.agent_id)
             goal = agent.mind.goal(task.goal_id)
@@ -277,8 +300,30 @@ class ManagerDesk:
         await self._save()
         icon = {"done": "✅", "failed": "❌"}.get(status, "◻")
         verb = {"done": "finished", "failed": "could not finish"}.get(status, "stopped")
-        body = result.strip()[:1500] or "(it reported nothing)"
-        await self._tell(task, f"{icon} {task.agent_name} {verb}: {task.request}\n\n{body}")
+        body = await self._report(task, verb) or result.strip()[:1500] or "(it reported nothing)"
+        await self._tell(task, f"{icon} {task.agent_name} {verb}: {task.request[:200]}\n\n{body}")
+
+    async def _report(self, task: TrackedTask, verb: str) -> str:
+        """The Manager writes the message itself: an agent's closing summary
+        is often an account of the work rather than its result, and the
+        Manager can ask that agent for the real thing first."""
+        if self.report is None:
+            return ""
+        try:
+            return (
+                await self.report(
+                    task.manager_id,
+                    f"[task {task.id}] {task.agent_name} {verb} the work you gave it: "
+                    f"{task.request}\nIts closing report:\n{task.result[:3000] or '(none)'}\n\n"
+                    "Write the message the human gets now: the result itself, in their "
+                    f"language. If the report only describes the result, ask_agent "
+                    f"{task.agent_name} for the actual result first. If it failed, say why "
+                    "and what you suggest.",
+                )
+            ).strip()
+        except Exception:  # noqa: BLE001 - the raw report still goes out
+            logger.exception("the manager could not write task %s's report", task.id)
+            return ""
 
     async def _tell(self, task: TrackedTask, text: str) -> None:
         task.reported = True

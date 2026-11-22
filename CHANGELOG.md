@@ -4,10 +4,17 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
-## [0.7.1-alpha.1] - 2026-11-21
+## [0.8.0-alpha.1] - 2026-11-22
+
+One agent to talk to. Nine agents meant knowing which one owns news, which one crawls, and which console command does what; the Manager knows instead.
 
 ### Added
 
+- **The Manager** (`agent-templates/manager`, `manager.py`): the human's point of contact, in the console, the Control Center's chat or its own Telegram bot. Every other agent stays as it was and can still be talked to directly.
+  - It reads `mesh_agents` (each agent's purpose, skills, tools and current work) to find who owns a request, asks that agent with `ask_agent` for a quick answer, or hands it longer work with `assign_task`. It does the work itself when nobody owns it.
+  - Handed-out work is followed: when the goal finishes, fails or stalls, the Manager writes the human a message on its own line. It asks the agent for the actual result first when the closing report only describes it. The tasks persist across restarts; `/manager tasks` lists them.
+  - `mesh_command` runs EvoMesh commands. Read-only ones run at once. Anything that changes the mesh is sent to the human as `/manager approve <n>`. The read/write decision is a table in code, never the model's; `/exit` and `/manager` itself are unreachable, so it cannot approve its own requests or widen its own access.
+  - `/manager set|unset <agent>` makes any ordinary agent one.
 - **Screenshot questions.** `{"action": "screenshot", "question": "..."}` sends that one image to the agent's own provider and model, in a call of its own, and returns the answer as `visual_analysis`. The job's transcript stays text.
   - On Ollama, only a model whose `/api/show` capabilities list `vision` is sent the image. A text-only model would answer from the question alone.
   - The answer is page content: marked untrusted, checked for injection phrases, bounded by `browser.vision_answer_chars`, with a reasoning model's thinking removed.
@@ -20,6 +27,7 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Fixed
 
+- **`ask_agent` could not be answered with one priority worker.** The asking job holds that worker while it waits, and the asked agent answers through a priority job of its own, which queued behind the asker until the ask timed out. The wait now lends a one-job worker, and outlasts the asked agent's own reply limit.
 - **Starting the Control Center again showed "already running" and nothing else**, while the running one sat hidden in the tray (closing its window only hides it). A second start now brings the running window back and exits.
 - **Saving the Control Center's Settings tab erased configuration it had no control for.** It rewrote `evomesh.yaml` from the fields it knew: the live file's `harness:` block had 43 lines and the writer knew 13, and `scraping:`, `browser:`, `email:`, a provider's `kind:` and `max_output_tokens:` were all dropped. Every key it has no field for is now kept and written back where it was. The desktop self-test round-trips a file with such keys at every level.
 - **Idea Scout's cycle failed every time** with `OverflowError` once its recurring goal had stalled more than about 1024 times: the stall cooldown doubled without a bound. The doubling is now capped, and the cooldown stays at its one-hour ceiling.

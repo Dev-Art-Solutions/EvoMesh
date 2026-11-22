@@ -100,6 +100,16 @@ async def test_assigned_work_is_followed_and_reported_on_the_managers_line(
         heard.append(text)
 
     await environment.add_agent_notifier(manager.id, bot)
+    prompts: list[tuple[str, str]] = []
+
+    async def write_up(manager_id: str, prompt: str) -> str:
+        # The Manager writing the human's message (Environment wires its ask).
+        prompts.append((manager_id, prompt))
+        if "broken.invalid" in prompt:
+            raise RuntimeError("model down")  # the raw report still goes out
+        return "Готово: 12 страници в crawl.csv."
+
+    environment.manager.report = write_up
     try:
         assign = tools(environment, manager)["assign_task"]
         reply = await assign.run(None, {"agent": "Crawler", "task": "crawl example.com"})  # type: ignore[attr-defined]
@@ -107,6 +117,7 @@ async def test_assigned_work_is_followed_and_reported_on_the_managers_line(
         task = environment.manager.tasks[-1]
         goal = crawler.mind.goal(task.goal_id)
         assert "crawl example.com" in goal.description and goal.priority == 8
+        assert "the result itself" in goal.description, "not an account of the work"
 
         # The crawler finishes; the agent loop publishes this.
         GoalManager(crawler.mind).complete(goal)
@@ -120,8 +131,14 @@ async def test_assigned_work_is_followed_and_reported_on_the_managers_line(
             )
         )
 
+        await environment.manager.settled()
         assert task.status == "done"
-        assert any("✅ Crawler finished" in text and "crawl.csv" in text for text in heard)
+        assert prompts[0][0] == manager.id
+        assert "12 pages, saved to crawl.csv" in prompts[0][1], "the Manager sees the report"
+        assert "ask_agent Crawler" in prompts[0][1]
+        assert any(
+            "✅ Crawler finished" in text and "Готово: 12 страници" in text for text in heard
+        ), "the human gets the Manager's message"
         status = await tools(environment, manager)["task_status"].run(None, {})  # type: ignore[attr-defined]
         assert "[done]" in status and "crawl.csv" in status
 
