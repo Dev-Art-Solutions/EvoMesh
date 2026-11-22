@@ -825,6 +825,13 @@ class AgentDefinition(BaseModel):
     # changes the mesh only after `/manager approve <n>`. Set only by a
     # human (`/manager set <agent>`, or a template a human spawned).
     manager: bool = False
+    # The coordination tools (manager.py): the roster, handing work to
+    # another agent and following it, repeats on a clock, stop, a numbered
+    # list of it all, and separate messages to the human. None: on for a
+    # manager, off for anyone else -- every tool schema rides on every turn.
+    # `/coordination <agent> on|off`. Running console commands is not part
+    # of it: that stays the manager's alone.
+    coordination: bool | None = None
     # The knowledge wiki tools (knowledge.py). None: on for an ordinary
     # agent, off for a system agent, whose knowledge is the codebase itself.
     knowledge: bool | None = None

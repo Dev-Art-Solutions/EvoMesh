@@ -108,6 +108,8 @@ class AgentTemplateDefinition(BaseModel):
     learn_skills: bool = False
     # The human's point of contact (manager.py, AgentDefinition.manager).
     manager: bool = False
+    # The coordination tools without the manager's commands (manager.py).
+    coordination: bool | None = None
     # See watchers.py -- a command polled on its own interval, never on this
     # agent's cognition cycle. May use the placeholder {template_dir} for the
     # template's own installed directory, the same way a tool's command may
@@ -208,6 +210,9 @@ def parse_agent_template(
             harness=bool(meta.get("harness", False)),
             learn_skills=bool(meta.get("learn_skills", False)),
             manager=bool(meta.get("manager", False)),
+            coordination=(
+                bool(meta["coordination"]) if meta.get("coordination") is not None else None
+            ),
             watch_command=str(watch.get("command") or "").strip(),
             watch_interval_seconds=(
                 float(watch["interval_seconds"])
@@ -364,6 +369,7 @@ class AgentTemplateRegistry:
             rules=[dict(item) for item in template.rules],
             can_learn_skills=template.learn_skills,
             manager=template.manager,
+            coordination=template.coordination,
             status=AgentStatus.ACTIVE,
             watch_command=template.watch_command.replace(
                 "{template_dir}", str(bundle_root.resolve(strict=False))
@@ -399,7 +405,13 @@ class AgentTemplateRegistry:
             definition.telegram = TelegramSettings(enabled=True, token=telegram_token.strip())
 
         await environment.register_agent(definition)
-        if template.tools or template.harness or template.learn_skills or template.manager:
+        if (
+            template.tools
+            or template.harness
+            or template.learn_skills
+            or template.manager
+            or template.coordination
+        ):
             # A custom tool only reaches a model through the harness, so a
             # template naming tools is asking for harness access to use them
             # -- the same grant `/harness grant <agent>` makes by hand. A

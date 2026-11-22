@@ -875,6 +875,17 @@ class Environment:
         and through announce() when it has none."""
         listeners = list(self.agent_notifiers.get(agent_id, []))
         if not listeners:
+            try:
+                settings = self.registry.get(agent_id).telegram
+            except KeyError:
+                settings = None
+            if settings is not None and settings.enabled:
+                # Its own bot, not connected yet (a repeat restored at boot):
+                # held for it, not sent to the shared channel instead.
+                self._undelivered_by_agent.setdefault(
+                    agent_id, deque(maxlen=UNDELIVERED_LIMIT)
+                ).append(text)
+                return
             await self.announce(text)
             return
         for notify in listeners:

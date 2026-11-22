@@ -25,6 +25,7 @@ from evomesh.capabilities import (
 from evomesh.contracts import AgentDefinition, BrowserGrant, McpServerConfig
 from evomesh.knowledge import render_reports
 from evomesh.mailer import EmailRefused
+from evomesh.manager import coordinates
 from evomesh.mcp_client import MESH_WIDE, McpServerStatus, config_fingerprint
 
 if TYPE_CHECKING:
@@ -59,15 +60,19 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /browser revoke <agent>       Take the browser tool away
   /browser pending              Sensitive browser actions waiting for you
   /browser approve|deny <n>     Let one through once, or refuse it
+  /coordination <agent> on|off|default  Give any agent the manager's tools for handing
+                                out and following work, repeats, stop and messages
+                                (not its commands); default: on for managers only
   /manager set|unset <agent>    Make it your point of contact: it routes work to the
                                 agent that owns it, follows it, and runs commands
-  /manager tasks                Work managers handed out, and its state
+  /manager tasks                What a manager runs for you, numbered, and what finished
   /manager pending              Commands a manager wants to run that change the mesh
   /manager approve|deny <n>     Run one once, or refuse it
   /manager trust on|off         On: what you ask it for runs without a question,
                                 grants included (off by default)
   /manager stop                 Stop all it runs for you: repeats and handed-out
                                 tasks (saying "stop" to it does the same)
+  /manager stop <n>|<task-id>   Stop just one: number n of /manager tasks, or a task id
 """
 
 
@@ -503,6 +508,29 @@ class OperationsCommands:
             return f"Refused #{item.number}: {item.agent} will be told not to retry."
         return usage
 
+    # -- coordination -----------------------------------------------------
+
+    async def _command_coordination(self, parts: list[str]) -> str:
+        if len(parts) != 3 or parts[2].lower() not in ("on", "off", "default"):
+            return "Usage: /coordination <agent> on|off|default"
+        agent = self.environment.registry.get(parts[1])
+        if agent.type == "system":
+            return f"{agent.name} is a system agent; coordination is for ordinary agents."
+        choice = parts[2].lower()
+        agent.coordination = None if choice == "default" else choice == "on"
+        if coordinates(agent) and not agent.harness_root:
+            # Its tools only reach the model through the harness.
+            agent.harness_root = str(self.environment.default_harness_root(agent))
+        agent.touch()
+        await self.environment.repository.save_agent(agent)
+        if coordinates(agent):
+            return (
+                f"{agent.name} now has the coordination tools: the roster, assign_task and "
+                "task_status, repeat and stop, message_human. \"stop\" and \"stop 2\" work on "
+                "its line. Running commands stays a manager's alone."
+            )
+        return f"{agent.name} has no coordination tools."
+
     # -- the manager --------------------------------------------------------
 
     async def _command_manager(self, parts: list[str]) -> str:
@@ -531,12 +559,19 @@ class OperationsCommands:
                 )
             return f"{agent.name} is an ordinary agent again."
         if action == "tasks":
-            if not desk.tasks:
-                return "No manager has handed out a task yet."
-            return "\n".join(
-                f"{task.id} [{task.status}] {task.agent_name}: {task.request[:100]}"
-                for task in reversed(desk.tasks[-20:])
-            )
+            managers = [
+                agent
+                for agent in environment.registry.all()
+                if agent.manager or coordinates(agent)
+            ]
+            if not managers:
+                return "No agent coordinates work. /manager set <agent>"
+            blocks = [
+                (f"{agent.name}:\n" if len(managers) > 1 else "")
+                + "\n".join(desk.listing(agent.id))
+                for agent in managers
+            ]
+            return "\n\n".join(blocks) + "\n\n/manager stop <number> stops one."
         if action == "pending":
             live = [item for item in desk.pending.values() if not item.expired()]
             if not live:
@@ -561,7 +596,32 @@ class OperationsCommands:
                 "may do (grants, installs, restart) waits for your yes. /manager trust on"
             )
         if action == "stop":
-            managers = [agent for agent in environment.registry.all() if agent.manager]
+            if len(parts) == 3:
+                # One thing: a repeat by its number, or a task by its id.
+                which = parts[2].lstrip("#")
+                if which.isdigit():
+                    # The number from /manager tasks (its first manager's list).
+                    manager = next(
+                        (
+                            agent
+                            for agent in environment.registry.all()
+                            if agent.manager or coordinates(agent)
+                        ),
+                        None,
+                    )
+                    if manager is None:
+                        return "No agent is a manager."
+                    return await desk.stop_listed(manager.id, int(which))
+                for task in desk.tasks:
+                    if task.id == which and task.status in ("running", "stalled"):
+                        await desk.stop_task(task)
+                        return f"Stopped task {task.id} on {task.agent_name}."
+                return f"No running task {which}. /manager tasks lists them."
+            managers = [
+                agent
+                for agent in environment.registry.all()
+                if agent.manager or coordinates(agent)
+            ]
             said = [await desk.stop_everything(agent.id) for agent in managers]
             return "\n".join(line for line in said if line) or "Nothing is running."
         return usage

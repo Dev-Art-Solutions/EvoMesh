@@ -522,6 +522,8 @@ It runs EvoMesh's commands for you. Read-only ones (`/agents`, `/goals <agent>`,
 
 It also repeats things on a clock -- a message every second, or a question to an agent every ten minutes with the answer passed on -- and saying "stop" to it stops everything it runs for you, repeats and handed-out tasks alike, before any model reads the word.
 
+None of this is the Manager's alone: `/coordination <agent> on` gives any agent the same tools for handing out and following work, repeats, stop and separate messages. Only running EvoMesh's commands stays a manager's.
+
 Every other agent stays as it was, and you can still talk to any of them directly. Give it the strongest model that fits: routing and tool calls are its whole job.
 
 ## Browser automation

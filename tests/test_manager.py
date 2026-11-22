@@ -518,3 +518,156 @@ async def test_trust_lets_what_the_human_asked_for_run_grants_included(tmp_path:
         assert "Trust is OFF" in await console.route("/manager trust off")
     finally:
         await environment.stop()
+
+
+async def test_one_numbered_list_and_stop_by_its_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"Give me your tasks" -> one numbered list; "stop 1" -> that one, and
+    the rest keeps running. Asked for on its bot."""
+    from evomesh import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REPEAT_MIN_SECONDS", 0.01)
+    environment, manager, crawler = await mesh(tmp_path)
+    manager_tools = tools(environment, manager)
+    private = ConsoleChannel(environment, locked_agent_id=manager.id)
+    console = ConsoleChannel(environment)
+    try:
+        await manager_tools["repeat"].run(None, {"message": "news {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+        await manager_tools["repeat"].run(None, {"message": "count {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+        await manager_tools["assign_task"].run(  # type: ignore[attr-defined]
+            None, {"agent": "Crawler", "task": "crawl a site"}
+        )
+        listing = await manager_tools["task_status"].run(None, {})  # type: ignore[attr-defined]
+        lines = listing.splitlines()
+        assert lines[0].startswith("1. every 60s") and "news {n}" in lines[0]
+        assert lines[1].startswith("2. every 60s") and "count {n}" in lines[1]
+        assert lines[2].startswith("3. Crawler [running]") and "crawl a site" in lines[2]
+        assert "1. every 60s" in await console.route("/manager tasks")
+
+        # "спри 1" stops the first, before any model; the rest keeps running.
+        assert await private.route("спри 1") == "⏹ Stopped 1."
+        after = await manager_tools["task_status"].run(None, {})  # type: ignore[attr-defined]
+        assert "news {n}" not in after and "count {n}" in after and "crawl a site" in after
+
+        # Numbers follow the latest list.
+        assert await private.route("Стоп номер 2") == "⏹ Stopped 2 (Crawler)."
+        task = environment.manager.tasks[-1]
+        assert task.status == "cancelled"
+        assert crawler.mind.goal(task.goal_id).status is GoalStatus.CANCELLED
+        assert "no 7" in await console.route("/manager stop 7")
+        assert "⏹ Stopped 1." == await console.route("/manager stop 1")
+        assert "Nothing is running" in await console.route("/manager tasks")
+        assert "Finished lately" in await console.route("/manager tasks")
+    finally:
+        await environment.stop()
+
+
+async def test_repeats_survive_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mesh restarts itself whenever a generation lands; "every 30
+    seconds" must not end quietly then."""
+    from evomesh import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REPEAT_MIN_SECONDS", 0.01)
+    environment, manager, _ = await mesh(tmp_path)
+    try:
+        await tools(environment, manager)["repeat"].run(  # type: ignore[attr-defined]
+            None, {"message": "tick {n}", "every_seconds": 60, "start": 5}
+        )
+        await until(lambda: environment.manager.repeats[manager.id][0].runs >= 1)
+        await environment.manager.stop()  # the mesh stopping
+        again = ManagerDesk(environment)
+        await again.start()
+        try:
+            restored = again.repeats[manager.id]
+            assert len(restored) == 1 and restored[0].description == "tick {n}"
+            assert restored[0].spec["start"] >= 5
+            assert "1. every 60s" in again.listing(manager.id)[0]
+            assert await again.stop_listed(manager.id, 1) == "⏹ Stopped 1."
+            await again.settled()
+        finally:
+            await again.stop()
+        nothing = ManagerDesk(environment)
+        await nothing.start()
+        try:
+            assert not nothing.repeats.get(manager.id), "a stopped repeat stays stopped"
+        finally:
+            await nothing.stop()
+    finally:
+        await environment.stop()
+
+
+async def test_any_agent_can_be_given_the_coordination_tools_but_not_the_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asked for: whatever the Manager can do should be usable by other agents
+    too -- except running the mesh's commands, which stays a manager's."""
+    from evomesh import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REPEAT_MIN_SECONDS", 0.01)
+    environment, _, crawler = await mesh(tmp_path)
+    console = ConsoleChannel(environment)
+    coordination = {
+        "mesh_agents", "assign_task", "task_status", "message_human", "repeat", "stop",
+    }
+    try:
+        assert not coordination & set(tools(environment, crawler)), "off by default"
+        said = await console.route("/coordination Crawler on")
+        assert "now has the coordination tools" in said and crawler.harness_root
+        names = set(tools(environment, crawler))
+        assert coordination <= names
+        assert "mesh_command" not in names, "commands stay a manager's"
+        assert "system agent" in await console.route("/coordination guardian on")
+
+        heard: list[str] = []
+
+        async def bot(text: str) -> None:
+            heard.append(text)
+
+        await environment.add_agent_notifier(crawler.id, bot)
+        await tools(environment, crawler)["repeat"].run(  # type: ignore[attr-defined]
+            None, {"message": "page {n}", "every_seconds": 0.02}
+        )
+        await until(lambda: len(heard) >= 2)
+        own_line = ConsoleChannel(environment, locked_agent_id=crawler.id)
+        assert await own_line.route("stop 1") == "⏹ Stopped 1."
+        assert "1. every" not in await console.route("/manager tasks")
+
+        await console.route("/coordination Crawler off")
+        assert not coordination & set(tools(environment, crawler))
+    finally:
+        await environment.stop()
+
+
+async def test_stop_names_one_thing_in_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: "спри да ми пращаш новини" went to the model, which could
+    not see its repeats and stopped nothing; the news kept coming."""
+    from evomesh import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REPEAT_MIN_SECONDS", 0.01)
+    environment, manager, _ = await mesh(tmp_path)
+    repeat = tools(environment, manager)["repeat"]
+    desk = environment.manager
+    try:
+        await repeat.run(None, {"message": "Последните новини {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+        await repeat.run(None, {"message": "брой {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+
+        assert await desk.stop_on_word(manager.id, "спри да ми пращаш") is None, (
+            "names nothing: the model decides"
+        )
+        assert await desk.stop_on_word(manager.id, "спри да ми пращаш новини") == "⏹ Stopped 1."
+        assert [r.description for r in desk.repeats[manager.id]] == ["брой {n}"]
+
+        await repeat.run(None, {"message": "новини от София {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+        await repeat.run(None, {"message": "новини от Варна {n}", "every_seconds": 60})  # type: ignore[attr-defined]
+        asked = await desk.stop_on_word(manager.id, "Спри новините")
+        assert asked is not None and asked.startswith("Which one?")
+        assert "София" in asked and "Варна" in asked
+        assert len(desk.repeats[manager.id]) == 3, "nothing stopped on a guess"
+        assert await desk.stop_on_word(manager.id, "stop варна") == "⏹ Stopped 3."
+    finally:
+        await environment.stop()

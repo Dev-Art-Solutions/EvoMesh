@@ -33,6 +33,7 @@ from evomesh.harness import build_runner
 from evomesh.harness_session import HarnessSession, next_session_path
 from evomesh.harness_tools import ToolLimits, custom_tool_program
 from evomesh.improvements import ImprovementStatus
+from evomesh.manager import coordinates
 from evomesh.models import describe
 from evomesh.ops_commands import OPS_HELP, OperationsCommands
 from evomesh.procedural_learning import ProcedureLearner
@@ -276,7 +277,7 @@ class ConsoleChannel(OperationsCommands):
             return self.architect.refine(text)
         agent = self.environment.registry.get(self.selected_agent)
         desk = self.environment.manager
-        if agent.manager:
+        if agent.manager or coordinates(agent):
             # Words, not a model: a "yes" to a waiting command, or "stop" while
             # its repeats keep running -- both answered before any model reads.
             if (answered := await desk.answer_pending(agent.id, text)) is not None:

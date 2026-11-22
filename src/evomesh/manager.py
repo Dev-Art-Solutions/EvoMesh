@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 STATE_KEY = "manager_tasks"
 TRUST_KEY = "manager_trust"
+REPEATS_KEY = "manager_repeats"
 MAX_TASKS = 100
 OUTPUT_CHARS = 3500
 APPROVAL_MINUTES = 30
@@ -67,6 +69,23 @@ REPEAT_MAX_RUNS = 3600
 # them -- repeats and handed-out work -- before any model reads it (rule 6:
 # a word list, never a model, decides this).
 STOP_WORDS = {"стоп", "спри", "спрете", "stop", "спри!", "стоп!", "stop!"}
+# "спри 1", "stop #2", "спри номер 3": one item of the numbered list, by
+# words alone (rule 6), before any model reads it.
+STOP_ONE = re.compile(
+    r"^(?:стоп|спри|спрете|stop)\s*(?:номер|задача|number|no\.?|#)?\s*#?(\d+)[.!]?$"
+)
+# "спри новините", "stop the crawl": a stop verb, then what to stop.
+STOP_NAMED = re.compile(r"^(?:стоп|спри|спрете|stop)\b[\s,:-]*(.+)$")
+
+
+def _stems(text: str) -> set[str]:
+    """Rough word stems (the first five letters of words of four or more),
+    enough for "новините" to find "новини" in any language. No list of
+    filler words: a word that names nothing running matches nothing, and a
+    match that is not unique asks instead of guessing."""
+    return {word[:5] for word in re.findall(r"\w+", text.lower()) if len(word) >= 4}
+
+
 # What an asked agent says when a repeated question has nothing new: that
 # run sends nothing.
 NOTHING_NEW = "NOTHING_NEW"
@@ -193,6 +212,10 @@ class Repeat:
     every_seconds: float
     runs: int = 0
     task: asyncio.Task[None] | None = None
+    # What restarts it after a mesh restart: the arguments, with the counter
+    # and the runs left as they stood after its last run.
+    spec: dict[str, Any] = field(default_factory=dict)
+    stopped: bool = False
 
 
 class ManagerDesk:
@@ -215,7 +238,13 @@ class ManagerDesk:
         # /manager trust on: what changes access runs too when the human asked
         # -- the human's own choice, off by default, kept across restarts.
         self.trusted = False
-        # manager_id -> its running repeats (not persisted: a restart ends them).
+        self._stopping = False
+        self._saving = asyncio.Lock()
+        # manager_id -> what each number in its last numbered list meant.
+        self._listed: dict[str, list[tuple[str, str]]] = {}
+        # manager_id -> its running repeats. Persisted (REPEATS_KEY): the mesh
+        # restarts itself whenever a generation lands, and "every 30 seconds"
+        # must not end quietly then.
         self.repeats: dict[str, list[Repeat]] = {}
         self._repeat_ids = 1
 
@@ -228,6 +257,21 @@ class ManagerDesk:
     async def start(self) -> None:
         trust = await self.environment.repository.load_state(TRUST_KEY)
         self.trusted = bool(isinstance(trust, dict) and trust.get("trusted"))
+        saved = await self.environment.repository.load_state(REPEATS_KEY)
+        for spec in saved if isinstance(saved, list) else []:
+            try:
+                self.start_repeat(
+                    str(spec["manager_id"]),
+                    float(spec["every_seconds"]),
+                    message=str(spec.get("message") or ""),
+                    agent=str(spec.get("agent") or ""),
+                    question=str(spec.get("question") or ""),
+                    start=int(spec.get("start", 1)),
+                    step=int(spec.get("step", 1)),
+                    runs=int(spec.get("runs", REPEAT_DEFAULT_RUNS)),
+                )
+            except (KeyError, TypeError, ValueError, ToolDenied):
+                logger.warning("a saved repeat could not be restarted: %s", spec)
         stored = await self.environment.repository.load_state(STATE_KEY)
         if isinstance(stored, list):
             for item in stored:
@@ -241,10 +285,15 @@ class ManagerDesk:
         self._sweep_task = asyncio.create_task(self._sweep_loop(), name="manager-desk")
 
     async def stop(self) -> None:
+        # A stopping mesh pauses its repeats; they are saved and start again.
+        self._stopping = True
         for checking in list(self._checks):
             checking.cancel()
-        for manager_id in list(self.repeats):
-            self.stop_repeats(manager_id)
+        for items in self.repeats.values():
+            for item in items:
+                if item.task is not None:
+                    item.task.cancel()
+        self.repeats.clear()
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             try:
@@ -437,12 +486,24 @@ class ManagerDesk:
             number=self._repeat_ids,
             description=message or f"{agent or 'me'}: {question}",
             every_seconds=every_seconds,
+            spec={
+                "manager_id": manager_id,
+                "every_seconds": every_seconds,
+                "message": message,
+                "agent": target if question else "",
+                "question": question,
+                "start": start,
+                "step": step,
+                "runs": runs,
+            },
         )
         self._repeat_ids += 1
 
         async def run() -> None:
             n = start
-            for _ in range(runs):
+            for left in range(runs, 0, -1):
+                repeat.spec.update(start=n, runs=left)
+                await self._save_repeats()
                 if message:
                     text = message.format(n=n)
                 else:
@@ -469,18 +530,105 @@ class ManagerDesk:
         repeat.task = asyncio.create_task(run(), name=f"manager-repeat-{repeat.number}")
         running = self.repeats.setdefault(manager_id, [])
         running.append(repeat)
-        repeat.task.add_done_callback(
-            lambda _: running.remove(repeat) if repeat in running else None
-        )
+
+        def finished(_: asyncio.Task[None]) -> None:
+            if repeat in running:
+                running.remove(repeat)
+            self._persist_soon()
+
+        repeat.task.add_done_callback(finished)
+        self._persist_soon()
         return repeat
+
+    async def _save_repeats(self) -> None:
+        # One write at a time, the list read inside: a run's own save landing
+        # after a stop's would bring the stopped repeat back at the next start.
+        async with self._saving:
+            specs = [
+                item.spec
+                for items in self.repeats.values()
+                for item in items
+                if item.task is not None and not item.task.done() and not item.stopped
+            ]
+            await self.environment.repository.save_state(REPEATS_KEY, specs)
+
+    def _persist_soon(self) -> None:
+        if self._stopping:
+            return  # a mesh stopping keeps its repeats for the next start
+        try:
+            saving = asyncio.get_running_loop().create_task(self._save_repeats())
+        except RuntimeError:
+            return
+        self._checks.add(saving)
+        saving.add_done_callback(self._checks.discard)
+
+    def listing(self, manager_id: str) -> list[str]:
+        """Everything this Manager runs for the human, numbered 1..n -- the
+        numbers "stop 1" refers to -- then what finished lately, unnumbered."""
+        entries: list[tuple[str, str]] = []
+        lines: list[str] = []
+        for item in self.repeats.get(manager_id, []):
+            entries.append(("repeat", str(item.number)))
+            lines.append(
+                f"{len(entries)}. every {item.every_seconds:g}s ({item.runs} so far): "
+                f"{item.description[:120]}"
+            )
+        mine = self.tasks_for(manager_id)
+        for task in reversed(mine):
+            if task.status in ("running", "stalled"):
+                entries.append(("task", task.id))
+                lines.append(
+                    f"{len(entries)}. {task.agent_name} [{task.status}]: {task.request[:120]}"
+                )
+        self._listed[manager_id] = entries
+        if not lines:
+            lines.append("Nothing is running.")
+        done = [task for task in reversed(mine) if task.status not in ("running", "stalled")]
+        if done:
+            lines.append("Finished lately:")
+            lines += [
+                f"- {task.agent_name} [{task.status}]: {task.request[:100]}"
+                + (f" -> {' '.join(task.result.split())[:160]}" if task.result else "")
+                for task in done[:5]
+            ]
+        return lines
+
+    async def stop_listed(self, manager_id: str, number: int) -> str:
+        if manager_id not in self._listed:
+            self.listing(manager_id)
+        entries = self._listed.get(manager_id, [])
+        if not 1 <= number <= len(entries):
+            return f"There is no {number} in the list; ask for the list again."
+        kind, key = entries[number - 1]
+        if kind == "repeat":
+            if self.stop_repeats(manager_id, int(key)):
+                return f"⏹ Stopped {number}."
+            return f"{number} had already ended."
+        for task in self.tasks_for(manager_id):
+            if task.id == key and task.status in ("running", "stalled"):
+                await self.stop_task(task)
+                return f"⏹ Stopped {number} ({task.agent_name})."
+        return f"{number} had already ended."
+
+    def describe_repeats(self, manager_id: str | None = None) -> list[str]:
+        owners = [manager_id] if manager_id is not None else list(self.repeats)
+        return [
+            f"repeat #{item.number} every {item.every_seconds:g}s, {item.runs} run(s): "
+            f"{item.description[:120]}"
+            for owner in owners
+            for item in self.repeats.get(owner, [])
+        ]
 
     def stop_repeats(self, manager_id: str, number: int | None = None) -> int:
         running = self.repeats.get(manager_id, [])
         chosen = [item for item in running if number is None or item.number == number]
         for item in chosen:
+            item.stopped = True
             if item.task is not None:
                 item.task.cancel()
             running.remove(item)
+        if chosen:
+            self._persist_soon()
         return len(chosen)
 
     async def stop_task(self, task: TrackedTask) -> None:
@@ -523,9 +671,42 @@ class ManagerDesk:
         """Called before a human's message reaches a Manager: a stop word,
         with anything running, stops it all at once -- a model would take
         seconds to read it, and a repeat would not wait for that."""
-        if " ".join(text.lower().split()) not in STOP_WORDS:
+        said = " ".join(text.lower().split())
+        if one := STOP_ONE.match(said):
+            return await self.stop_listed(manager_id, int(one.group(1)))
+        if said in STOP_WORDS:
+            return await self.stop_everything(manager_id) or None
+        if named := STOP_NAMED.match(said):
+            return await self._stop_named(manager_id, named.group(1))
+        return None
+
+    async def _stop_named(self, manager_id: str, words: str) -> str | None:
+        """ "спри новините": the one running thing those words name. Several:
+        the list, to pick by number. None: no match, so a model decides --
+        found live, "stop sending me the news" went to the model, which could
+        not see its repeats and stopped nothing."""
+        wanted = _stems(words)
+        if not wanted:
             return None
-        return await self.stop_everything(manager_id) or None
+        lines = self.listing(manager_id)
+        entries = self._listed.get(manager_id, [])
+        texts: list[str] = []
+        for kind, key in entries:
+            if kind == "repeat":
+                item = next(
+                    (r for r in self.repeats.get(manager_id, []) if str(r.number) == key), None
+                )
+                texts.append(item.description if item else "")
+            else:
+                task = next((t for t in self.tasks if t.id == key), None)
+                texts.append(f"{task.agent_name} {task.request}" if task else "")
+        hits = [index for index, text in enumerate(texts, 1) if wanted & _stems(text)]
+        if len(hits) == 1:
+            return await self.stop_listed(manager_id, hits[0])
+        if len(hits) > 1:
+            numbered = [line for line in lines if line[:1].isdigit()]
+            return "Which one? Say \"stop <number>\":\n" + "\n".join(numbered)
+        return None
 
     # -- commands --------------------------------------------------------
 
@@ -642,9 +823,19 @@ class ManagerDesk:
         return text
 
 
+def coordinates(definition: AgentDefinition) -> bool:
+    """Whether an agent has the coordination tools (AgentDefinition.coordination)."""
+    if definition.type == "system":
+        return False
+    if definition.coordination is not None:
+        return definition.coordination
+    return definition.manager
+
+
 def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple[Tool, ...]:
-    """The four tools, for a Manager only; none for anyone else."""
-    if not definition.manager:
+    """The coordination tools for an agent that has them, plus mesh_command for
+    a manager; nothing for anyone else."""
+    if not coordinates(definition) and not definition.manager:
         return ()
 
     async def agents(context: Any, args: dict[str, Any]) -> str:
@@ -663,14 +854,8 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
 
     async def status(context: Any, args: dict[str, Any]) -> str:
         del context, args
-        tasks = desk.tasks_for(definition.id)[-10:]
-        if not tasks:
-            return "no tasks handed out yet"
-        return "\n".join(
-            f"{task.id} [{task.status}] {task.agent_name}: {task.request[:120]}"
-            + (f"\n  -> {' '.join(task.result.split())[:300]}" if task.result else "")
-            for task in reversed(tasks)
-        )
+        # One numbered list -- the numbers the human says "stop 2" to.
+        return "\n".join(desk.listing(definition.id))
 
     async def command(context: Any, args: dict[str, Any]) -> str:
         del context
@@ -705,6 +890,8 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         what = str(args.get("what") or "all").strip().lower()
         if what == "all":
             return await desk.stop_everything(definition.id) or "nothing was running"
+        if what == "number":
+            return await desk.stop_listed(definition.id, int(_number(args, "number", 0)))
         if what.startswith("repeat"):
             number = int(_number(args, "number", 0))
             return f"stopped {desk.stop_repeats(definition.id, number)} repeat(s)"
@@ -733,7 +920,7 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         await desk.environment.tell_human(definition.id, text[:MESSAGE_CHARS])
         return "sent"
 
-    return (
+    coordination = (
         Tool(
             name="mesh_agents",
             description="Every other agent: what it is for, its skills and tools, what it "
@@ -758,7 +945,9 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         ),
         Tool(
             name="task_status",
-            description="The tasks you handed out and what came of them.",
+            description="Everything you run for the human, numbered (repeats and handed-out "
+            "tasks), and what finished lately. Show it as is when they ask for their tasks: "
+            'they stop one by its number ("stop 2").',
             parameters={"type": "object", "properties": {}},
             run=status,
         ),
@@ -797,29 +986,35 @@ def build_manager_tools(desk: ManagerDesk, definition: AgentDefinition) -> tuple
         ),
         Tool(
             name="stop",
-            description='Stop what you run for the human. what: "all" (every repeat and '
-            'every handed-out task), "repeat" with number, or "task" with task id.',
+            description='Stop what you run for the human. what: "number" with the number '
+            'from task_status\'s list ("stop 2"), "all", or "repeat"/"task" by id.',
             parameters={
                 "type": "object",
                 "properties": {
-                    "what": {"type": "string", "enum": ["all", "repeat", "task"]},
+                    "what": {"type": "string", "enum": ["number", "all", "repeat", "task"]},
                     "number": {"type": "integer"},
                     "task": {"type": "string"},
                 },
             },
             run=stop,
         ),
-        Tool(
-            name="mesh_command",
-            description="Run one EvoMesh console command, e.g. \"/agents\" or "
-            "\"/goals Crawler\". Read-only commands run now; one that changes the mesh "
-            "waits for the human's approval.",
-            parameters={
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-            },
-            run=command,
-        ),
+    )
+    commands = Tool(
+        name="mesh_command",
+        description="Run one EvoMesh console command, e.g. \"/agents\" or "
+        "\"/goals Crawler\". Read-only commands run now; one that changes the mesh "
+        "waits for the human's approval.",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        run=command,
+    )
+    # The console's commands are the manager's alone; the rest is anyone's
+    # who was given coordination.
+    return (
+        (coordination if coordinates(definition) else ())
+        + ((commands,) if definition.manager else ())
     )
 
