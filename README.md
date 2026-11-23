@@ -526,6 +526,10 @@ None of this is the Manager's alone: `/coordination <agent> on` gives any agent 
 
 Every other agent stays as it was, and you can still talk to any of them directly. Give it the strongest model that fits: routing and tool calls are its whole job.
 
+## Local lead research
+
+The [Lead Researcher template](agent-templates/lead-researcher/README.md) connects an agent to the local EvoMesh-LeadCollector via MCP and uses the dedicated automation Chrome for public business listings.
+
 ## Browser automation
 
 Agents can drive Chrome through the `browser` tool: navigate, inspect, click, type, fill forms, manage tabs and take screenshots, one structured JSON request per call. It runs in **EvoMesh's own Chrome**, a separate process on a dedicated profile in `data/browser/profile`, ignored by git and never inside a generation directory. Your own Chrome is used only with an explicit grant.
