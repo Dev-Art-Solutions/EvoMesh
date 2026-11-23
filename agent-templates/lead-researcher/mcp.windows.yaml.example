@@ -1,0 +1,18 @@
+# Optional per-agent template frontmatter for a locally configured copy.
+# Choose the node.exe, checkout and agent credential file paths on this machine.
+mcp_servers:
+  - name: leadcollector
+    command: C:/Program Files/nodejs/node.exe
+    args: [C:/Dev/EvoMesh-LeadCollector/apps/api/mcp-server.mjs]
+    env:
+      BACKEND_URL: http://127.0.0.1:5050
+      LEADCOLLECTOR_ENV_FILE: C:/Dev/EvoMesh-LeadCollector/apps/api/.env.agent
+    timeout_seconds: 30
+    tools:
+      - get_collector_health
+      - start_collection
+      - get_collection_status
+      - get_collection_results
+      - cancel_collection
+      - search_leads
+      - export_leads
