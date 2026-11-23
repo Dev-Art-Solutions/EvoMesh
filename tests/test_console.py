@@ -624,7 +624,7 @@ async def test_control_server_accepts_commands_and_shutdown(tmp_path: Path) -> N
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
     async def request(command: str) -> dict[str, object]:
-        writer.write((json.dumps({"command": command}) + "\n").encode())
+        writer.write((json.dumps({"command": command, "token": server.token}) + "\n").encode())
         await writer.drain()
         return json.loads(await reader.readline())
 
@@ -654,7 +654,7 @@ async def test_agents_json_returns_structured_rows_for_a_ui(tmp_path: Path) -> N
     port = server._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
-    writer.write((json.dumps({"command": "/agents.json"}) + "\n").encode())
+    writer.write((json.dumps({"command": "/agents.json", "token": server.token}) + "\n").encode())
     await writer.drain()
     response = json.loads(await reader.readline())
 
@@ -750,7 +750,7 @@ async def test_control_server_reports_a_failed_command_and_keeps_the_connection(
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
     async def request(command: str) -> dict[str, object]:
-        writer.write((json.dumps({"command": command}) + "\n").encode())
+        writer.write((json.dumps({"command": command, "token": server.token}) + "\n").encode())
         await writer.drain()
         return json.loads(await reader.readline())
 

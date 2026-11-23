@@ -11,7 +11,13 @@ from pathlib import Path
 
 from evomesh.config import load_settings
 from evomesh.console import ConsoleChannel
-from evomesh.control import CONTROL_HOST, CONTROL_PORT, ControlServer, wait_for_console_or_shutdown
+from evomesh.control import (
+    CONTROL_HOST,
+    CONTROL_PORT,
+    ControlServer,
+    token_path_for,
+    wait_for_console_or_shutdown,
+)
 from evomesh.environment import Environment, shutdown_step
 from evomesh.loop_watchdog import LoopWatchdog
 from evomesh.ollama_keeper import keepers_for
@@ -145,7 +151,13 @@ async def application(
         keeper_tasks = [asyncio.create_task(keeper.run()) for keeper in keepers]
         await environment.start(start_agent_loops=True)
         shutdown = asyncio.Event()
-        control = ControlServer(environment, shutdown, control_host, control_port)
+        control = ControlServer(
+            environment,
+            shutdown,
+            control_host,
+            control_port,
+            token_path=token_path_for(settings.lock_path.parent),
+        )
         telegram = TelegramChannel(environment, settings.telegram)
         environment.channels["telegram"] = telegram
         restart_watch = asyncio.create_task(_restart_when_asked(environment, shutdown))

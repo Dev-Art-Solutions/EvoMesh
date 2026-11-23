@@ -486,7 +486,7 @@ async def test_console_install_refresh_and_grants_keep_permissions(tmp_path: Pat
             return sorted(tool.name for tool in environment.custom_tools_for(agent))
 
         assert "Installed 'ping'" in await console.route(
-            f"/tool install {bundle(tmp_path / 'src').as_posix()}"
+            f"/tool install "{bundle(tmp_path / 'src').as_posix()}""
         )
         # A tool dropped onto disk by hand is live after a refresh, no restart.
         bundle(environment.tools.tools_dir.parent / "drop", "pong")
@@ -507,7 +507,7 @@ async def test_console_install_refresh_and_grants_keep_permissions(tmp_path: Pat
         assert "unchanged" in pinned
         assert offered(legacy) == ["ping", "pong"]
         bundle(tmp_path / "src3", "later")
-        await console.route(f"/tool install {(tmp_path / 'src3' / 'later').as_posix()}")
+        await console.route(f"/tool install "{(tmp_path / 'src3' / 'later').as_posix()}"")
         assert offered(legacy) == ["ping", "pong"]  # pinned: a new tool needs a grant
         assert "later" in await console.route("/tool grant Analyst later")
         assert offered(legacy) == ["later", "ping", "pong"]

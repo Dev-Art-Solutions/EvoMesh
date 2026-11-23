@@ -34,7 +34,11 @@ function Send-MeshCommand([string] $Text, [int] $TimeoutMs = 10000) {
         $client.EndConnect($connect)
         $stream = $client.GetStream()
         $stream.ReadTimeout = $TimeoutMs
-        $request = [Text.Encoding]::UTF8.GetBytes((@{ command = $Text } | ConvertTo-Json -Compress) + "`n")
+        # Every command but /ping needs the token the running mesh wrote;
+        # read per call, because a restarted mesh has a new one.
+        $tokenFile = Join-Path $Root '.runtime\control.token'
+        $token = if (Test-Path $tokenFile) { (Get-Content -Raw $tokenFile).Trim() } else { '' }
+        $request = [Text.Encoding]::UTF8.GetBytes((@{ command = $Text; token = $token } | ConvertTo-Json -Compress) + "`n")
         $stream.Write($request, 0, $request.Length)
         $line = (New-Object System.IO.StreamReader($stream)).ReadLine()
         if ($line) { return $line | ConvertFrom-Json }

@@ -52,10 +52,26 @@ def load_config() -> dict:
     return {**DEFAULTS, **{k: v for k, v in loaded.items() if k in DEFAULTS}}
 
 
+def control_token() -> str:
+    """The running mesh's control token. The mesh names its file in
+    EVOMESH_CONTROL_TOKEN_FILE for every process it starts; a copy run by
+    hand looks for .runtime/control.token above this script instead."""
+    named = os.environ.get("EVOMESH_CONTROL_TOKEN_FILE", "")
+    candidates = [Path(named)] if named else []
+    candidates += [p / ".runtime" / "control.token" for p in Path(__file__).resolve().parents]
+    for candidate in candidates:
+        try:
+            return candidate.read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+    return ""
+
+
 def command(port: int, text: str) -> str:
     """One console command over the mesh's control port; its text answer."""
+    request = {"command": text, "token": control_token()}
     with socket.create_connection(("127.0.0.1", port), timeout=15) as connection:
-        connection.sendall((json.dumps({"command": text}) + "\n").encode("utf-8"))
+        connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
         buffer = b""
         while not buffer.endswith(b"\n"):
             chunk = connection.recv(65536)

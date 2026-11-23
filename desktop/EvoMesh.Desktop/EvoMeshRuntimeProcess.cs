@@ -59,6 +59,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
     private Process? _process;
     private CancellationTokenSource? _tailCancellation;
     private TcpClient? _client;
+    private string _token = "";
     private StreamReader? _reader;
     private StreamWriter? _writer;
     private bool _isRunning;
@@ -341,6 +342,10 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 throw new InvalidOperationException("The local control port belongs to another application.");
             }
+            // Every command but /ping needs the token the mesh wrote before it
+            // opened the port, and a restarted mesh has a new one -- so it is
+            // read on every attach, never cached across them.
+            _token = ReadControlToken();
             // A fresh attach is a fresh session with whatever mesh process is
             // on the other end -- its own announcement ids start at 1, so a
             // cursor left over from a previous process would skip everything
@@ -711,6 +716,23 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
         }
     }
 
+    private string ReadControlToken()
+    {
+        var path = Path.Combine(RootPath, ".runtime", "control.token");
+        try
+        {
+            return File.ReadAllText(path).Trim();
+        }
+        catch (IOException)
+        {
+            return "";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "";
+        }
+    }
+
     private async Task<ControlResponse> RequestAsync(string command, CancellationToken cancellationToken)
     {
         await _requestLock.WaitAsync(cancellationToken);
@@ -720,7 +742,7 @@ internal sealed class EvoMeshRuntimeProcess : IDisposable
             {
                 throw new InvalidOperationException("The control connection is not available.");
             }
-            var request = JsonSerializer.Serialize(new { command });
+            var request = JsonSerializer.Serialize(new { command, token = _token });
             await _writer.WriteLineAsync(request.AsMemory(), cancellationToken);
             var line = await _reader.ReadLineAsync(cancellationToken);
             if (line is null)

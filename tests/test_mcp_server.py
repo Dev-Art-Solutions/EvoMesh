@@ -30,7 +30,9 @@ async def mesh(tmp_path: Path) -> AsyncIterator[tuple[Environment, int]]:
     )
     environment = Environment(settings, {"ollama": MockProvider()})
     await environment.start()
-    server = ControlServer(environment, asyncio.Event(), port=0)
+    server = ControlServer(
+        environment, asyncio.Event(), port=0, token_path=tmp_path / ".runtime" / "control.token"
+    )
     await server.start()
     assert server._server is not None
     port = server._server.sockets[0].getsockname()[1]
@@ -57,11 +59,20 @@ async def test_client_reports_a_mesh_that_is_down() -> None:
     assert "not answering" in await client.run("/status")
 
 
-async def test_stdio_round_trip_through_a_real_mcp_client(mesh: tuple[Environment, int]) -> None:
+async def test_stdio_round_trip_through_a_real_mcp_client(
+    mesh: tuple[Environment, int], tmp_path: Path
+) -> None:
     _, port = mesh
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "evomesh.mcp_server", "--port", str(port)],
+        args=[
+            "-m",
+            "evomesh.mcp_server",
+            "--port",
+            str(port),
+            "--token-file",
+            str(tmp_path / ".runtime" / "control.token"),
+        ],
         env={"PYTHONPATH": SRC},
     )
     async with Client(params) as client:

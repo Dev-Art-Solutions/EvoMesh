@@ -262,8 +262,9 @@ regresses.
     mean opposite things, one blocked on a person who may never return and one on a worker that
     certainly will. The phase is *derived* in `runtime_states()` from the queue, never stored, and
     an `offline` agent stays offline: a queued job cannot revive an agent with no loop.
-16. **Runtime dependencies stay at five** — `aiosqlite`, `httpx`, `pydantic`, `pydantic-settings`,
-    `pyyaml`. A local-first runtime that drags in a framework has stopped being the thing. Add one
+16. **Runtime dependencies stay at six** — `aiosqlite`, `httpx`, `mcp[cli]`, `pydantic`,
+    `pydantic-settings`, `pyyaml` (`mcp` came with `mcp_client.py`; this line said five after it
+    landed). A local-first runtime that drags in a framework has stopped being the thing. Add one
     only with an argument recorded here. This is why Scrapling (github.com/D4Vinci/Scrapling, the
     harness's `fetch` tool) is never `import`ed: its fetchers extra alone pulls in a dozen packages,
     a browser automation stack among them.
@@ -274,6 +275,22 @@ regresses.
     mesh: a shutdown from a phone would leave nothing running that could be asked to start again.
     Adopted Telegram chat ids are kept in the database, **not** written back into `evomesh.yaml` —
     the mesh editing a human's config file from the inside is a surprise nobody asked for.
+
+    **Amended: localhost is not a boundary on its own.** A browser reaches it. The dispatcher used
+    to answer and skip any line that was not JSON, so a page's `fetch()` sent HTTP headers it
+    skipped and a body it ran. Two rules hold now, in `ControlServer._dispatch`. First, a line that
+    is not a JSON object **ends the connection**, so the request line is the last thing read.
+    Second, every command except `/ping` carries `token`, compared in constant time against one
+    generated per start and written to `.runtime/control.token` (0600, or on Windows inheritance
+    cut and only the user granted) **before** the port opens. The mesh exports the file's *path*,
+    never the token, as `EVOMESH_CONTROL_TOKEN_FILE` for the processes it starts. `/ping` stays
+    open because the supervisor's hang watchdog and the Control Center's "is this port ours"
+    check ask it, and it changes nothing. Considered and rejected: refusing connections from
+    harness subprocesses by PID/job membership. The Crawler's `crawl_schedule` tool drives the
+    port on purpose, and a script running as the user can edit `evomesh.yaml` or the database
+    directly anyway. **The token keeps out the browser and other OS users, not code the user's
+    own account runs.** An agent with `python` in `shell_allow` is arbitrary code as the user,
+    and the place to stop that is which agents get the harness, not this port.
 18. **`memory.md`, `context.md` and the world context are plain Markdown on purpose.** A human can
     read or edit them while the mesh runs and the agent picks the change up next cycle. Keep them
     human-readable; do not "optimise" them into a binary or a database blob.

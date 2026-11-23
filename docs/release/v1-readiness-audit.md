@@ -87,7 +87,8 @@ it is not hidden here. CI on `5a3a02f` is green.
 
 | Threat | Today | Needed before the feature it guards |
 |---|---|---|
-| Local process or agent script drives the control port | **Open.** On the live config, `harness.enabled` + `allow_write` + `shell_allow: [python]` let any harness-enabled agent write and run a script that connects to `127.0.0.1:8765` | Per-start token file (user-only ACL) required on every control request; desktop and `evomesh-service` read it. **Before PR 02/05** |
+| A web page drives the control port | **Open at 5a3a02f.** `_dispatch` answers and skips non-JSON lines, so a browser `fetch()` to `127.0.0.1:8765` runs its body as a command | **PR 00b:** a non-JSON line closes the connection, and a per-start token is required for every command but `/ping` |
+| Agent code escalates its own grants | **Inherent, not a port bug.** On the live config, `harness.enabled` + `allow_write` + `shell_allow: [python]` means arbitrary code as the user. Such a script can read the token, edit `evomesh.yaml`, or write the SQLite grants directly. *Correction to the first draft of this audit, which pinned this on the control port* | Agents that read untrusted content (mail, browser, crawler) get **no `python` in `shell_allow`**. The mail-assistant template (PR 07) has no shell at all. An OS-level sandbox is out of v1 scope; say so in the README |
 | Secrets at rest | Plaintext `evomesh.secrets.yaml`, readable by harness `read` if a grant covers the root | Deny-list secrets/`data/` in `permissions.py` regardless of grants; ACL the file to the user; DPAPI optional later |
 | Untrusted email/web content steering tools | Browser already has sensitive-action confirmation (`browser.py`) | Same pattern for mail: content never authorises a send, grant or move; approvals bound to a content digest |
 | Duplicate external effects after crash | `send_email` has no idempotency; rate counter is lost on restart | Durable mail outbox; ambiguous SMTP outcome is never auto-retried |
@@ -116,14 +117,17 @@ New: **PR 00b**. Its numbering is otherwise the plan's own.
 | 11 | EvoMesh | P0 | backup/restore command, refuse newer-schema DB, pre-migration copy, durable rate limits | migration guard | J6 |
 | 12 | all | P0 | Windows E2E, version-correct packaging label, RC docs | none | sign-off |
 
-00b goes first because every later grant is only as strong as the channel that can issue it.
+00b goes first because a web page could issue any grant through the port. It does not make
+agents with `python` safe; see §4.
 
-## 6. Decisions the operator must make (blocking the PR named)
+## 6. Owner decisions (2026-11-24)
 
-- **D-1 (PR 06):** Should existing `send_email` grants keep sending without approval (compatibility), or move to approval-by-default (the plan's C5)? Recommendation: approval by default, plus a per-account `auto_send_allowlist` for the transactional cases that exist today.
-- **D-2 (PR 02):** What are the DC target and the credential? Which workspace and project on `data.devart.solutions`, and is that host running `2.0.0rc1` or later? Not verified here.
-- **D-3 (PR 09):** DC hosting. Docker/Caddy as documented, or IIS behind Cloudflare as the operator runs other sites? Do not replace either without approval.
-- **D-4 (PR 05):** Mail providers. Gmail/Microsoft need OAuth2 or app passwords. Which accounts are in scope for J3?
+- **D-1 (PR 06): approval by default.** Every `send_email` and every new mail send goes through an approval bound to the content digest. Agents that already have a grant change behaviour; the CHANGELOG must say so.
+- **D-2 (PR 02): local, client-editable, never committed.** The DC URL, workspace, project and credential live in the operator's own `evomesh.yaml` (`data_collector:` block) and `evomesh.secrets.yaml`. Both are already gitignored (`.gitignore` lines 15–16). Only `evomesh.yaml.example` gets the block, with fake values. The Control Center must be able to edit it. Real values arrive from the owner later.
+- **D-3: Data Collector server work is out of scope here.** Another agent owns the Data-Collector repo. PRs 01, 08 and 09 are not done from this program. The contract document is the handoff: this side builds against the current API, and the outbox treats the receiver's lack of producer-key dedupe as a known gap (see §3, item 3) until the other side ships `upsert-batch`.
+- **D-4: Gmail and hMailServer, read and send.** SMTP send already exists. Reading is required on both: IMAP first (both Gmail and hMailServer speak it, and it is the only protocol with folders, flags and UIDs), with **POP3 as well, because the owner asked for it**. POP3 gives inbox-only reads with UIDL; there are no folders, flags or moves, and the tools must say so rather than pretend. Gmail authenticates with an app password (OAuth2 later). hMailServer works with a plain account password over TLS (993/995), or plaintext only by explicit opt-in on a LAN.
+
+The PR matrix in §5 stands, minus 01/08/09 (handed off), with 05 reading IMAP **and** POP3.
 
 ## 7. Non-goals of v1 (from the plan, confirmed)
 

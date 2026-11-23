@@ -88,10 +88,20 @@ $accountSid = (New-Object Security.Principal.NTAccount($account)).Translate([Sec
 $client = New-Object System.Net.Sockets.TcpClient
 try {
     $client.Connect('127.0.0.1', 8765)
-    $request = [Text.Encoding]::UTF8.GetBytes("{`"command`": `"/exit`"}`n")
-    $client.GetStream().Write($request, 0, $request.Length)
-    Write-Output '[install-services] asked the running mesh to /exit'
-    Start-Sleep -Seconds 10
+    # Every command but /ping needs the token the running mesh wrote.
+    $tokenFile = Join-Path $Root '.runtime\control.token'
+    $token = if (Test-Path $tokenFile) { (Get-Content -Raw $tokenFile).Trim() } else { '' }
+    $request = [Text.Encoding]::UTF8.GetBytes((@{ command = '/exit'; token = $token } | ConvertTo-Json -Compress) + "`n")
+    $stream = $client.GetStream()
+    $stream.Write($request, 0, $request.Length)
+    $stream.ReadTimeout = 10000
+    $answer = (New-Object System.IO.StreamReader($stream)).ReadLine()
+    if ($answer -and $answer.Contains('"unauthorized"')) {
+        Write-Warning "[install-services] a mesh is running but refused /exit (no readable $tokenFile). Stop it from the Control Center, then run this again."
+    } else {
+        Write-Output '[install-services] asked the running mesh to /exit'
+        Start-Sleep -Seconds 10
+    }
 } catch {
 } finally {
     $client.Close()

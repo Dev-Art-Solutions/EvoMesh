@@ -91,7 +91,7 @@ Follow and steer the task:
 /goal drop Crawler <id>           cancel it
 ```
 
-For a one-off question instead of a task, `/chat Crawler` selects the agent and a plain message goes to it. A long listing does better as a goal, because a goal carries on across the agent's cycles. Sending commands from a Git Bash script to the control port (127.0.0.1:8765)? `export MSYS_NO_PATHCONV=1` first, or MSYS turns `/goals` into a Windows path.
+For a one-off question instead of a task, `/chat Crawler` selects the agent and a plain message goes to it. A long listing does better as a goal, because a goal carries on across the agent's cycles. Sending commands from a Git Bash script to the control port (127.0.0.1:8765)? `export MSYS_NO_PATHCONV=1` first, or MSYS turns `/goals` into a Windows path, and add the token from `.runtime/control.token` to each request (see below).
 
 ## Why it exists
 
@@ -160,7 +160,7 @@ Settings are read when the mesh boots, so saving them while it runs offers to re
 
 Settings also exposes provider and model assignments for the four built-in agents: Agent Architect, Guardian, Evaluator, and Environment Evolver. These assignments are stored under `system_agents` in `evomesh.yaml` and are reconciled with persisted agent state on the next mesh start.
 
-The local control channel listens only on `127.0.0.1:8765`. Closing the Control Center detaches without stopping the mesh; use **Stop Mesh** for a graceful shutdown. Startup diagnostics are persisted in `.runtime/logs/control-center.log`, and mesh logs in `.runtime/logs/mesh.log`.
+The local control channel listens only on `127.0.0.1:8765`, and it answers only requests carrying the token the mesh writes to `.runtime/control.token` each time it starts. A request is one JSON line, `{"command": "/status", "token": "<contents of that file>"}`; only `/ping` works without the token. The token keeps web pages and other Windows users out. It does not keep out code running as you: an agent allowed to run `python` can read the file, as it can read anything else you can. Closing the Control Center detaches without stopping the mesh; use **Stop Mesh** for a graceful shutdown. Startup diagnostics are persisted in `.runtime/logs/control-center.log`, and mesh logs in `.runtime/logs/mesh.log`.
 
 **Only one Control Center per checkout.** A second launch against the same `root` (a double-click while one is already open, say) is refused with a short message instead of opening a second window — a named OS-level `Mutex`, keyed off `root` and held for the process's whole life, the same reasoning `src/evomesh/singleton.py` already applies to the mesh process itself. Two Control Centers pointed at two *different* checkouts remain a legitimate, separate setup; only a second one against the same data is refused.
 

@@ -4,6 +4,10 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **A web page could command the mesh.** The control port ran every line that parsed as JSON, and it answered and skipped every line that did not. A `fetch()` from any page to `127.0.0.1:8765` therefore worked: the HTTP request line and headers were skipped one by one, and the body ran as a console command (`/exit`, `/email grant`, `/manager trust on`). Now a line that is not a JSON object ends the connection. Every command except `/ping` must also carry the token the mesh writes to `.runtime/control.token` at each start; on Windows only the current user can read that file. The Control Center, `evomesh-service`, `install-services.ps1`, `python -m evomesh.mcp_server` and the Crawler's `crawl_schedule` tool all send it. A script of your own that talks to the port must read that file and add `"token"` to each request.
+
 ### Fixed
 
 Found in a real evening of asking the Manager for "the 20 latest headlines in Bulgarian, as a PDF":

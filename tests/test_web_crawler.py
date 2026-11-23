@@ -248,7 +248,9 @@ async def test_the_crawler_schedules_its_own_tasks_through_the_control_port(
     await environment.start()
     await environment.agent_templates.install_directory(TEMPLATE)
     crawler = await environment.agent_templates.instantiate(environment, "web-crawler")
-    control = ControlServer(environment, asyncio.Event(), "127.0.0.1", 0)
+    control = ControlServer(
+        environment, asyncio.Event(), "127.0.0.1", 0, token_path=tmp_path / "control.token"
+    )
     await control.start()
     assert control._server is not None  # pyright: ignore[reportPrivateUsage]
     port = control._server.sockets[0].getsockname()[1]  # pyright: ignore[reportPrivateUsage]

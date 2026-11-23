@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
+import os
+import secrets
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 from evomesh.console import ConsoleChannel
@@ -12,8 +18,52 @@ from evomesh.models import describe
 
 CONTROL_HOST = "127.0.0.1"
 CONTROL_PORT = 8765
+TOKEN_FILENAME = "control.token"
+# Answers whether the port is EvoMesh's and whether agents are stuck, and
+# changes nothing: the supervisor's hang watchdog and the Control Center's
+# "is this port ours" check ask it before they can have read a token.
+UNAUTHENTICATED = frozenset({"/ping"})
 
 logger = logging.getLogger(__name__)
+
+
+def token_path_for(runtime_dir: Path) -> Path:
+    return runtime_dir / TOKEN_FILENAME
+
+
+def read_token(path: Path) -> str:
+    """The running mesh's control token, or "" when there is none to read."""
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except OSError:
+        return ""
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` so only the current user can read it.
+
+    POSIX: created 0600 before a byte is written. Windows: inheritance is cut
+    and only the current user is granted, because a project directory on a
+    data drive is commonly readable by every local user."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    with contextlib.suppress(FileNotFoundError):
+        temporary.unlink()
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+        handle.write(text)
+    if sys.platform == "win32":
+        user = os.environ.get("USERNAME", "")
+        if user:
+            result = subprocess.run(  # noqa: S603 - fixed program, our own file
+                ["icacls", str(temporary), "/inheritance:r", "/grant:r", f"{user}:F"],
+                capture_output=True,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0:
+                logger.warning("control token: icacls could not restrict %s", temporary)
+    os.replace(temporary, path)
 
 
 class ControlServer:
@@ -23,14 +73,25 @@ class ControlServer:
         shutdown: asyncio.Event,
         host: str = CONTROL_HOST,
         port: int = CONTROL_PORT,
+        token_path: Path | None = None,
     ) -> None:
         self.environment = environment
         self.shutdown = shutdown
         self.host = host
         self.port = port
+        # A new token every start, so one read from an earlier run is worth
+        # nothing. Clients read it from token_path, written before the port
+        # opens so nothing can connect before the token is there to read.
+        self.token = secrets.token_urlsafe(32)
+        self.token_path = token_path
         self._server: asyncio.Server | None = None
 
     async def start(self) -> None:
+        if self.token_path is not None:
+            await asyncio.to_thread(_write_private, self.token_path, self.token)
+            # The path, never the token: every process the mesh starts (a
+            # custom tool such as crawl_schedule) inherits where to look.
+            os.environ["EVOMESH_CONTROL_TOKEN_FILE"] = str(self.token_path)
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
 
     async def stop(self) -> None:
@@ -38,6 +99,11 @@ class ControlServer:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        if self.token_path is not None and read_token(self.token_path) == self.token:
+            with contextlib.suppress(OSError):
+                self.token_path.unlink()
+            if os.environ.get("EVOMESH_CONTROL_TOKEN_FILE") == str(self.token_path):
+                del os.environ["EVOMESH_CONTROL_TOKEN_FILE"]
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -50,6 +116,8 @@ class ControlServer:
                 await writer.drain()
                 if response.get("shutdown"):
                     self.shutdown.set()
+                    break
+                if response.pop("closed", False):
                     break
         except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
             # A client that closes its own process instead of sending /exit
@@ -66,9 +134,28 @@ class ControlServer:
                 await writer.wait_closed()
 
     async def _dispatch(self, channel: ConsoleChannel, raw: bytes) -> dict[str, Any]:
+        # A line that is not a JSON object ends the connection rather than
+        # being skipped. Skipping is what let a browser drive this port: a
+        # page's fetch() to 127.0.0.1:8765 sends HTTP headers (each one a bad
+        # line, answered and passed over) and then a body that is a perfectly
+        # good command. The request line is now the last thing read.
         try:
             payload = json.loads(raw)
-            command = str(payload.get("command", "")).strip()
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            return {"output": "Error: not a control request", "error": True, "closed": True}
+        command = str(payload.get("command", "")).strip()
+        if command not in UNAUTHENTICATED:
+            supplied = str(payload.get("token") or "")
+            if not hmac.compare_digest(supplied.encode(), self.token.encode()):
+                return {
+                    "output": "Error: unauthorized -- send the token from .runtime/control.token",
+                    "error": True,
+                    "unauthorized": True,
+                    "closed": True,
+                }
+        try:
             if command == "/ping":
                 stuck = self.environment.stuck_agents()
                 return {"output": "EvoMesh control ready", "running": True, "stuck": stuck}
