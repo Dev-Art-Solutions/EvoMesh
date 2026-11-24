@@ -30,7 +30,9 @@ PACKAGE = "evomesh"
 # Code, Claude Desktop) as a stdio server. A module nothing in this repository imports is
 # usually genuinely dead; one whose only caller is an external process this
 # repository does not control is not the same thing.
-ENTRY_POINTS = frozenset({"__init__", "__main__", "smoke", "browser_bridge", "mcp_server"})
+ENTRY_POINTS = frozenset(
+    {"__init__", "__main__", "smoke", "browser_bridge", "mcp_server", "backup"}
+)
 
 
 @dataclass(frozen=True)

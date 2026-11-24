@@ -404,3 +404,52 @@ email:
 #      from_name: EvoMesh
 #      allowed_recipients: ["you@gmail.com", "@yourcompany.com"]  # empty = anyone
 #      max_per_hour: 20
+#      max_per_day: 100
+#      # Every send waits for /email approve. Recipients here skip that for
+#      # this account only (a transactional sender), never for a model's choice.
+#      approval_exempt: []
+#      # Reading. Gmail: IMAP on 993 with the same app password.
+#      incoming:
+#        protocol: imap           # imap | pop3 (POP3: inbox only, no flags or moves)
+#        host: imap.gmail.com
+#        security: ssl            # ssl (993/995) | starttls (143/110) | none (LAN only)
+#        folders: ["INBOX"]
+#        archive_folder: "[Gmail]/All Mail"
+#        sync_interval_seconds: 300   # 0 = only on /email sync or a search
+#        initial_messages: 200
+#        store_bodies: true
+#    office:                     # hMailServer on your own network or host
+#      host: mail.example.com
+#      port: 587
+#      security: starttls
+#      username: office@example.com
+#      password_ref: hmail_office
+#      from_address: office@example.com
+#      incoming:
+#        protocol: imap           # hMailServer also speaks pop3
+#        host: mail.example.com
+#        security: ssl            # needs an SSL certificate on hMailServer; none only on a LAN
+#        folders: ["INBOX"]
+#        archive_folder: Archive
+#        sent_folder: Sent        # hMailServer does not file sent mail itself
+
+# The operator's own Data Collector (datacollector.py). Off by default. The
+# URL, ids and key are yours: keep them here and in evomesh.secrets.yaml,
+# both gitignored. Agents never see the key.
+data_collector:
+  enabled: false
+#  api_base_url: https://data.example.com/api/v1
+#  workspace_id: ws_example
+#  project_id: prj_example
+#  credential_ref: data_collector_ingest   # a key in evomesh.secrets.yaml (X-API-Key)
+#  verify_tls: true
+#  upsert_batch: false      # true once the collector has /records/upsert-batch
+#  collections:             # entity_type -> collection id
+#    news_article: col_news
+#    business: col_business
+#    mail_message: col_mail_private
+#  producers:
+#    news: true             # new articles from the news cache, keyed by canonical URL
+#    news_agent: NewsWatcher
+#    mail_metadata: []      # accounts whose sender/subject/date/flags are exported
+#    mail_bodies: []        # of those, accounts whose body excerpt is exported too

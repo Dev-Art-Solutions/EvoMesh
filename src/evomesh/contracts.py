@@ -864,6 +864,11 @@ class AgentDefinition(BaseModel):
     # The knowledge wiki tools (knowledge.py). None: on for an ordinary
     # agent, off for a system agent, whose knowledge is the codebase itself.
     knowledge: bool | None = None
+    # False: this agent's harness jobs get no shell at all, whatever
+    # harness.shell_allow lists. For agents that read untrusted text (mail, web):
+    # an allow-listed `python` is arbitrary code as the user, and a message
+    # that talks a model into writing a script must find nothing to run it.
+    shell: bool = True
     # A command run on its own short, fixed interval, outside this agent's
     # cognition cycle entirely -- for state that moves on a scale of seconds
     # (open orders, account equity) where an LLM turn every few seconds would

@@ -89,6 +89,19 @@ internal sealed class TelegramEditorSettings
     public bool Announcements { get; set; } = true;
 }
 
+/// <summary>The operator's own Data Collector (data_collector: in evomesh.yaml).
+/// The key itself never lives here: credential_ref names it in
+/// evomesh.secrets.yaml. collections: and producers: round-trip as extras.</summary>
+internal sealed class DataCollectorEditorSettings
+{
+    public bool Enabled { get; set; }
+    public string ApiBaseUrl { get; set; } = "";
+    public string WorkspaceId { get; set; } = "";
+    public string ProjectId { get; set; } = "";
+    public string CredentialRef { get; set; } = "";
+    public bool VerifyTls { get; set; } = true;
+}
+
 internal sealed class EvoMeshYamlSettings
 {
     public string EnvironmentName { get; set; } = "local";
@@ -101,6 +114,7 @@ internal sealed class EvoMeshYamlSettings
     public EvolutionEditorSettings Evolution { get; } = new();
     public GitEditorSettings Git { get; } = new();
     public TelegramEditorSettings Telegram { get; } = new();
+    public DataCollectorEditorSettings DataCollector { get; } = new();
     public Dictionary<string, ProviderEditorSettings> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AgentModelEditorSettings> SystemAgents { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HarnessEditorSettings Harness { get; } = new();
@@ -119,7 +133,10 @@ internal sealed class EvoMeshYamlSettings
     private static readonly Dictionary<string, HashSet<string>> KnownKeys = new(StringComparer.Ordinal)
     {
         [""] = ["environment_name", "data_path", "generation_path", "workspace_path", "log_level",
-                "runtime", "evolution", "harness", "git", "telegram", "system_agents", "models"],
+                "runtime", "evolution", "harness", "git", "telegram", "system_agents", "models",
+                "data_collector"],
+        ["data_collector"] = ["enabled", "api_base_url", "workspace_id", "project_id", "credential_ref",
+                              "verify_tls"],
         ["runtime"] = ["cycle_seconds", "stagger_seconds", "prompt_chars", "memory_chars",
                        "context_chars", "inbox_chars", "beliefs_chars"],
         ["evolution"] = ["autonomous", "cycle_seconds", "auto_validate", "max_repairs", "auto_promote",
@@ -349,6 +366,18 @@ internal sealed class EvoMeshYamlSettings
                     case "announcements": result.Telegram.Announcements = ParseBool(value, true); break;
                 }
             }
+            else if (section == "data_collector" && indent == 2)
+            {
+                switch (key)
+                {
+                    case "enabled": result.DataCollector.Enabled = ParseBool(value, false); break;
+                    case "api_base_url": result.DataCollector.ApiBaseUrl = value; break;
+                    case "workspace_id": result.DataCollector.WorkspaceId = value; break;
+                    case "project_id": result.DataCollector.ProjectId = value; break;
+                    case "credential_ref": result.DataCollector.CredentialRef = value; break;
+                    case "verify_tls": result.DataCollector.VerifyTls = ParseBool(value, true); break;
+                }
+            }
             else if (section == "models" && indent == 2 && key == "default_provider")
             {
                 result.DefaultProvider = value;
@@ -483,6 +512,16 @@ internal sealed class EvoMeshYamlSettings
         writer.WriteLine($"  poll_timeout_seconds: {Telegram.PollTimeoutSeconds}");
         writer.WriteLine($"  announcements: {(Telegram.Announcements ? "true" : "false")}");
         WriteExtras(writer, "telegram");
+        writer.WriteLine("data_collector:");
+        writer.WriteLine($"  enabled: {(DataCollector.Enabled ? "true" : "false")}");
+        writer.WriteLine($"  api_base_url: {Quote(DataCollector.ApiBaseUrl)}");
+        writer.WriteLine($"  workspace_id: {Quote(DataCollector.WorkspaceId)}");
+        writer.WriteLine($"  project_id: {Quote(DataCollector.ProjectId)}");
+        writer.WriteLine(DataCollector.CredentialRef.Length == 0
+            ? "  credential_ref: null"
+            : $"  credential_ref: {Quote(DataCollector.CredentialRef)}");
+        writer.WriteLine($"  verify_tls: {(DataCollector.VerifyTls ? "true" : "false")}");
+        WriteExtras(writer, "data_collector");
         writer.WriteLine("system_agents:");
         foreach (var (agentId, agent) in SystemAgents)
         {

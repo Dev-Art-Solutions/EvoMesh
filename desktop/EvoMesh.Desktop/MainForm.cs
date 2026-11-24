@@ -83,6 +83,15 @@ internal sealed class MainForm : Form
     private TextBox _telegramChats = null!;
     private CheckBox _telegramAdoptFirst = null!;
     private CheckBox _telegramAnnouncements = null!;
+    private CheckBox _dcEnabled = null!;
+    private CheckBox _dcVerifyTls = null!;
+    private TextBox _dcUrl = null!;
+    private TextBox _dcWorkspace = null!;
+    private TextBox _dcProject = null!;
+    private TextBox _dcRef = null!;
+    private TextBox _dcKey = null!;
+    private TextBox _emailOutput = null!;
+    private TextBox _emailDraftId = null!;
     private Label _telegramNotice = null!;
 
     public MainForm(string rootPath, string uvExecutable)
@@ -279,6 +288,7 @@ internal sealed class MainForm : Form
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(18, 7) };
         tabs.TabPages.Add(BuildConsoleTab());
         tabs.TabPages.Add(BuildAgentsTab());
+        tabs.TabPages.Add(BuildEmailTab());
         tabs.TabPages.Add(BuildSettingsTab());
         // A jump straight to a current picture beats waiting up to
         // _agentRefreshTimer's own 4s tick the moment a human lands here.
@@ -348,6 +358,93 @@ internal sealed class MainForm : Form
         layout.Controls.Add(input, 0, 2);
         page.Controls.Add(layout);
         return page;
+    }
+
+    /// <summary>Mailboxes and the approval queue: every email an agent asks to
+    /// send waits here (and on Telegram) until a human approves exactly it.</summary>
+    private TabPage BuildEmailTab()
+    {
+        var page = new TabPage("Email") { Padding = new Padding(14), BackColor = BackColor };
+        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var views = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        foreach (var (label, command) in new[]
+                 {
+                     ("Accounts", "/email status"),
+                     ("Waiting for approval", "/email pending"),
+                     ("Fetch new mail", "/email sync"),
+                     ("Send log", "/email log 20"),
+                     ("Data Collector", "/dc status"),
+                 })
+        {
+            var button = MakeButton(label, 170);
+            button.Click += async (_, _) => await ShowEmailAsync(command);
+            views.Controls.Add(button);
+        }
+        outer.Controls.Add(views, 0, 0);
+        var decide = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 6, 0, 6) };
+        decide.Controls.Add(new Label { Text = "Draft id:", AutoSize = true, Margin = new Padding(3, 10, 6, 3) });
+        _emailDraftId = new TextBox { Width = 140, Margin = new Padding(3, 6, 8, 3) };
+        decide.Controls.Add(_emailDraftId);
+        var approve = MakeButton("Approve and send", 170);
+        approve.Click += async (_, _) => await DecideEmailAsync("approve");
+        var deny = MakeButton("Deny", 110);
+        deny.Click += async (_, _) => await DecideEmailAsync("deny");
+        decide.Controls.AddRange([approve, deny]);
+        outer.Controls.Add(decide, 0, 1);
+        _emailOutput = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Font = new Font("Consolas", 10F),
+            BackColor = Color.White,
+        };
+        outer.Controls.Add(_emailOutput, 0, 2);
+        page.Controls.Add(outer);
+        return page;
+    }
+
+    private async Task ShowEmailAsync(string command)
+    {
+        if (!_runtime.IsRunning)
+        {
+            _emailOutput.Text = "Start EvoMesh first.";
+            return;
+        }
+        try
+        {
+            var output = await _runtime.RequestSilentAsync(command);
+            _emailOutput.Text = output.Replace("\n", Environment.NewLine);
+        }
+        catch (Exception exc)
+        {
+            _emailOutput.Text = exc.Message;
+        }
+    }
+
+    private async Task DecideEmailAsync(string action)
+    {
+        var id = _emailDraftId.Text.Trim();
+        if (id.Length == 0 || id.Any(char.IsWhiteSpace))
+        {
+            _emailOutput.Text = "Type the draft id shown under \"Waiting for approval\".";
+            return;
+        }
+        if (action == "approve" && MessageBox.Show(
+                this,
+                $"Send draft {id} now, exactly as listed under \"Waiting for approval\"?",
+                "Send email",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return;
+        }
+        await ShowEmailAsync($"/email {action} {id}");
     }
 
     private TabPage BuildAgentsTab()
@@ -1159,6 +1256,37 @@ internal sealed class MainForm : Form
         grid.SetColumnSpan(_telegramNotice, 4);
         row++;
 
+        AddHeading(grid, "DATA COLLECTOR", ref row);
+        AddHelp(
+            grid,
+            "Your own Data Collector. These values stay on this computer: evomesh.yaml and " +
+            "evomesh.secrets.yaml are never committed. The API key is written to the secrets " +
+            "file under the key ref, and agents never see it. Collections and producers are " +
+            "set in evomesh.yaml (see evomesh.yaml.example).",
+            ref row);
+        _dcEnabled = AddCheck(grid, "Send records to the Data Collector", 0, row);
+        _dcVerifyTls = AddCheck(grid, "Verify its TLS certificate", 2, row);
+        row++;
+        _dcUrl = AddField(grid, "API base URL (.../api/v1)", 0, row);
+        grid.SetColumnSpan(_dcUrl, 3);
+        row++;
+        _dcWorkspace = AddField(grid, "Workspace id", 0, row);
+        _dcProject = AddField(grid, "Project id", 2, row);
+        row++;
+        _dcRef = AddField(grid, "Key ref (secrets file)", 0, row);
+        _dcKey = AddField(grid, "API key (blank = keep)", 2, row);
+        _dcKey.UseSystemPasswordChar = true;
+        row++;
+        var dcActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var dcStatus = MakeButton("Live status", 130);
+        dcStatus.Click += async (_, _) => await SendCommandAsync("/dc status");
+        var dcSync = MakeButton("Sync now", 130);
+        dcSync.Click += async (_, _) => await SendCommandAsync("/dc sync");
+        dcActions.Controls.AddRange([dcStatus, dcSync]);
+        grid.Controls.Add(dcActions, 0, row);
+        grid.SetColumnSpan(dcActions, 4);
+        row++;
+
         var systemHeading = new Label
         {
             Text = "CORE AGENT MODELS",
@@ -1429,6 +1557,16 @@ internal sealed class MainForm : Form
             _telegramChats.Text = settings.Telegram.AllowedChatIds;
             _telegramAdoptFirst.Checked = settings.Telegram.AdoptFirstChat;
             _telegramAnnouncements.Checked = settings.Telegram.Announcements;
+            _dcEnabled.Checked = settings.DataCollector.Enabled;
+            _dcVerifyTls.Checked = settings.DataCollector.VerifyTls;
+            _dcUrl.Text = settings.DataCollector.ApiBaseUrl;
+            _dcWorkspace.Text = settings.DataCollector.WorkspaceId;
+            _dcProject.Text = settings.DataCollector.ProjectId;
+            _dcRef.Text = settings.DataCollector.CredentialRef;
+            _dcKey.Text = "";
+            _dcKey.PlaceholderText = _secrets.Refs.ContainsKey(settings.DataCollector.CredentialRef)
+                ? "(stored; type to replace)"
+                : "";
             foreach (var (agentId, controls) in _systemAgents)
             {
                 var configured = settings.SystemAgents.GetValueOrDefault(agentId);
@@ -1516,6 +1654,26 @@ internal sealed class MainForm : Form
         settings.Telegram.AllowedChatIds = _telegramChats.Text.Trim();
         settings.Telegram.AdoptFirstChat = _telegramAdoptFirst.Checked;
         settings.Telegram.Announcements = _telegramAnnouncements.Checked;
+        settings.DataCollector.Enabled = _dcEnabled.Checked;
+        settings.DataCollector.VerifyTls = _dcVerifyTls.Checked;
+        settings.DataCollector.ApiBaseUrl = _dcUrl.Text.Trim();
+        settings.DataCollector.WorkspaceId = _dcWorkspace.Text.Trim();
+        settings.DataCollector.ProjectId = _dcProject.Text.Trim();
+        var dcRef = _dcRef.Text.Trim();
+        if (dcRef.Length == 0 && _dcKey.Text.Trim().Length > 0)
+        {
+            dcRef = "data_collector_ingest";
+        }
+        settings.DataCollector.CredentialRef = dcRef;
+        if (_dcKey.Text.Trim().Length > 0)
+        {
+            // The key goes to the gitignored secrets file only, never to evomesh.yaml.
+            var secrets = EvoMeshSecretsSettings.Load(_secretsPath);
+            secrets.Refs[dcRef] = _dcKey.Text.Trim();
+            secrets.Save(_secretsPath);
+            _secrets = secrets;
+            _dcKey.Text = "";
+        }
         foreach (var (name, controls) in _providers)
         {
             var existing = settings.Providers.GetValueOrDefault(name);

@@ -139,6 +139,7 @@ class AgentTemplateDefinition(BaseModel):
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     # AgentDefinition.knowledge -- the wiki tools; None = default (on).
     knowledge: bool | None = None
+    shell: bool = True
     path: Path
     created_by: str = "system"
 
@@ -238,6 +239,7 @@ def parse_agent_template(
                 McpServerConfig.model_validate(item) for item in (meta.get("mcp_servers") or [])
             ],
             knowledge=bool(meta["knowledge"]) if meta.get("knowledge") is not None else None,
+            shell=bool(meta.get("shell", True)),
             path=path,
             created_by=created_by,
         )
@@ -387,6 +389,7 @@ class AgentTemplateRegistry:
             mcp=list(template.mcp) if template.mcp is not None else None,
             mcp_servers=[config.model_copy() for config in template.mcp_servers],
             knowledge=template.knowledge,
+            shell=template.shell,
         )
         for goal in template.goals:
             definition.mind.add_goal(

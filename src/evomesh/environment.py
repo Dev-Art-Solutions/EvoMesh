@@ -1075,6 +1075,11 @@ class Environment:
         await self.refresh_world()
         self.health_state = HealthState.READY
 
+    def _shell_allowed(self, agent_id: str | None) -> bool:
+        if not agent_id or not self._has(agent_id):
+            return True
+        return self.registry.get(agent_id).shell
+
     def _announce_soon(self, text: str) -> None:
         """announce() for synchronous callers (the mail and DC services)."""
         try:
@@ -1822,7 +1827,9 @@ class Environment:
             max_steps=job.max_steps if job.max_steps is not None else settings.max_steps,
             max_seconds=job.max_seconds if job.max_seconds is not None else settings.max_seconds,
             transcript_chars=settings.transcript_chars_for_num_ctx(job_num_ctx),
-            shell_allow=frozenset() if reading else settings.shell_programs(),
+            shell_allow=frozenset()
+            if reading or not self._shell_allowed(job.agent_id)
+            else settings.shell_programs(),
             shell_seconds=settings.shell_seconds,
             read_only=not job.allow_write or reading,
             allow_write=job.allow_write and not reading,
