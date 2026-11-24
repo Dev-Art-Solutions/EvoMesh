@@ -500,6 +500,19 @@ class McpServerConfig(BaseModel):
     timeout_seconds: float = 120
 
 
+class DataCollectorGrant(BaseModel):
+    """Entity types an agent may record (write) or query (read). "*" is
+    every type. The mesh's own client applies this before any request; the
+    agent never holds a Data Collector credential."""
+
+    write: list[str] = Field(default_factory=list)
+    read: list[str] = Field(default_factory=list)
+
+    def allows(self, kind: str, entity_type: str) -> bool:
+        listed = self.write if kind == "write" else self.read
+        return "*" in listed or entity_type in listed
+
+
 class BrowserGrant(BaseModel):
     """What one agent may do in Chrome through the ``browser`` tool (see
     browser.py). Only a console command writes it -- nothing a harness job
@@ -822,6 +835,15 @@ class AgentDefinition(BaseModel):
     # send_email tool. Empty (the default) means none, and no tool at all --
     # mailing out is always an explicit grant. `/email grant|revoke`.
     email_accounts: list[str] = Field(default_factory=list)
+    # Accounts whose incoming mail it may list, search and read (mail tools).
+    # `/email grant <agent> <account> read`.
+    mail_read: list[str] = Field(default_factory=list)
+    # Accounts whose messages it may mark, flag, move and archive. Never
+    # delete: there is no delete tool. `/email grant <agent> <account> manage`.
+    mail_manage: list[str] = Field(default_factory=list)
+    # The Data Collector tools. None (the default): none at all.
+    # `/dc grant <agent> write|read <entity_type,...|*>`.
+    data_collector: DataCollectorGrant | None = None
     # The browser tool. None (the default) means no browser at all -- a
     # signed-in browser is a capability granted per agent, like email.
     # `/browser grant <agent> read|interact [user]`.

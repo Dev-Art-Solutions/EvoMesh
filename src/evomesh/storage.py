@@ -67,7 +67,59 @@ MIGRATIONS = [
     );
     INSERT OR IGNORE INTO schema_version(version) VALUES (2);
     """,
+    # 3: the Data Collector outbox (datacollector.py). A row is written before
+    # record_event reports success, and leaves only by an acknowledgement or a
+    # human's cancel -- never by a full outbox or a failed send.
+    """
+    CREATE TABLE IF NOT EXISTS dc_outbox(
+        event_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, content_hash TEXT NOT NULL,
+        entity_type TEXT NOT NULL, agent_id TEXT NOT NULL, payload TEXT NOT NULL,
+        state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL, acked_at TEXT NOT NULL DEFAULT '',
+        receipt TEXT NOT NULL DEFAULT ''
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dc_outbox_same_observation
+        ON dc_outbox(source_key, content_hash);
+    CREATE INDEX IF NOT EXISTS dc_outbox_due ON dc_outbox(state, next_attempt_at);
+    INSERT OR IGNORE INTO schema_version(version) VALUES (3);
+    """,
+    # 4: mail read from IMAP/POP3 (mail_store.py) and drafts awaiting approval.
+    # uid is TEXT because a POP3 UIDL is a string, not a number.
+    """
+    CREATE TABLE IF NOT EXISTS mail_messages(
+        account TEXT NOT NULL, folder TEXT NOT NULL, uidvalidity TEXT NOT NULL,
+        uid TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '',
+        thread_key TEXT NOT NULL DEFAULT '', sender TEXT NOT NULL DEFAULT '',
+        recipients TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+        date TEXT NOT NULL DEFAULT '', flags TEXT NOT NULL DEFAULT '',
+        snippet TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
+        headers TEXT NOT NULL DEFAULT '{}', attachments TEXT NOT NULL DEFAULT '[]',
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY(account, folder, uidvalidity, uid)
+    );
+    CREATE INDEX IF NOT EXISTS mail_messages_by_date ON mail_messages(account, folder, date);
+    CREATE INDEX IF NOT EXISTS mail_messages_by_thread ON mail_messages(account, thread_key);
+    CREATE TABLE IF NOT EXISTS mail_sync(
+        account TEXT NOT NULL, folder TEXT NOT NULL, uidvalidity TEXT NOT NULL,
+        last_uid TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(account, folder)
+    );
+    CREATE TABLE IF NOT EXISTS mail_drafts(
+        id TEXT PRIMARY KEY, account TEXT NOT NULL, state TEXT NOT NULL,
+        sent_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS mail_drafts_sent ON mail_drafts(account, state, sent_at);
+    INSERT OR IGNORE INTO schema_version(version) VALUES (4);
+    """,
 ]
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+class SchemaTooNewError(RuntimeError):
+    """The database was written by a newer EvoMesh. Running older code over it
+    could drop what it does not know, so the mesh refuses to start instead."""
 
 
 class SQLiteRepository:
@@ -107,9 +159,45 @@ class SQLiteRepository:
             # opened a freshly created file at once -- which is exactly what a
             # rebuild after a wipe does. Once here is also all WAL needs.
             await db.execute("PRAGMA journal_mode=WAL")
+            found = await self._found_version(db)
+            if found > SCHEMA_VERSION:
+                raise SchemaTooNewError(
+                    f"{self.path} is at schema version {found}; this EvoMesh knows up to "
+                    f"{SCHEMA_VERSION}. Start the newer EvoMesh that wrote it, or restore a "
+                    "backup taken before the upgrade (python -m evomesh.backup restore)."
+                )
+            if 0 < found < SCHEMA_VERSION:
+                await self._copy_before_migration(db, found)
             for migration in MIGRATIONS:
                 await db.executescript(migration)
             await db.commit()
+
+    @staticmethod
+    async def _found_version(db: aiosqlite.Connection) -> int:
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+        )
+        if await cursor.fetchone() is None:
+            return 0
+        cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    async def _copy_before_migration(self, db: aiosqlite.Connection, found: int) -> None:
+        """A consistent copy of the database as it was, before any new migration
+        touches it -- the rollback for an upgrade gone wrong."""
+        target = self.path.parent / "backups" / f"{self.path.stem}-pre-v{SCHEMA_VERSION}.db"
+        if target.exists():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(target) as copy:
+            await db.backup(copy)
+        logger.warning(
+            "database at schema %s, migrating to %s; the old one is kept at %s",
+            found,
+            SCHEMA_VERSION,
+            target,
+        )
 
     async def save_agent(self, agent: AgentDefinition) -> None:
         await self._upsert("agents", "id", agent.id, "definition", agent.model_dump_json())
@@ -194,6 +282,238 @@ class SQLiteRepository:
                 raise
             await db.commit()
             return True
+
+    # -- Data Collector outbox (datacollector.py) ----------------------------
+
+    async def dc_enqueue(self, row: dict[str, object]) -> bool:
+        """Store one event. False when the same observation (source_key and
+        content_hash) is already in the outbox, acknowledged or not."""
+        columns = (
+            "event_id, source_key, content_hash, entity_type, agent_id, payload, state, created_at"
+        )
+        values = tuple(row[name.strip()] for name in columns.split(","))
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"INSERT OR IGNORE INTO dc_outbox({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def dc_counts(self) -> dict[str, int]:
+        rows = await self._all("SELECT state, COUNT(*) FROM dc_outbox GROUP BY state")
+        return {str(state): int(count) for state, count in rows}
+
+    async def dc_rows(
+        self, states: Sequence[str], *, due_before: float | None = None, limit: int = 50
+    ) -> list[dict[str, object]]:
+        marks = ", ".join("?" for _ in states)
+        sql = f"SELECT * FROM dc_outbox WHERE state IN ({marks})"
+        parameters: list[object] = list(states)
+        if due_before is not None:
+            sql += " AND next_attempt_at <= ?"
+            parameters.append(due_before)
+        sql += " ORDER BY created_at LIMIT ?"
+        parameters.append(limit)
+        return await self._dicts(sql, tuple(parameters))
+
+    async def dc_update(self, event_id: str, **fields: object) -> None:
+        allowed = {"state", "attempts", "next_attempt_at", "last_error", "acked_at", "receipt"}
+        if not fields or set(fields) - allowed:
+            raise ValueError(f"dc_update: unsupported fields {sorted(set(fields) - allowed)}")
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        await self._write(
+            [
+                (
+                    f"UPDATE dc_outbox SET {assignments} WHERE event_id = ?",
+                    (*fields.values(), event_id),
+                )
+            ]
+        )
+
+    # -- mail (mail_store.py) ------------------------------------------------
+
+    MAIL_COLUMNS = (
+        "account",
+        "folder",
+        "uidvalidity",
+        "uid",
+        "message_id",
+        "thread_key",
+        "sender",
+        "recipients",
+        "subject",
+        "date",
+        "flags",
+        "snippet",
+        "body",
+        "headers",
+        "attachments",
+        "fetched_at",
+    )
+
+    async def mail_put(self, rows: Sequence[dict[str, object]]) -> None:
+        names = ", ".join(self.MAIL_COLUMNS)
+        marks = ", ".join("?" for _ in self.MAIL_COLUMNS)
+        await self._write(
+            [
+                (
+                    f"INSERT OR REPLACE INTO mail_messages({names}) VALUES ({marks})",
+                    tuple(row.get(name, "") for name in self.MAIL_COLUMNS),
+                )
+                for row in rows
+            ]
+        )
+
+    async def mail_select(
+        self, where: str, parameters: tuple[object, ...], *, limit: int, offset: int = 0
+    ) -> list[dict[str, object]]:
+        """Rows matching a WHERE clause mail_store.py built from fixed
+        fragments -- never from text a model wrote."""
+        return await self._dicts(
+            f"SELECT * FROM mail_messages WHERE {where} ORDER BY date DESC, uid DESC "
+            "LIMIT ? OFFSET ?",
+            (*parameters, limit, offset),
+        )
+
+    async def mail_set_flags(
+        self, account: str, folder: str, uidvalidity: str, uid: str, flags: str
+    ) -> None:
+        await self._write(
+            [
+                (
+                    "UPDATE mail_messages SET flags = ? WHERE account = ? AND folder = ? "
+                    "AND uidvalidity = ? AND uid = ?",
+                    (flags, account, folder, uidvalidity, uid),
+                )
+            ]
+        )
+
+    async def mail_drop(self, account: str, folder: str | None = None) -> None:
+        """Forget cached mail: a folder whose UIDVALIDITY changed, a message
+        moved away, or a whole account that was removed."""
+        if folder is None:
+            await self._write(
+                [
+                    ("DELETE FROM mail_messages WHERE account = ?", (account,)),
+                    ("DELETE FROM mail_sync WHERE account = ?", (account,)),
+                ]
+            )
+            return
+        await self._write(
+            [
+                ("DELETE FROM mail_messages WHERE account = ? AND folder = ?", (account, folder)),
+                ("DELETE FROM mail_sync WHERE account = ? AND folder = ?", (account, folder)),
+            ]
+        )
+
+    async def mail_drop_message(
+        self, account: str, folder: str, uidvalidity: str, uid: str
+    ) -> None:
+        await self._write(
+            [
+                (
+                    "DELETE FROM mail_messages WHERE account = ? AND folder = ? "
+                    "AND uidvalidity = ? AND uid = ?",
+                    (account, folder, uidvalidity, uid),
+                )
+            ]
+        )
+
+    async def mail_sync_state(self, account: str, folder: str) -> dict[str, object] | None:
+        rows = await self._dicts(
+            "SELECT * FROM mail_sync WHERE account = ? AND folder = ?", (account, folder)
+        )
+        return rows[0] if rows else None
+
+    async def mail_save_sync(self, row: dict[str, object]) -> None:
+        await self._write(
+            [
+                (
+                    "INSERT OR REPLACE INTO mail_sync(account, folder, uidvalidity, last_uid, "
+                    "synced_at, last_error) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        row["account"],
+                        row["folder"],
+                        row["uidvalidity"],
+                        row.get("last_uid", ""),
+                        row.get("synced_at", ""),
+                        row.get("last_error", ""),
+                    ),
+                )
+            ]
+        )
+
+    async def mail_sync_rows(self) -> list[dict[str, object]]:
+        return await self._dicts("SELECT * FROM mail_sync ORDER BY account, folder")
+
+    async def draft_save(
+        self, draft_id: str, account: str, state: str, sent_at: str, payload: str
+    ) -> None:
+        await self._write(
+            [
+                (
+                    "INSERT OR REPLACE INTO mail_drafts(id, account, state, sent_at, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (draft_id, account, state, sent_at, payload),
+                )
+            ]
+        )
+
+    async def draft_claim(self, draft_id: str, expected: str, new: str) -> bool:
+        """Compare-and-swap a draft's state: the one place two approvals of the
+        same draft are told apart, so a send can happen only once."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE mail_drafts SET state = ? WHERE id = ? AND state = ?",
+                (new, draft_id, expected),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def draft_rows(
+        self, states: Sequence[str] | None = None, limit: int = 50
+    ) -> list[dict[str, object]]:
+        if states is None:
+            return await self._dicts(
+                "SELECT * FROM mail_drafts ORDER BY rowid DESC LIMIT ?", (limit,)
+            )
+        marks = ", ".join("?" for _ in states)
+        return await self._dicts(
+            f"SELECT * FROM mail_drafts WHERE state IN ({marks}) ORDER BY rowid DESC LIMIT ?",
+            (*states, limit),
+        )
+
+    async def draft_get(self, draft_id: str) -> dict[str, object] | None:
+        rows = await self._dicts("SELECT * FROM mail_drafts WHERE id = ?", (draft_id,))
+        return rows[0] if rows else None
+
+    async def sends_since(self, account: str, since: str) -> int:
+        rows = await self._all(
+            "SELECT COUNT(*) FROM mail_drafts WHERE account = ? AND state IN ('sent', "
+            "'uncertain') AND sent_at >= ?",
+            (account, since),
+        )
+        return int(rows[0][0]) if rows else 0
+
+    async def _dicts(
+        self, sql: str, parameters: tuple[object, ...] = ()
+    ) -> list[dict[str, object]]:
+        try:
+            return await self._dict_select(sql, parameters)
+        except sqlite3.OperationalError as exc:
+            if not _schema_is_missing(exc):
+                raise
+        await self._rebuild_schema()
+        return await self._dict_select(sql, parameters)
+
+    async def _dict_select(
+        self, sql: str, parameters: tuple[object, ...]
+    ) -> list[dict[str, object]]:
+        async with self._connect() as db:
+            cursor = await db.execute(sql, parameters)
+            names = [column[0] for column in cursor.description or ()]
+            return [dict(zip(names, row, strict=True)) for row in await cursor.fetchall()]
 
     async def load_state(self, key: str) -> object | None:
         rows = await self._all("SELECT value FROM state WHERE key = ?", (key,))

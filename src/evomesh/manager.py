@@ -120,6 +120,11 @@ NOTHING_NEW = "NOTHING_NEW"
 # act on the console session the tool borrows, which nobody is looking at.
 FORBIDDEN = {"/exit", "/manager", "/chat", "/confirm", "/cancel", "/attach"}
 
+# Never from the Manager, not even under /manager trust on: an email goes out
+# on a human's word only (D-1), and a mail body the Manager read could
+# otherwise talk it into approving its own draft.
+FORBIDDEN_ACTIONS = {("/email", "approve"), ("/email", "deny"), ("/email", "test")}
+
 # Commands that only read, by command and (where it matters) sub-action.
 # None: every form of the command reads. A set: only those first arguments
 # do; anything else -- including a sub-action added later -- needs approval.
@@ -150,7 +155,8 @@ READ_ONLY: dict[str, set[str] | None] = {
     "/telegram": {"status"},
     "/browser": {"status", "pending"},
     "/mcp": {"servers", "check"},
-    "/email": {"accounts"},
+    "/email": {"accounts", "status", "pending", "log"},
+    "/dc": {"status", "dead"},
     "/wiki": {"search", "log"},
     "/typed": {"list", "show", "explain", "executions", "execution"},
 }
@@ -187,6 +193,8 @@ def classify(command: str) -> str:
         return "forbidden"
     name = parts[0].lower()
     if name in FORBIDDEN:
+        return "forbidden"
+    if (name, parts[1].lower() if len(parts) > 1 else "") in FORBIDDEN_ACTIONS:
         return "forbidden"
     if name in READ_ONLY_BARE:
         return "read" if len(parts) <= READ_ONLY_BARE[name] else "approve"

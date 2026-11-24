@@ -9,11 +9,9 @@ from evomesh.config import EmailAccountSettings, Settings, load_settings
 from evomesh.console import ConsoleChannel
 from evomesh.contracts import AgentDefinition
 from evomesh.environment import Environment
-from evomesh.harness_tools import ToolContext, ToolDenied
 from evomesh.mailer import (
     EmailRefused,
     Mailer,
-    build_send_email_tool,
     parse_recipients,
     recipient_allowed,
 )
@@ -156,22 +154,6 @@ async def test_smtp_failure_is_a_runtime_error() -> None:
     with pytest.raises(RuntimeError, match="failed"):
         await mailer.send("dead", "a@example.com", "s", "b")
     assert mailer.recent()[-1].status == "failed"
-
-
-async def test_tool_is_limited_to_granted_accounts(smtp: FakeSmtp) -> None:
-    mailer = Mailer({"alerts": account(smtp.port), "billing": account(smtp.port)})
-    assert build_send_email_tool(mailer, [], "A") is None
-    assert build_send_email_tool(mailer, ["ghost"], "A") is None
-    tool = build_send_email_tool(mailer, ["alerts"], "A")
-    assert tool is not None
-    assert tool.parameters["properties"]["account"]["enum"] == ["alerts"]
-    context = ToolContext(root=Path("."))
-    result = await tool.run(context, {"to": "a@example.com", "subject": "hi", "body": "b"})
-    assert "sent to a@example.com" in result
-    with pytest.raises(ToolDenied, match="one of alerts"):
-        await tool.run(
-            context, {"account": "billing", "to": "a@example.com", "subject": "x", "body": "y"}
-        )
 
 
 def test_password_ref_resolves_from_secrets(tmp_path: Path) -> None:

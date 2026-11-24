@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import re
 import shutil
@@ -53,6 +54,7 @@ from evomesh.coordination import (
     WorkStatus,
     semantic_message,
 )
+from evomesh.datacollector import DataCollector, build_dc_tools
 from evomesh.events import Event, EventBus, EventType
 from evomesh.evolution import CandidateWorkspace, EnvironmentEvolver
 from evomesh.goal_manager import GoalManager, PreemptionPolicy
@@ -76,7 +78,8 @@ from evomesh.improvements import (
 )
 from evomesh.knowledge import build_knowledge_tools
 from evomesh.loop_watchdog import LoopWatchdog
-from evomesh.mailer import Mailer, build_send_email_tool
+from evomesh.mail_service import MailService, build_mail_tools
+from evomesh.mailer import Mailer
 from evomesh.manager import ManagerDesk, build_manager_tools
 from evomesh.mcp_client import McpManager
 from evomesh.memory import AgentMemory, MemoryBudget, WorldContext
@@ -160,6 +163,22 @@ class Environment:
             settings.email.accounts,
             audit_path=settings.data_path.parent / "email-audit.jsonl",
         )
+        # The operator's Data Collector (datacollector.py): a durable outbox
+        # in this database, synced by its own task. Off unless configured.
+        self.data_collector = DataCollector(settings.data_collector, self.repository)
+        self.data_collector.announce = self._announce_soon
+        self.data_collector.policy = self._dc_policy
+        self.data_collector.producers.append(self._produce_news)
+        # Reading mail, drafts and approvals (mail_service.py).
+        self.mail = MailService(
+            settings.email.accounts,
+            self.repository,
+            self.mailer,
+            announce=self._announce_soon,
+            collector=self.data_collector,
+            collector_policy=self._mail_export_policy,
+        )
+        self._announce_tasks: set[asyncio.Task[None]] = set()
         # The browser tool and EvoMesh's own automation Chrome (browser.py).
         self.browser = BrowserService(settings.browser, self.project_root)
         self.browser.on_pending = self._browser_waits
@@ -1044,10 +1063,62 @@ class Environment:
         self.evolver.provider = self.providers.get(default_name)
         self._start_harness_workers()
         await self.manager.start()
+        await self.mail.forget_removed_accounts()
+        unsettled = await self.mail.unsettled_report()
+        if unsettled:
+            # A send claimed before a crash is never resent on its own.
+            await self.announce("After the restart, check these by hand:\n" + unsettled)
+        self.mail.start()
+        self.data_collector.start()
         if start_agent_loops:
             await self.start_all()
         await self.refresh_world()
         self.health_state = HealthState.READY
+
+    def _announce_soon(self, text: str) -> None:
+        """announce() for synchronous callers (the mail and DC services)."""
+        try:
+            task = asyncio.get_running_loop().create_task(self.announce(text))
+        except RuntimeError:
+            return
+        self._announce_tasks.add(task)
+        task.add_done_callback(self._announce_tasks.discard)
+
+    def _mail_export_policy(self) -> tuple[list[str], list[str]]:
+        producers = self.settings.data_collector.producers
+        return list(producers.mail_metadata), [
+            name for name in producers.mail_bodies if name in producers.mail_metadata
+        ]
+
+    def _dc_policy(self, row: dict[str, object]) -> str:
+        """Checked again at delivery, not only when queued: an event whose
+        producer lost its grant, or a mail account the operator opted out,
+        is quarantined instead of sent."""
+        agent = str(row["agent_id"])
+        entity_type = str(row["entity_type"])
+        producers = self.settings.data_collector.producers
+        if agent == "mail-sync":
+            try:
+                account = str(json.loads(str(row["payload"]))["payload"]["account"])
+            except (ValueError, KeyError, TypeError):
+                return "mail event without an account"
+            if account not in producers.mail_metadata:
+                return f"account '{account}' is no longer opted in to mail export"
+            return ""
+        if agent == producers.news_agent and entity_type == "news_article" and producers.news:
+            return ""
+        definition = next((a for a in self.registry.all() if a.name == agent), None)
+        if definition is None:
+            return f"agent '{agent}' no longer exists"
+        grant = definition.data_collector
+        if grant is None or not grant.allows("write", entity_type):
+            return f"{agent} may no longer record {entity_type}"
+        return ""
+
+    async def _produce_news(self) -> None:
+        producers = self.settings.data_collector.producers
+        if producers.news:
+            await self.data_collector.import_news(self.project_root, producers.news_agent)
 
     def _reconcile(self, definition: AgentDefinition, seed: AgentDefinition | None) -> None:
         """Bring a persisted definition back to a state a boot can act on.
@@ -1146,6 +1217,8 @@ class Environment:
         # the same "actually terminate it" lesson as processes.py's timeout
         # fix, this time for MCP servers' own child processes/connections).
         await shutdown_step("closing MCP connections", self.mcp.shutdown())
+        await shutdown_step("stopping mail sync", self.mail.stop())
+        await shutdown_step("stopping the Data Collector sync", self.data_collector.stop())
         await shutdown_step("cancelling validation", self.evolver.cancel_validation())
         for runtime in list(self.runtimes.values()):
             await shutdown_step(
@@ -1428,6 +1501,12 @@ class Environment:
                         f"{agent.name} may send from email account '{name}', which is not "
                         "in email.accounts (/email revoke to drop it)"
                     )
+            for name in {*agent.mail_read, *agent.mail_manage}:
+                if name not in self.mailer.accounts:
+                    problems.append(
+                        f"{agent.name} may read email account '{name}', which is not "
+                        "in email.accounts (/email revoke to drop it)"
+                    )
             for name in agent.mcp or []:
                 if name not in servers:
                     problems.append(
@@ -1441,9 +1520,8 @@ class Environment:
         tools (ordinary agents, unless turned off) -- tools whose sandbox is
         the agent's own grant or directory, never the job root."""
         tools: list[Tool] = []
-        mail = build_send_email_tool(self.mailer, definition.email_accounts, definition.name)
-        if mail is not None:
-            tools.append(mail)
+        tools.extend(build_mail_tools(self.mail, definition))
+        tools.extend(build_dc_tools(self.data_collector, definition))
         browser = build_browser_tool(
             self.browser, definition, self.memory_for(definition).playground_path
         )

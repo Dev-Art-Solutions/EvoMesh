@@ -27,15 +27,21 @@ from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import formataddr, getaddresses, make_msgid
 from pathlib import Path
-from typing import Any
 
 from evomesh.config import EmailAccountSettings
 from evomesh.contracts import now_utc
-from evomesh.harness_tools import Tool, ToolDenied
 
 logger = logging.getLogger(__name__)
 
 HOUR = 3600.0
+
+
+class SendFailed(Exception):
+    """The SMTP server certainly did not accept the message."""
+
+
+class SendUncertain(Exception):
+    """The message may or may not have been accepted; never resend blindly."""
 
 
 class EmailRefused(Exception):
@@ -129,20 +135,34 @@ class Mailer:
             )
 
     def build(
-        self, name: str, to: list[str], subject: str, body: str
+        self,
+        name: str,
+        to: list[str],
+        subject: str,
+        body: str,
+        *,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        in_reply_to: str = "",
+        references: str = "",
+        message_id: str = "",
     ) -> tuple[EmailAccountSettings, EmailMessage]:
         account = self.accounts.get(name)
         if account is None:
             known = ", ".join(self.names()) or "none configured"
             raise EmailRefused(f"no email account '{name}' (accounts: {known})")
+        if not account.host or not account.from_address:
+            raise EmailRefused(f"account '{name}' has no SMTP host/from_address; it only reads")
+        cc, bcc = list(cc or []), list(bcc or [])
+        everyone = [*to, *cc, *bcc]
         if not to:
             raise EmailRefused("no recipient given")
-        if len(to) > account.max_recipients:
+        if len(everyone) > account.max_recipients:
             raise EmailRefused(
-                f"{len(to)} recipients, over this account's {account.max_recipients}"
+                f"{len(everyone)} recipients, over this account's {account.max_recipients}"
             )
         allowed = account.allowed_recipients
-        refused = [address for address in to if not recipient_allowed(address, allowed)]
+        refused = [address for address in everyone if not recipient_allowed(address, allowed)]
         if refused:
             raise EmailRefused(
                 f"account '{name}' may not mail {', '.join(refused)} "
@@ -156,8 +176,17 @@ class Mailer:
         message = EmailMessage()
         message["From"] = formataddr((account.from_name, account.from_address))
         message["To"] = ", ".join(to)
+        if cc:
+            message["Cc"] = ", ".join(cc)
+        if bcc:
+            message["Bcc"] = ", ".join(bcc)  # send_message delivers it and strips the header
         message["Subject"] = subject[:250]
-        message["Message-ID"] = make_msgid(domain=account.from_address.rpartition("@")[2] or None)
+        message["Message-ID"] = message_id or make_msgid(
+            domain=account.from_address.rpartition("@")[2] or None
+        )
+        for header, value in (("In-Reply-To", in_reply_to), ("References", references)):
+            if value and not any(ch in value for ch in "\r\n"):
+                message[header] = value
         message["X-Mailer"] = "EvoMesh"
         message.set_content(body)
         return account, message
@@ -191,6 +220,48 @@ class Mailer:
         logger.info("email: %s sent '%s' to %s via %s", agent, subject, recipients, name)
         return record
 
+    async def deliver_approved(
+        self, name: str, account: EmailAccountSettings, message: EmailMessage, *, agent: str
+    ) -> str:
+        """Hand one already-built, already-approved message to SMTP once.
+
+        Returns "sent". Raises SendFailed when the server certainly did not
+        take it (refused the connection, login, sender, every recipient, or
+        the data), and SendUncertain when it may have: a connection lost or
+        timed out after DATA began. An uncertain send is never retried here --
+        a duplicate to a customer is worse than a human checking the Sent
+        folder for its Message-ID."""
+        recipients = parse_recipients(
+            [message.get("To", ""), message.get("Cc", ""), message.get("Bcc", "")]
+        )
+        subject = str(message.get("Subject", ""))
+        self._sent.setdefault(name, deque()).append(time.monotonic())
+        try:
+            await asyncio.to_thread(self.deliver, account, message)
+        except (
+            smtplib.SMTPConnectError,
+            smtplib.SMTPAuthenticationError,
+            smtplib.SMTPHeloError,
+            smtplib.SMTPSenderRefused,
+            smtplib.SMTPRecipientsRefused,
+            smtplib.SMTPDataError,
+            smtplib.SMTPNotSupportedError,
+            ConnectionRefusedError,
+            ssl.SSLError,
+        ) as exc:
+            await self._audit(
+                SendRecord(_now(), agent, name, recipients, subject, "failed", str(exc))
+            )
+            raise SendFailed(f"{exc.__class__.__name__}: {exc}") from exc
+        except (smtplib.SMTPException, OSError) as exc:
+            await self._audit(
+                SendRecord(_now(), agent, name, recipients, subject, "uncertain", str(exc))
+            )
+            raise SendUncertain(f"{exc.__class__.__name__}: {exc}") from exc
+        await self._audit(SendRecord(_now(), agent, name, recipients, subject, "sent"))
+        logger.info("email: %s sent '%s' to %s via %s", agent, subject, recipients, name)
+        return "sent"
+
     async def _audit(self, record: SendRecord) -> None:
         self._recent.append(record)
         if self.audit_path is None:
@@ -210,47 +281,3 @@ class Mailer:
 
 def _now() -> str:
     return now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def build_send_email_tool(mailer: Mailer, accounts: list[str], agent: str) -> Tool | None:
-    """The ``send_email`` harness tool, limited to ``accounts`` that exist.
-    None when there are none -- the tool is then not offered at all."""
-    usable = [name for name in accounts if name in mailer.accounts]
-    if not usable:
-        return None
-
-    async def run(context: Any, args: dict[str, Any]) -> str:
-        del context
-        account = str(args.get("account") or (usable[0] if len(usable) == 1 else ""))
-        if account not in usable:
-            raise ToolDenied(f"DENIED: account must be one of {', '.join(usable)}")
-        try:
-            record = await mailer.send(
-                account,
-                args.get("to") or "",
-                str(args.get("subject") or ""),
-                str(args.get("body") or ""),
-                agent=agent,
-            )
-        except (EmailRefused, RuntimeError) as exc:
-            raise ToolDenied(f"DENIED: {exc}") from exc
-        return f"sent to {', '.join(record.to)} from '{account}'"
-
-    return Tool(
-        name="send_email",
-        description=(
-            "Send a plain-text email. Only when your goal or the human asks for an email; "
-            "never to an address you guessed."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "account": {"type": "string", "enum": usable},
-                "to": {"type": "string", "description": "Comma-separated addresses"},
-                "subject": {"type": "string"},
-                "body": {"type": "string"},
-            },
-            "required": ["to", "subject", "body"],
-        },
-        run=run,
-    )

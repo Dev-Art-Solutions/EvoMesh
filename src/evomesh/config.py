@@ -474,6 +474,90 @@ class GitSettings(BaseModel):
         return PublishPolicy(enabled=self.auto_push, remote=self.remote, branch=self.branch)
 
 
+class MailInboundSettings(BaseModel):
+    """Where an account's mail is read from. IMAP is the one to prefer: POP3
+    has no folders, flags or moves, so on POP3 the read tools work on the
+    inbox and the manage tools refuse rather than pretend."""
+
+    protocol: Literal["imap", "pop3"] = "imap"
+    host: str
+    # None: 993 (IMAP) / 995 (POP3) on ssl, 143 / 110 otherwise.
+    port: int | None = None
+    # ssl is implicit TLS; none is plaintext and only for a LAN server
+    # (an hMailServer on the same network), never the default.
+    security: Literal["ssl", "starttls", "none"] = "ssl"
+    username: str = ""
+    password: str = ""
+    # None: the SMTP account's own password (same mailbox, same secret).
+    password_ref: str | None = None
+    folders: list[str] = Field(default_factory=lambda: ["INBOX"])
+    archive_folder: str = "Archive"
+    # IMAP folder a copy of each sent message is filed in. Empty: none (Gmail
+    # files its own; hMailServer does not, so set "Sent" there).
+    sent_folder: str = ""
+    # 0: sync only on /email sync or when an agent searches.
+    sync_interval_seconds: float = 300
+    # How many of the newest messages the first sync of a folder fetches.
+    initial_messages: int = 200
+    # False keeps headers and a snippet only; bodies are fetched on mail_read.
+    store_bodies: bool = True
+    max_body_chars: int = 50000
+    timeout_seconds: float = 30
+
+    def resolved_port(self) -> int:
+        if self.port is not None:
+            return self.port
+        if self.protocol == "imap":
+            return 993 if self.security == "ssl" else 143
+        return 995 if self.security == "ssl" else 110
+
+
+class DataCollectorProducers(BaseModel):
+    """Deterministic producers -- code, not a model, decides what is recorded."""
+
+    # New articles seen by news_fetch's cache become news_article events.
+    news: bool = False
+    news_agent: str = "NewsWatcher"
+    # Accounts whose mail *metadata* (sender, subject, date, folder, flags)
+    # is exported. Off for every account unless listed (J4).
+    mail_metadata: list[str] = Field(default_factory=list)
+    # Accounts whose sanitized body excerpts are exported too. Must also be
+    # in mail_metadata. Restricted collection; off unless listed.
+    mail_bodies: list[str] = Field(default_factory=list)
+
+
+class DataCollectorSettings(BaseModel):
+    """The operator's own Data Collector. Lives in evomesh.yaml and
+    evomesh.secrets.yaml, both gitignored -- never in the repository."""
+
+    enabled: bool = False
+    # e.g. https://data.example.com/api/v1 -- the path the records API is under.
+    api_base_url: str = ""
+    workspace_id: str = ""
+    project_id: str = ""
+    # Key in evomesh.secrets.yaml holding a DC API key (sent as X-API-Key).
+    credential_ref: str | None = None
+    api_key: str = ""
+    verify_tls: bool = True
+    connect_timeout_seconds: float = 10
+    request_timeout_seconds: float = 30
+    # The receiver has POST /collections/{cid}/records/upsert-batch (contract
+    # v1, keyed by source_key). False: one create per event with an
+    # Idempotency-Key, which the receiver only remembers for 24 hours.
+    upsert_batch: bool = False
+    max_batch_records: int = 50
+    # Pending rows the outbox holds before record_event refuses new ones.
+    max_outbox_rows: int = 100_000
+    # entity_type -> collection id. An event whose type has no collection
+    # waits in the outbox as unroutable instead of being dropped.
+    collections: dict[str, str] = Field(default_factory=dict)
+    sync_interval_seconds: float = 30
+    max_attempts: int = 12
+    min_backoff_seconds: float = 5
+    max_backoff_seconds: float = 1800
+    producers: DataCollectorProducers = Field(default_factory=DataCollectorProducers)
+
+
 class EmailAccountSettings(BaseModel):
     """One SMTP account an agent may send from -- see mailer.py.
 
@@ -481,15 +565,23 @@ class EmailAccountSettings(BaseModel):
     key in evomesh.secrets.yaml, resolved by load_settings() the same way a
     provider's api_key_ref is."""
 
-    host: str
+    # SMTP. An empty host is an account that only reads (incoming below).
+    host: str = ""
     port: int = 587
     # starttls on 587, ssl (implicit TLS) on 465, none only for a local relay.
     security: Literal["starttls", "ssl", "none"] = "starttls"
     username: str = ""
     password: str = ""
     password_ref: str | None = None
-    from_address: str
+    from_address: str = ""
     from_name: str = ""
+    # Reading: IMAP (folders, flags, moves) or POP3 (inbox only). None: send-only.
+    incoming: MailInboundSettings | None = None
+    # Every send waits for a human's /email approve. Addresses or "@domain"
+    # here skip that for this account only -- for a transactional sender that
+    # mails the same few addresses, never for anything a model chose.
+    approval_exempt: list[str] = Field(default_factory=list)
+    max_per_day: int = 100
     # Empty means any recipient. Otherwise each entry is a full address or a
     # "@domain" -- a guard against a model mailing a stranger, not a spam
     # filter.
@@ -540,6 +632,7 @@ class Settings(BaseModel):
     # shell_allow already uses for its own allow-list.
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     email: EmailSettings = Field(default_factory=EmailSettings)
+    data_collector: DataCollectorSettings = Field(default_factory=DataCollectorSettings)
 
     def resolve(self, root: Path) -> Settings:
         clone = self.model_copy(deep=True)
@@ -583,16 +676,32 @@ def _resolve_api_key_refs(settings: Settings, root: Path) -> Settings:
         for name, account in settings.email.accounts.items()
         if account.password_ref
     ]
-    if not refs_used and not mail_refs:
+    inbound_refs = [
+        (name, account.incoming.password_ref)
+        for name, account in settings.email.accounts.items()
+        if account.incoming is not None and account.incoming.password_ref
+    ]
+    dc_ref = settings.data_collector.credential_ref
+    if not refs_used and not mail_refs and not inbound_refs and not dc_ref:
         return settings
     secrets = _load_secrets(root)
-    for name, ref in mail_refs:
+
+    def secret(where: str, ref: str) -> str:
         if ref not in secrets:
             raise ValueError(
-                f"email.accounts.{name}.password_ref '{ref}' is not in "
-                f"{root / SECRETS_FILENAME}. See {SECRETS_FILENAME}.example for the format."
+                f"{where} '{ref}' is not in {root / SECRETS_FILENAME}. "
+                f"See {SECRETS_FILENAME}.example for the format."
             )
-        settings.email.accounts[name].password = secrets[ref]
+        return secrets[ref]
+
+    for name, ref in mail_refs:
+        settings.email.accounts[name].password = secret(f"email.accounts.{name}.password_ref", ref)
+    for name, ref in inbound_refs:
+        incoming = settings.email.accounts[name].incoming
+        assert incoming is not None
+        incoming.password = secret(f"email.accounts.{name}.incoming.password_ref", ref)
+    if dc_ref:
+        settings.data_collector.api_key = secret("data_collector.credential_ref", dc_ref)
     for name, ref in refs_used:
         if ref not in secrets:
             secrets_path = root / SECRETS_FILENAME
@@ -615,4 +724,18 @@ def load_settings(path: Path | None = None) -> Settings:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     root = config_path.resolve().parent
     settings = Settings.model_validate(raw).resolve(root)
-    return _resolve_api_key_refs(settings, root)
+    return inherit_mail_credentials(_resolve_api_key_refs(settings, root))
+
+
+def inherit_mail_credentials(settings: Settings) -> Settings:
+    """Same mailbox, same secret: an incoming block with no password of its
+    own reads with the SMTP account's username and password."""
+    for account in settings.email.accounts.values():
+        incoming = account.incoming
+        if incoming is None:
+            continue
+        if not incoming.password:
+            incoming.password = account.password
+        if not incoming.username:
+            incoming.username = account.username or account.from_address
+    return settings

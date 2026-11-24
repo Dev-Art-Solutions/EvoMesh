@@ -22,8 +22,9 @@ from evomesh.capabilities import (
     render_grants,
     render_inventory,
 )
-from evomesh.contracts import AgentDefinition, BrowserGrant, McpServerConfig
+from evomesh.contracts import AgentDefinition, BrowserGrant, DataCollectorGrant, McpServerConfig
 from evomesh.knowledge import render_reports
+from evomesh.mail_client import MailError
 from evomesh.mailer import EmailRefused
 from evomesh.manager import coordinates
 from evomesh.mcp_client import MESH_WIDE, McpServerStatus, config_fingerprint
@@ -37,10 +38,22 @@ OPS_HELP = """  /reports [agent] [n]          Its last n reports as sent to you 
   /wiki search <agent> <text>   Search its pages
   /wiki lint <agent>            Health check: index drift (repaired), broken links, orphans
   /wiki log <agent>             What was ingested/written/linted, newest last
-  /email accounts               Configured SMTP accounts and which agents may use each
-  /email grant|revoke <agent> <account>  Let it send from that account (send_email tool)
+  /email accounts               Configured accounts and which agents may use each
+  /email status                 Each account's SMTP/IMAP/POP3 and when each folder last synced
+  /email grant|revoke <agent> <account> [send|read|manage]
+                                Default send; revoke with no level drops all
+  /email pending                Emails waiting for your approval (every send waits)
+  /email approve|deny <draft>   Send exactly that draft once, or refuse it
+  /email sync [account]         Fetch new mail now
   /email test <account> <to>    Send a test message through the account
+  /email test-in <account>      Log in to IMAP/POP3 and list what is there
   /email log [n]                Recent sends and refusals
+  /dc status                    Data Collector: target, outbox counts, last sync and error
+  /dc sync | pause | resume     Sync now, or hold and release the outbox
+  /dc dead [n]                  Events the collector refused (dead letters)
+  /dc retry <id|all> | cancel <id>  Resend dead letters, or drop one event
+  /dc grant <agent> write|read <type,...|*>  |  /dc revoke <agent>
+  /dc replay news [--dry-run]   Offer every cached news article again (duplicates are skipped)
   /mcp servers                  MCP servers: state, owners, last error, retry timer, config problems
   /mcp check [server]           Connect now (ignoring the retry delay) and report what it offers
   /mcp tools <server>           Connect and list a server's tools
@@ -198,25 +211,82 @@ class OperationsCommands:
                     f"    agents: {', '.join(users) or 'none'}"
                 )
             return "\n".join(rows)
+        mail = self.environment.mail
         if action in {"grant", "revoke"}:
-            if len(parts) != 4:
+            if len(parts) not in (4, 5):
                 return usage
             agent = self.environment.registry.get(parts[2])
             account_name = parts[3]
+            level = parts[4].lower() if len(parts) == 5 else ""
+            lists = {
+                "send": agent.email_accounts,
+                "read": agent.mail_read,
+                "manage": agent.mail_manage,
+            }
+            if level and level not in lists:
+                return usage
             if action == "grant":
-                if account_name not in mailer.accounts:
+                level = level or "send"
+                account = mailer.accounts.get(account_name)
+                if account is None:
                     known = ", ".join(mailer.names()) or "none"
                     return f"No email account '{account_name}'. Known: {known}."
-                if account_name not in agent.email_accounts:
-                    agent.email_accounts.append(account_name)
+                if level in ("read", "manage") and account.incoming is None:
+                    return f"'{account_name}' has no incoming: block; there is nothing to read."
+                if level == "manage" and account_name not in agent.mail_read:
+                    agent.mail_read.append(account_name)
+                if account_name not in lists[level]:
+                    lists[level].append(account_name)
                 await self.environment.repository.save_agent(agent)
-                return f"{agent.name} may now send email from '{account_name}'."
-            if account_name in agent.email_accounts:
-                agent.email_accounts.remove(account_name)
-                await self.environment.repository.save_agent(agent)
-                return f"{agent.name} may no longer send from '{account_name}'."
-            return f"{agent.name} did not have '{account_name}'."
+                return f"{agent.name} may now {level} '{account_name}'."
+            dropped = [
+                name
+                for name, values in lists.items()
+                if (not level or name == level) and account_name in values
+            ]
+            for name in dropped:
+                lists[name].remove(account_name)
+            if level == "read" and account_name in agent.mail_manage:
+                agent.mail_manage.remove(account_name)
+                dropped.append("manage")
+            if not dropped:
+                return f"{agent.name} had no {level or 'access'} to '{account_name}'."
+            await self.environment.repository.save_agent(agent)
+            return f"{agent.name} may no longer {', '.join(dropped)} '{account_name}'."
+        if action == "status":
+            return await mail.status_text()
+        if action == "pending":
+            return await mail.pending_text()
+        if action in {"approve", "deny"}:
+            if len(parts) != 3:
+                return usage
+            try:
+                if action == "approve":
+                    return await mail.approve(parts[2])
+                return await mail.deny(parts[2])
+            except MailError as exc:
+                return f"Not sent: {exc}"
+        if action == "sync":
+            names = [parts[2]] if len(parts) > 2 else mail.readable()
+            if not names:
+                return "No account has an incoming: block."
+            results = []
+            for name in names:
+                try:
+                    results.append(await mail.sync(name))
+                except MailError as exc:
+                    results.append(f"{name}: {exc}")
+            return "\n".join(results)
+        if action == "test-in":
+            if len(parts) != 3:
+                return usage
+            try:
+                return await mail.test_incoming(parts[2])
+            except MailError as exc:
+                return f"Failed: {exc}"
         if action == "test":
+            # A human typed the address, so this is the one send that does
+            # not wait for approval -- the typing was the approval.
             if len(parts) != 4:
                 return usage
             try:
@@ -241,6 +311,63 @@ class OperationsCommands:
                 + (f" ({record.detail})" if record.detail else "")
                 for record in records
             )
+        return usage
+
+    # -- data collector -------------------------------------------------
+
+    async def _command_dc(self, parts: list[str]) -> str:
+        usage = (
+            "Usage: /dc status | sync | pause | resume | dead [n] | retry <id|all> | "
+            "cancel <id> | grant <agent> write|read <types> | revoke <agent> | "
+            "replay news [--dry-run]"
+        )
+        collector = self.environment.data_collector
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        if action == "status":
+            return await collector.status_text()
+        if action == "sync":
+            for produce in collector.producers:
+                await produce()
+            return "Sync: " + (await collector.sync_once()).line()
+        if action in {"pause", "resume"}:
+            collector.paused = action == "pause"
+            if not collector.paused:
+                collector.wake()
+            state = "paused; events still queue" if collector.paused else "resumed"
+            return f"Data Collector sync {state}."
+        if action == "dead":
+            limit = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 10
+            return await collector.dead_text(limit)
+        if action == "retry" and len(parts) == 3:
+            return f"Requeued {await collector.requeue(parts[2])} dead letter(s)."
+        if action == "cancel" and len(parts) == 3:
+            return f"Cancelled {await collector.cancel(parts[2])} event(s)."
+        if action == "grant" and len(parts) == 5 and parts[3].lower() in {"write", "read"}:
+            agent = self.environment.registry.get(parts[2])
+            grant = agent.data_collector or DataCollectorGrant()
+            listed = grant.write if parts[3].lower() == "write" else grant.read
+            for kind in (item.strip() for item in parts[4].split(",")):
+                if kind and kind not in listed:
+                    listed.append(kind)
+            agent.data_collector = grant
+            await self.environment.repository.save_agent(agent)
+            return f"{agent.name} may {parts[3].lower()} {', '.join(listed)} in the Data Collector."
+        if action == "revoke" and len(parts) == 3:
+            agent = self.environment.registry.get(parts[2])
+            agent.data_collector = None
+            await self.environment.repository.save_agent(agent)
+            return (
+                f"{agent.name} has no Data Collector access; its queued events will be quarantined."
+            )
+        if action == "replay" and len(parts) >= 3 and parts[2].lower() == "news":
+            dry_run = "--dry-run" in parts
+            agent = self.environment.settings.data_collector.producers.news_agent
+            new, held = await collector.import_news(
+                self.environment.project_root, agent, dry_run=dry_run, replay=True
+            )
+            if dry_run:
+                return f"Dry run: {new} cached article(s) would be offered; nothing queued."
+            return f"Queued {new} article(s); {held} were already in the outbox."
         return usage
 
     # -- mcp --------------------------------------------------------------
