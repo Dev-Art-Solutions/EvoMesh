@@ -374,7 +374,7 @@ internal sealed class EvoMeshYamlSettings
                     case "api_base_url": result.DataCollector.ApiBaseUrl = value; break;
                     case "workspace_id": result.DataCollector.WorkspaceId = value; break;
                     case "project_id": result.DataCollector.ProjectId = value; break;
-                    case "credential_ref": result.DataCollector.CredentialRef = value; break;
+                    case "credential_ref": result.DataCollector.CredentialRef = value is "null" or "~" ? "" : value; break;
                     case "verify_tls": result.DataCollector.VerifyTls = ParseBool(value, true); break;
                 }
             }

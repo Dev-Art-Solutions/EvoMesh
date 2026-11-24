@@ -129,6 +129,30 @@ agents with `python` safe; see §4.
 
 The PR matrix in §5 stands, minus 01/08/09 (handed off), with 05 reading IMAP **and** POP3.
 
+## 6a. What shipped in 0.10.0-alpha.1 (2026-11-24)
+
+| PR | Status | Where |
+|---|---|---|
+| 00b control token | done | `control.py`, all port clients |
+| 02 DC client + outbox | done | `datacollector.py`, migration 3, `/dc` |
+| 03 skill, tools, news producer | done | `skills/data-collector`, `dc_record_event`/`dc_query`, `producers.news` |
+| 04 LeadCollector sync | done, in that repo | `apps/api/src/modules/datacollector`, LC migration 2 |
+| 05 IMAP/POP3 + store | done | `mail_client.py`, `mail_service.py`, migration 4 |
+| 06 tools, drafts, approval | done | `mail_service.py` (rule 25) |
+| 07 template + UI | done | `agent-templates/mail-assistant`, Control Center Email tab + DC settings |
+| 10 mail metadata export | done (opt-in per account) | `producers.mail_metadata` / `mail_bodies` |
+| 11 backup, schema guard, durable caps, crash report | done | `backup.py`, `storage.initialize`, `MailService.unsettled_report` |
+| 01/08/09 receiver, aggregation, MCP | **handed off (D-3)** | the contract doc says what the receiver needs |
+| 12 v1.0.0-rc.1 | **not tagged** | the gates below are not met |
+
+**Not established.** These were tested only against fakes, never against the real thing:
+- No live Gmail or hMailServer account. IMAP/POP3 ran against in-process fake sessions; SMTP ran a real socket round trip to a local fake server.
+- No live Data Collector. The DC tests use an HTTP mock transport.
+- No ChatGPT MCP aggregate (J5), because that is the receiver's work.
+- No restore onto a clean Windows install (J6). The restore was rehearsed into a fresh directory in tests.
+
+Each of these is a v1.0 RC gate, which is why the release is `0.10.0-alpha.1` and not `v1.0.0-rc.1`. Smaller items still open: `mail_download_attachment` is not built (attachments are listed, never fetched); the CI packaging step still labels its smoke archive `v0.1.0-alpha.1`; the DC receiver dedupes only by `Idempotency-Key` for 24 h until it ships `upsert-batch`.
+
 ## 7. Non-goals of v1 (from the plan, confirmed)
 
 HA, compliance certification, automated bulk outreach to collected leads, Marketing Audit rendering (M4 keeps only its schema), merging repositories, enabling trading or self-evolution promotion by default.

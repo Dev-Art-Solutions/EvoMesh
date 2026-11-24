@@ -99,7 +99,7 @@ Most agent systems treat agents as prompts around API calls. EvoMesh treats them
 
 ## Current status
 
-Version 0.9.0-alpha.1 makes the Manager something you can live with on Telegram: separate messages, repeats on a clock that survive restarts, "stop" and "stop 2" and "stop the news", one numbered list of what it runs, no approval for what you asked for, and goals that say who asked for them -- all of it available to any agent with `/coordination <agent> on`. Before that, 0.8.0-alpha.1 added the Manager: one agent to talk to, which finds the agent that owns a request, gets the answer or hands over the work, follows it and reports back, and runs EvoMesh's commands with your approval for anything that changes the mesh. It also lets an agent ask its own model what a screenshot shows, and finds EvoMesh's Chrome again when the checkout's path has a space in it. Before that, 0.7.0-alpha.1 gave agents a browser they can drive: EvoMesh's own Chrome on a dedicated profile, structured actions over deterministic element targeting, compact snapshots and screenshots, behind per-agent grants and a human confirmation for anything sensitive. Before that, 0.6.0-alpha.1 made capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
+Version 0.10.0-alpha.1 adds multi-account mail (IMAP and POP3 reading, drafts, replies, and every send waiting for your approval), a durable outbox to your own Data Collector, backup and restore, and a control port that answers only clients holding its token. Before that, 0.9.0-alpha.1 made the Manager something you can live with on Telegram: separate messages, repeats on a clock that survive restarts, "stop" and "stop 2" and "stop the news", one numbered list of what it runs, no approval for what you asked for, and goals that say who asked for them -- all of it available to any agent with `/coordination <agent> on`. Before that, 0.8.0-alpha.1 added the Manager: one agent to talk to, which finds the agent that owns a request, gets the answer or hands over the work, follows it and reports back, and runs EvoMesh's commands with your approval for anything that changes the mesh. It also lets an agent ask its own model what a screenshot shows, and finds EvoMesh's Chrome again when the checkout's path has a space in it. Before that, 0.7.0-alpha.1 gave agents a browser they can drive: EvoMesh's own Chrome on a dedicated profile, structured actions over deterministic element targeting, compact snapshots and screenshots, behind per-agent grants and a human confirmation for anything sensitive. Before that, 0.6.0-alpha.1 made capabilities visible and safe to change: `/capabilities` says which tools, skills and MCP servers a job can actually use and why the rest cannot be used, a tool copied onto disk is live after `/tool refresh`, an install is staged and validated before it replaces anything and can be rolled back, and two different MCP servers under one name no longer share a connection. Before that, 0.5.0-alpha.1 made agents reach further and refuse less: the harness's shell runs the `&&`/`|` scripts a model actually writes (lessons from OpenAI's Codex CLI), the Crawler falls back through eight ways to fetch a page, and agents keep a knowledge wiki and a report journal, send email and use MCP servers. Before that, 0.4.0-alpha.1 closed the core architecture: typed procedures with a durable journal for work the mesh already knows, an evidence-backed backlog whose improvements are measured after deploy, and an Idea Scout that is the only way into that backlog besides a human's own hand -- every idea waits for a human's approval, a thumbs-up on Telegram included. Before that, 0.2.0-alpha.1 was an early runnable foundation. Implemented: the console and Windows Control Center, SQLite persistence, asynchronous messaging, system-agent bootstrap, a goal-driven execution cycle for every agent with an independent per-goal cadence and opt-in progress/completion announcements, file-backed agent memory with a per-agent playground for harness jobs, budgeted prompts for small local models, a one-shot Agent Architect, BDI cognition with belief revision and reconsideration, local model adapters, filesystem grants, built-in skills and declarative custom tools, isolated candidate workspaces, an autonomous evolution pipeline with self-repair, generations committed and pushed under the mesh's own identity, restart-into-a-generation, Telegram as a second console, and a coding harness whose tools read, search, edit and write inside a job root, run by a worker off the cycle. The Evolver authors each generation through that harness, so a generation can change more than one file. Experimental: model-authored generations and manual promotion. Planned: transcript compaction, a shell tool, stronger OS sandboxing, and autonomous promotion policies.
 
 ## Core ideas and architecture
 
@@ -570,11 +570,50 @@ The old `chrome-browser` custom tool connected to the bridge directly, with no g
 
 ## Email
 
-Agents can send plain-text email through named SMTP accounts under `email.accounts` in `evomesh.yaml` — as many as you like, passwords by `password_ref` into `evomesh.secrets.yaml`. An agent sends from **none** of them until granted: `/email grant <agent> <account>`, or `email: [alerts]` in its AGENT.md. Only then is the `send_email` tool offered, limited to its accounts. Each account has an optional recipient allow-list (addresses or `@domain`), a per-hour limit shared by every agent using it, and a recipient cap. Every attempt, sent or refused, is appended to `data/email-audit.jsonl`.
+Each account under `email.accounts` in `evomesh.yaml` can send (SMTP), read (an `incoming:` block, IMAP or POP3), or both. Use as many accounts as you like, Gmail and your own hMailServer side by side. Passwords go by `password_ref` into `evomesh.secrets.yaml`; an `incoming:` block without its own ref reads with the SMTP password. See `evomesh.yaml.example` for both.
+
+An agent can do nothing with any account until a human grants it, per account and per level:
 
 ```text
-/email accounts   /email grant|revoke <agent> <account>   /email test <account> <to>   /email log [n]
+/email grant <agent> <account> read      mail_search, mail_read, mail_get_thread
+/email grant <agent> <account> send      mail_draft, mail_reply, mail_send_draft, send_email
+/email grant <agent> <account> manage    mail_manage: read/unread, flag, move, archive (never delete)
+/email revoke <agent> <account> [level]
 ```
+
+**Every send waits for you.** `mail_send_draft` and `send_email` put the exact draft in `/email pending`, in the Control Center's Email tab and on Telegram. `/email approve <id>` sends that content once; `/email deny <id>` drops it. Editing a draft after the request cancels the request. The Manager can never approve, even under `/manager trust on`. Recipients listed in an account's `approval_exempt` skip the wait, for that account only.
+
+If the SMTP connection drops in the middle of a send, the email is marked *uncertain* and is never sent again on its own. The same happens to a send interrupted by a crash, which is reported after the restart. Check the Sent folder for its Message-ID. The hourly and daily caps are counted from the database, so a restart does not reset them.
+
+IMAP keeps folders, flags and UIDVALIDITY; a server that renumbers a folder gets its cache rebuilt. POP3 reads the inbox only and never deletes anything on the server; `mail_manage` refuses on a POP3 account. Mail text reaches a model wrapped in an *untrusted content* marker; the `mail-assistant` template has no shell, so a message that talks it into writing a script finds nothing to run it with.
+
+```text
+/email status   /email pending   /email approve|deny <id>   /email sync [account]
+/email test <account> <to>   /email test-in <account>   /email log [n]
+```
+
+## Data Collector
+
+`data_collector:` in `evomesh.yaml` points the mesh at your own Data Collector; the key goes in `evomesh.secrets.yaml` by `credential_ref`. Both files are gitignored, and the Control Center's Settings tab edits them. Off by default.
+
+Agents never hold the key. `/dc grant <agent> write business,contact` gives an agent `dc_record_event` for those entity types; `read` gives `dc_query`. An event goes into a local SQLite outbox before the tool answers, so nothing is lost while the collector is offline. A sync task delivers it at least once, with backoff, `Retry-After` and dead letters. Each event carries a stable `source_key` and its own `Idempotency-Key`, and grants are checked again at delivery: an agent whose grant was revoked, or a mail account no longer opted in, has its queued events quarantined instead of sent.
+
+`producers.news: true` exports each new article in the news cache once, keyed by its canonical URL. `producers.mail_metadata` (and `mail_bodies`) export mail per account only if you list it. See `docs/integrations/data-collector-contract.md` for the envelope and what the receiver has to do.
+
+```text
+/dc status   /dc sync   /dc pause|resume   /dc dead [n]   /dc retry <id|all>   /dc cancel <id>
+/dc grant <agent> write|read <types>   /dc revoke <agent>   /dc replay news [--dry-run]
+```
+
+## Backup and restore
+
+```text
+python -m evomesh.backup create [--include-secrets] [--include-browser-profile]
+python -m evomesh.backup verify backups\evomesh-20261124-101500.zip
+python -m evomesh.backup restore backups\evomesh-20261124-101500.zip --target D:\EvoMesh-restore
+```
+
+A backup is a zip holding a consistent copy of the database (safe while the mesh runs), `data/`, `workspace/`, `skills/`, `tools/`, `agent-templates/`, `evomesh.yaml`, and a manifest with every file's SHA-256 and the database's schema version. Secrets are included only on request, encrypted with Windows DPAPI for your user. The browser profile, which holds signed-in sessions, is left out unless asked for. A restore goes into a directory of its own: it refuses one that already has a database, unless you pass `--overwrite`, and it refuses a directory a running mesh holds. A database written by a newer EvoMesh is refused at startup, and the old database is copied to `data/backups/` before a migration.
 
 ## Filesystem access grants
 
@@ -875,7 +914,7 @@ Near-term milestones include richer mutation application, more capable long-term
 
 ## Security / experimental status
 
-EvoMesh executes local model output and is designed to modify candidate code. Treat it as experimental. Filesystem policies are enforced inside EvoMesh but are not a hardened sandbox. Review candidates before promotion, use least-privilege grants, keep backups, and never expose local model endpoints or EvoMesh state to untrusted networks without additional controls.
+EvoMesh executes local model output and is designed to modify candidate code. Treat it as experimental. The control port takes commands only with the token in `.runtime/control.token`, which keeps web pages and other Windows users out; it does not keep out code your own account runs, and an agent with `python` in `harness.shell_allow` is exactly that. Give agents that read mail or web pages `shell: false`. Filesystem policies are enforced inside EvoMesh but are not a hardened sandbox. Review candidates before promotion, use least-privilege grants, keep backups, and never expose local model endpoints or EvoMesh state to untrusted networks without additional controls.
 
 ## Contributing
 

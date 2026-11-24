@@ -4,11 +4,33 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0-alpha.1] - 2026-11-24
+
+Mail an agent can read, a Data Collector it can feed, and a backup you can restore. The plan behind it is `docs/release/v1-readiness-audit.md`.
+
+### Added
+
+- **Reading mail, from as many accounts as you have.** An account's new `incoming:` block reads over IMAP (folders, flags, moves) or POP3 (inbox only, nothing ever deleted on the server), with the same password as its SMTP side unless it names its own. Gmail and hMailServer are both in `evomesh.yaml.example`. New mail is kept in the database. A folder the server renumbers (UIDVALIDITY) is rebuilt instead of duplicated, and a message removed elsewhere disappears here too.
+- **Mail tools behind three grants per account.** `read` (`mail_search`, `mail_read`, `mail_get_thread`), `send` (`mail_draft`, `mail_reply` with correct In-Reply-To/References, `mail_send_draft`, `send_email`) and `manage` (`mail_manage`: read, flag, move, archive; there is no delete). `/email grant <agent> <account> read|send|manage`.
+- **The `mail-assistant` template**, reactive and with no access until granted, and the `email-workflow` and `data-collector` skills.
+- **A Data Collector outbox.** `data_collector:` in `evomesh.yaml` (key by `credential_ref`), `/dc grant <agent> write|read <types>`, and the `dc_record_event`/`dc_query` tools. Events are stored locally before the tool answers and delivered at least once, with backoff, `Retry-After`, dead letters (`/dc dead`, `/dc retry`) and per-item handling of a 207. Grants are checked again at delivery, so a revoked agent's queued events are quarantined, not sent. `producers.news` exports each new cached article once, keyed by its canonical URL. Mail export is per account and off unless listed.
+- **The Control Center** has an Email tab (accounts, the approval queue, approve and deny) and a Data Collector section in Settings that writes the key only to `evomesh.secrets.yaml`.
+- **`python -m evomesh.backup create|verify|restore`.** A checksummed zip of the database (consistent while the mesh runs), workspace, skills, tools, templates and config. Secrets are included only on request, DPAPI-encrypted for your Windows user. A restore goes only into a directory of its own unless `--overwrite`.
+- **`shell: false` per agent.** Its harness jobs get no shell whatever `harness.shell_allow` says. The mail template uses it.
+
+### Changed
+
+- **Every email waits for a human.** `send_email` used to send the moment a granted agent called it. Now it, like `mail_send_draft`, queues the exact draft for `/email approve <id>`, which sends that content once. Editing the draft cancels the request. The Manager may never approve. `approval_exempt` lists recipients that skip the wait for one account. An agent that relied on `send_email` going straight out now gets "waiting for approval" back.
+- **An SMTP send that may or may not have happened is never retried.** It is marked uncertain and announced with its Message-ID, including after a crash mid-send. The hourly cap is now counted from the database and survives a restart, and there is a daily cap (`max_per_day`, 100).
+- **The database refuses to be opened by an older EvoMesh** than the one that last migrated it, and is copied to `data/backups/` before a migration runs.
+
 ### Security
 
 - **A web page could command the mesh.** The control port ran every line that parsed as JSON, and it answered and skipped every line that did not. A `fetch()` from any page to `127.0.0.1:8765` therefore worked: the HTTP request line and headers were skipped one by one, and the body ran as a console command (`/exit`, `/email grant`, `/manager trust on`). Now a line that is not a JSON object ends the connection. Every command except `/ping` must also carry the token the mesh writes to `.runtime/control.token` at each start; on Windows only the current user can read that file. The Control Center, `evomesh-service`, `install-services.ps1`, `python -m evomesh.mcp_server` and the Crawler's `crawl_schedule` tool all send it. A script of your own that talks to the port must read that file and add `"token"` to each request.
 
 ### Fixed
+
+- A test passed an install path with a space unquoted; on a checkout under `Dev-art solutions` it failed locally while CI, with no space, stayed green.
 
 Found in a real evening of asking the Manager for "the 20 latest headlines in Bulgarian, as a PDF":
 

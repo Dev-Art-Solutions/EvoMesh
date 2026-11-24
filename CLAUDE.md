@@ -52,14 +52,18 @@ generations/     supervisor metadata and candidate workspaces (ignored)
 | `architect.py` | the one-shot Agent Architect |
 | `skills.py`, `permissions.py` | skill discovery (see rule 19) and path grants (application-level, not an OS sandbox) |
 | `knowledge.py` | per-agent wiki (Karpathy's raw → pages → index/log; lint is code) and `reports.md`, the journal `/reports` reads |
-| `mailer.py` | SMTP accounts → `send_email`, only for agents granted an account; rate limit, allow-list, audit file |
+| `mailer.py` | SMTP: building a message (refusals, allow-list, threading headers) and delivering it, classified `SendFailed` vs `SendUncertain`; audit file. The tools that ask to send live in `mail_service.py` |
 | `mcp_client.py` | MCP servers as tool sources; per-agent access mirrors `tools` (system agents: none by default). Connections are keyed by the whole config (`config_fingerprint`), never the name alone |
 | `bundles.py` | staged, reversible replacement of a `tools/<name>` or `skills/<name>` directory: copy to `.runtime/capabilities/staging`, validate, swap by rename, keep the replaced one in `previous/`. Every install goes through it; never `rmtree` an installed bundle |
 | `browser.py` | the `browser` tool and EvoMesh's own Chrome: discovery, the owned-process lifecycle (found and stopped by its `--user-data-dir`, never by name), bridge discovery by token, grants, the sensitive-action confirmation. **The boundary lives here, in the mesh process** -- never move a check into the extension or a subprocess |
 | `browser_bridge.py` | the native-messaging host Chrome starts; loopback, free port, per-start token, registered with the Chrome pid that spawned it. `browser-extension/page_agent.js` is the closed set of page operations -- add an action there and in `browser.py`'s sets, never an "evaluate" |
 | `manager.py` | coordination tools (`mesh_agents`, `assign_task`, `task_status`, `repeat`, `stop`, `message_human`) for any agent with `coordination` (default: managers), plus `mesh_command` for an agent with `manager` set, and `ManagerDesk`, which follows handed-out goals and holds commands waiting on `/manager approve`. **Which command reads and which changes the mesh is the `READ_ONLY` table, never the model** -- a new console command needs approval until it is added there |
 | `capabilities.py` | `/capabilities`: a read-only view over the three registries (state, missing dependencies, legacy grants). **Not a registry** — never cache or install anything here |
-| `ops_commands.py` | `/reports`, `/wiki`, `/email`, `/mcp` — a ConsoleChannel mixin, so console.py stays readable |
+| `ops_commands.py` | `/reports`, `/wiki`, `/email`, `/dc`, `/mcp` — a ConsoleChannel mixin, so console.py stays readable |
+| `mail_client.py` | blocking IMAP/POP3 sessions and MIME parsing (stdlib only); always called through `asyncio.to_thread` |
+| `mail_service.py` | mail sync into SQLite, search, drafts, **approval** (rule 25), the mail tools per grant |
+| `datacollector.py` | the Data Collector outbox, its sync lane and the `dc_*` tools (rule 26); envelope = docs/integrations/data-collector-contract.md |
+| `backup.py` | `python -m evomesh.backup` -- an entry point, not imported by the mesh |
 
 ## Build / test / run
 
@@ -439,6 +443,27 @@ regresses.
     `apply_patch` applies it to the new candidate instead of a harness job -- then it is
     validated and reviewed on the tree as it now stands like any change. A patch that no
     longer applies (`git apply --check`) falls back to an ordinary job.
+
+25. **An email goes out on a human's word, once.** Owner decision 2026-11-24 (D-1). Every send,
+    `send_email` included, is a `Draft` that becomes `pending` with a digest of exactly what would
+    go out; `/email approve` claims it `pending -> sending` by compare-and-swap
+    (`draft_claim`), so two approvals cannot send twice, and an edit puts it back to `draft`. The
+    Message-ID is written before SMTP sees the message, and a send that may have happened
+    (`SendUncertain`: the connection lost after DATA began, or a crash between claim and outcome)
+    is marked `uncertain` and **never retried** -- a duplicate to a customer is worse than a human
+    checking the Sent folder. `manager.FORBIDDEN_ACTIONS` keeps the Manager from approving even
+    under `/manager trust on`: a mail body it read could otherwise talk it into approving its own
+    draft. Considered and rejected: approval by a model judging "is this send safe". Mail text is
+    exactly the input that judgement would be steered by.
+26. **The Data Collector outbox is written before the tool answers, and checked again at
+    delivery.** `dc_record_event` inserts into `dc_outbox` and only then says "queued"; nothing
+    leaves the table except an acknowledgement or a human's cancel -- a full outbox refuses new
+    events rather than dropping old ones. Delivery is at-least-once; identity is the event's
+    `source_key` (stable, never a time) plus an `Idempotency-Key` per event, because the receiver
+    at the time of writing dedupes only by that key, and only for 24 hours (see the contract doc
+    before relying on more). `Environment._dc_policy` re-checks the producer's grant and the mail
+    export opt-in for every row at delivery, so revoking quarantines what is already queued. The
+    agent id, hashes and timestamps are filled in by trusted code; a tool argument cannot set them.
 
 ## How a generation is authored
 

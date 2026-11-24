@@ -465,7 +465,7 @@ async def test_an_old_database_migrates_idempotently_and_keeps_its_data(tmp_path
     with sqlite3.connect(path) as db:
         versions = [row[0] for row in db.execute("SELECT version FROM schema_version")]
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3, 4]
     assert {"procedure_definitions", "procedure_executions", "procedure_traces"} <= tables
     assert [item.name for item in await repository.load_agents()] == ["Veteran"]
 
