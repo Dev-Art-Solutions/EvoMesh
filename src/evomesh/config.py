@@ -545,6 +545,11 @@ class DataCollectorSettings(BaseModel):
     # v1, keyed by source_key). False: one create per event with an
     # Idempotency-Key, which the receiver only remembers for 24 hours.
     upsert_batch: bool = False
+    # Without upsert-batch: POST /collections/{cid}/records/batch, many records
+    # in one write. The collector limits writes per key (30 a minute by
+    # default), so one-per-request cannot keep up with a busy producer. The
+    # batch inserts unconditionally: a lost response can leave a duplicate.
+    plain_batch: bool = False
     max_batch_records: int = 50
     # Pending rows the outbox holds before record_event refuses new ones.
     max_outbox_rows: int = 100_000

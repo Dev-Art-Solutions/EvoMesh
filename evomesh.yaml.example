@@ -444,6 +444,8 @@ data_collector:
 #  credential_ref: data_collector_ingest   # a key in evomesh.secrets.yaml (X-API-Key)
 #  verify_tls: true
 #  upsert_batch: false      # true once the collector has /records/upsert-batch
+#  plain_batch: false       # without upsert-batch: POST /records/batch, many records per write
+#  max_batch_records: 50    # up to 500 per batch request
 #  collections:             # entity_type -> collection id
 #    news_article: col_news
 #    business: col_business

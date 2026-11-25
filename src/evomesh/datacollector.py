@@ -338,11 +338,19 @@ class DataCollector:
                         chunk = batch[start : start + self.settings.max_batch_records]
                         if self.settings.upsert_batch:
                             await self._send_batch(client, collection, chunk, report)
+                        elif self.settings.plain_batch:
+                            if not await self._send_plain_batch(client, collection, chunk, report):
+                                # Out of write budget: every further request
+                                # this round would be refused the same way.
+                                return self._finish(report)
                         else:
                             for row in chunk:
                                 await self._send_one(client, collection, row, report)
                         if report.error.startswith("credential"):
                             break
+        return self._finish(report)
+
+    def _finish(self, report: SyncReport) -> SyncReport:
         self.last_sync_at = _now_iso()
         self.last_error = report.error
         return report
@@ -419,6 +427,46 @@ class DataCollector:
                 await self._dead(
                     row, f"{item.get('code', 'error')}: {item.get('message', '')}", report
                 )
+
+    async def _send_plain_batch(
+        self,
+        client: httpx.AsyncClient,
+        collection: str,
+        rows: list[dict[str, object]],
+        report: SyncReport,
+    ) -> bool:
+        """POST /records/batch: many flat records in one write, settled one by
+        one from the per-item answer. False when the round should stop."""
+        items = [flat_record(json.loads(str(row["payload"]))) for row in rows]
+        try:
+            response = await client.post(
+                f"collections/{collection}/records/batch", json={"items": items}
+            )
+        except httpx.HTTPError as exc:
+            for row in rows:
+                await self._retry(row, f"network: {exc.__class__.__name__}: {exc}", None, report)
+            return True
+        if response.status_code not in (200, 201, 207):
+            for row in rows:
+                await self._settle(row, response, report)
+            return not (response.status_code == 429 or response.status_code >= 500)
+        try:
+            results = {int(item["index"]): item for item in response.json().get("items", [])}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            for row in rows:
+                await self._retry(
+                    row, "receiver answered a batch with no per-item results", None, report
+                )
+            return True
+        for index, row in enumerate(rows):
+            item = results.get(index)
+            if item is None:
+                await self._retry(row, "no result for this item in the batch answer", None, report)
+            elif item.get("status") == "created":
+                await self._ack(row, f"created:{item.get('id', '')}", report)
+            else:
+                await self._dead(row, f"rejected: {item.get('error', item.get('status'))}", report)
+        return True
 
     async def _settle(
         self, row: dict[str, object], response: httpx.Response, report: SyncReport
@@ -510,6 +558,8 @@ class DataCollector:
             + (
                 "upsert-batch by source_key"
                 if s.upsert_batch
+                else f"records/batch, up to {s.max_batch_records} per write"
+                if s.plain_batch
                 else "one create per event with Idempotency-Key (24 h)"
             ),
             f"  outbox: {shown}",

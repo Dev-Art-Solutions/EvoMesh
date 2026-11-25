@@ -52,6 +52,8 @@ class Receiver:
         self.mode = "ok"
         self.batch_plan: list[dict[str, Any]] | None = None
         self.keys: list[str] = []
+        self.batches: list[list[dict[str, Any]]] = []
+        self.reject: set[int] = set()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
@@ -62,7 +64,18 @@ class Receiver:
             return httpx.Response(503, headers={"Retry-After": "2"})
         if self.mode == "401":
             return httpx.Response(401, json={"error": "bad key"})
+        if self.mode == "429":
+            return httpx.Response(429, headers={"Retry-After": "60"})
         body = json.loads(request.content)
+        if request.url.path.endswith("/records/batch"):
+            self.batches.append(body["items"])
+            items = [
+                {"index": i, "status": "error", "error": "schema"}
+                if i in self.reject
+                else {"index": i, "status": "created", "id": f"b-{i}"}
+                for i in range(len(body["items"]))
+            ]
+            return httpx.Response(207 if self.reject else 201, json={"items": items})
         if request.url.path.endswith("/upsert-batch"):
             assert self.batch_plan is not None
             return httpx.Response(207, json={"results": self.batch_plan})
@@ -366,3 +379,35 @@ def test_a_filter_on_the_envelope_addresses_the_flat_record() -> None:
             {"field": "dc_event.observed_at", "op": "gte", "value": "2026-11-01"},
         ]
     }
+
+
+async def test_plain_batch_sends_one_write_and_settles_each_item(
+    repository: SQLiteRepository,
+) -> None:
+    receiver = Receiver()
+    receiver.reject = {1}
+    dc = collector(repository, receiver, plain_batch=True, max_batch_records=10)
+    for n in range(4):
+        await dc.record(article(n))
+    report = await dc.sync_once()
+    assert receiver.requests == 1
+    assert receiver.batches[0][0]["headline"] == "H0"
+    assert "dc_event" in receiver.batches[0][0]
+    assert (report.acknowledged, report.dead) == (3, 1)
+
+
+async def test_plain_batch_stops_the_round_when_out_of_write_budget(
+    repository: SQLiteRepository,
+) -> None:
+    receiver = Receiver()
+    receiver.mode = "429"
+    dc = collector(
+        repository, receiver, plain_batch=True, max_batch_records=2,
+        collections={"news_article": "col-news", "business": "col-biz"},
+    )
+    for n in range(5):
+        await dc.record(article(n))
+    report = await dc.sync_once()
+    assert receiver.requests == 1
+    assert report.acknowledged == 0
+    assert report.retried == 2

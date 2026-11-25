@@ -6,6 +6,7 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- `data_collector.plain_batch`: send through `/records/batch`, many records per write and settled per item, instead of one create per event; the collector limits writes per key (30 a minute by default), which one-per-request cannot keep up with. A 429 ends the round instead of spending it.
 - A plain create (no upsert-batch) stores the payload fields at the top of the Data Collector record and the rest of the envelope under `dc_event`, so the collector's dashboard shows columns; `dc_query` maps `payload.x` filters onto it.
 - `data-keeper` agent template: the one agent that records into the Data Collector what a human asks it to keep, and answers from it. It starts with no grant; the news-cache import can be attributed to it (`producers.news_agent`) instead of NewsWatcher.
 
