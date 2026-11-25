@@ -4,6 +4,10 @@ All notable changes to EvoMesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `data-keeper` agent template: the one agent that records into the Data Collector what a human asks it to keep, and answers from it. It starts with no grant; the news-cache import can be attributed to it (`producers.news_agent`) instead of NewsWatcher.
+
 ## [0.10.0-alpha.1] - 2026-11-24
 
 Mail an agent can read, a Data Collector it can feed, and a backup you can restore. The plan behind it is `docs/release/v1-readiness-audit.md`.
