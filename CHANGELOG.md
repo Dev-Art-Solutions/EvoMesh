@@ -6,6 +6,7 @@ All notable changes to EvoMesh are documented in this file.
 
 ### Added
 
+- A plain create (no upsert-batch) stores the payload fields at the top of the Data Collector record and the rest of the envelope under `dc_event`, so the collector's dashboard shows columns; `dc_query` maps `payload.x` filters onto it.
 - `data-keeper` agent template: the one agent that records into the Data Collector what a human asks it to keep, and answers from it. It starts with no grant; the news-cache import can be attributed to it (`producers.news_agent`) instead of NewsWatcher.
 
 ## [0.10.0-alpha.1] - 2026-11-24

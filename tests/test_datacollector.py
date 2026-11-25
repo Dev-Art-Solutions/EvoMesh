@@ -19,6 +19,8 @@ from evomesh.datacollector import (
     build_dc_tools,
     build_event,
     canonical_url,
+    flat_filter,
+    flat_record,
     key_for,
 )
 from evomesh.environment import Environment
@@ -333,3 +335,34 @@ async def test_console_dc_commands(tmp_path: Path) -> None:
         assert agent.data_collector is None
     finally:
         await environment.stop()
+
+
+def test_a_plain_create_stores_the_payload_at_the_top() -> None:
+    # The collector's dashboard builds columns from top-level fields only; a
+    # nested envelope showed every news record as one opaque blob.
+    event = build_event(
+        agent_id="Data Keeper",
+        entity_type="news_article",
+        source_key=key_for("news_article", "https://n.example/a"),
+        payload={"headline": "Gold rises", "feed": "https://n.example/rss"},
+        source_url="https://n.example/a",
+    )
+    record = flat_record(event)
+    assert record["headline"] == "Gold rises"
+    assert record["dc_event"]["source_key"] == event["source_key"]
+    assert "payload" not in record["dc_event"]
+
+
+def test_a_filter_on_the_envelope_addresses_the_flat_record() -> None:
+    query = {
+        "and": [
+            {"field": "payload.feed", "op": "eq", "value": "x"},
+            {"field": "observed_at", "op": "gte", "value": "2026-11-01"},
+        ]
+    }
+    assert flat_filter(query) == {
+        "and": [
+            {"field": "feed", "op": "eq", "value": "x"},
+            {"field": "dc_event.observed_at", "op": "gte", "value": "2026-11-01"},
+        ]
+    }

@@ -154,6 +154,44 @@ def build_event(
     }
 
 
+ENVELOPE_FIELD = "dc_event"
+
+
+def flat_record(envelope: dict[str, Any]) -> dict[str, Any]:
+    """The record a plain create stores: the payload's fields at the top,
+    where the collector's dashboard and filters look, and the rest of the
+    envelope under one key. upsert-batch still sends the envelope itself."""
+    rest = {key: value for key, value in envelope.items() if key != "payload"}
+    return {**envelope.get("payload", {}), ENVELOPE_FIELD: rest}
+
+
+def flat_filter(value: Any) -> Any:
+    """A filter written against the envelope ("payload.feed") addresses the
+    flat record ("feed"); any other envelope field lives under dc_event."""
+    if isinstance(value, list):
+        return [flat_filter(inner) for inner in value]
+    if not isinstance(value, dict):
+        return value
+    out = {key: flat_filter(inner) for key, inner in value.items()}
+    field_name = out.get("field")
+    if isinstance(field_name, str):
+        if field_name.startswith("payload."):
+            out["field"] = field_name.removeprefix("payload.")
+        elif field_name.split(".")[0] in ENVELOPE_KEYS:
+            out["field"] = f"{ENVELOPE_FIELD}.{field_name}"
+    return out
+
+
+ENVELOPE_KEYS = frozenset(
+    {
+        "contract_version", "event_id", "event_type", "source_system", "source_agent_id",
+        "source_job_id", "entity_type", "source_key", "observed_at", "collected_at",
+        "source_url", "source_method", "content_hash", "privacy_class", "metadata",
+        "artifact_refs",
+    }
+)
+
+
 @dataclass
 class SyncReport:
     acknowledged: int = 0
@@ -331,7 +369,7 @@ class DataCollector:
         try:
             response = await client.post(
                 f"collections/{collection}/records",
-                json={"data": envelope},
+                json={"data": flat_record(envelope)},
                 headers={"Idempotency-Key": str(row["event_id"])},
             )
         except httpx.HTTPError as exc:
@@ -522,7 +560,7 @@ class DataCollector:
             raise EventRefused(f"no collection mapped for '{entity_type}'")
         body: dict[str, Any] = {"limit": max(1, min(50, limit))}
         if filter_:
-            body["filter"] = filter_
+            body["filter"] = flat_filter(filter_)
         async with self._client() as client:
             try:
                 response = await client.post(f"collections/{collection}/records/search", json=body)
