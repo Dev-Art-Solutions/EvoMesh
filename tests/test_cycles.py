@@ -3464,3 +3464,27 @@ async def test_a_preview_that_no_longer_applies_falls_back_to_a_job(tmp_path: Pa
     await behavior.cycle(context)
 
     assert len(harness.objectives) == 1, "the stale patch was skipped, a job did the step"
+
+
+async def test_a_reactive_agent_works_a_goal_another_agent_assigned_it(tmp_path: Path) -> None:
+    """Found live: Manager's assign_task sat runnable with zero cycles on a reactive agent."""
+    from evomesh.contracts import Autonomy
+
+    environment = Environment(settings_for(tmp_path), {"ollama": MockProvider(list(BDI_REPLIES))})
+    await environment.start()
+    agent = AgentDefinition(
+        name="Auditor", purpose="Audit sites", status=AgentStatus.ACTIVE,
+        autonomy=Autonomy.REACTIVE,
+    )
+    agent.mind.add_goal("Answer audit requests", recurring=True)
+    await environment.register_agent(agent)
+    await environment.start_agent(agent.id, start_delay=3600)
+
+    idle = await environment.cycle_agent("Auditor")
+    assert not idle.worked  # its own standing goal waits for a message
+
+    agent.mind.add_goal("Audit example.com", priority=2, requested_by="manager-id")
+    outcome = await environment.cycle_agent("Auditor")
+    assert outcome.worked
+    assert environment.runtime_states()[agent.id].cycles == 1
+    await environment.stop()

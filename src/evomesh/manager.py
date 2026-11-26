@@ -367,7 +367,9 @@ class ManagerDesk:
             f"{text}{ASKED_BY}{manager.name} for the human. Your final answer must be "
             "the result itself -- the list, the figures, the text -- not a description "
             "of what you did.)",
-            priority=8,
+            # Lower runs first: 8 queued the request behind the target's own
+            # standing goal, so a reactive agent never ran it.
+            priority=2,
             requested_by=manager.id,
         )
         target.touch()

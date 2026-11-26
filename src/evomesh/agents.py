@@ -660,7 +660,7 @@ class AgentRuntime:
     async def run_cycle(self) -> CycleOutcome:
         self._last_cycle_started = time.monotonic()
         try:
-            if self.definition.autonomy is Autonomy.REACTIVE:
+            if self.definition.autonomy is Autonomy.REACTIVE and not self._has_assigned_goal():
                 self._refresh_goal()
                 return CycleOutcome.idle("Reactive agent: cycles only when messaged.")
             async with self._lock:
@@ -1053,6 +1053,14 @@ class AgentRuntime:
             # and round(-inf) raises -- inside the reply path of every message.
             lines.append(f"next cycle in about {round(max(0.0, self._due_in()))}s")
         return "\n".join(lines)
+
+    def _has_assigned_goal(self) -> bool:
+        # A reactive agent waits for messages, but a goal someone else handed
+        # it (assign_task, a delegation, /goal add) is a request too. Found
+        # live: Manager assigned the Marketing Auditor an audit that sat
+        # runnable with zero cycles. Its own standing goal still never runs.
+        goal = self.definition.mind.next_goal()
+        return goal is not None and goal.requested_by not in (None, self.definition.id)
 
     def _refresh_goal(self) -> None:
         goal = self.definition.mind.next_goal()

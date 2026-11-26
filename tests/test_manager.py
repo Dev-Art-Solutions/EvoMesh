@@ -119,7 +119,7 @@ async def test_assigned_work_is_followed_and_reported_on_the_managers_line(
         assert "Crawler" in reply
         task = environment.manager.tasks[-1]
         goal = crawler.mind.goal(task.goal_id)
-        assert "crawl example.com" in goal.description and goal.priority == 8
+        assert "crawl example.com" in goal.description and goal.priority == 2
         assert "the result itself" in goal.description, "not an account of the work"
 
         # The crawler finishes; the agent loop publishes this.
