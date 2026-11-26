@@ -8,7 +8,7 @@ From an ordinary PowerShell in EvoMesh, register the Browser Bridge with
 ```text
 /agent-template spawn lead-researcher lead-researcher
 /browser start
-/browser grant lead-researcher read
+/browser grant lead-researcher interact
 /mcp add lead-researcher leadcollector node "C:/Dev/EvoMesh-LeadCollector/apps/api/mcp-server.mjs"
 /mcp check leadcollector
 /browser status
