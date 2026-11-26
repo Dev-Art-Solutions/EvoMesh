@@ -118,6 +118,20 @@ async def test_install_directory_copies_the_bundle(tmp_path: Path) -> None:
     assert (project / "agent-templates" / "trader" / "AGENT.md").is_file()
 
 
+async def test_installing_a_template_in_place_registers_it_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    # A template written straight into agent-templates/ and then installed
+    # from there was copied onto itself: rmtree(target) deleted the source.
+    written = write_template(tmp_path, "trader", VALID)
+    registry = AgentTemplateRegistry(tmp_path)
+    installed = await registry.install_directory(written.parent)
+
+    assert installed.name == "trader"
+    assert written.is_file()
+    assert written.read_text(encoding="utf-8") == VALID
+
+
 async def test_instantiate_creates_and_starts_a_running_agent(tmp_path: Path) -> None:
     write_template(tmp_path, "trader", VALID)
     settings = Settings(data_path=tmp_path / "data.db", generation_path=tmp_path / "generations")

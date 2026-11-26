@@ -304,8 +304,16 @@ class AgentTemplateRegistry:
         text = await asyncio.to_thread(agent_file.read_text, encoding="utf-8")
         definition = parse_agent_template(Path("<new template>"), text, created_by=created_by)
         target = self.templates_dir / definition.name
-        await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
-        await asyncio.to_thread(shutil.copytree, source, target)
+        # Installing the directory that already is the target only registers
+        # it. Copying it onto itself removed it first: rmtree(target) deleted
+        # the source and copytree then had nothing to copy (found 2026-11-26,
+        # installing a template just written under agent-templates/).
+        same = await asyncio.to_thread(
+            lambda: target.exists() and source.resolve() == target.resolve()
+        )
+        if not same:
+            await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+            await asyncio.to_thread(shutil.copytree, source, target)
         installed = definition.model_copy(
             update={"path": (target / AGENT_FILENAME).relative_to(self.root)}
         )
